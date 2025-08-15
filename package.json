@@ -1,0 +1,21 @@
+{
+  "name": "/app",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "snapshot": "bun install && mkdir -p logs && python3 -m pip install -r requirements-server.txt && npx playwright install chromium && bun scripts/snapshot.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.45.0",
+    "@types/bun": "latest",
+    "jsdom": "^26.1.0",
+    "playwright": "^1.45.0"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "wav": "^1.0.2"
+  }
+}

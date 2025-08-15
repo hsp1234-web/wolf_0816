@@ -1,0 +1,10 @@
+# Server Core Dependencies
+fastapi
+uvicorn[standard]
+python-multipart
+psutil
+circus
+pytest-mock
+websocket-client
+requests
+pytest
