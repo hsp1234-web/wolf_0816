@@ -155,6 +155,12 @@ class DBClient:
         """
         return self._send_request("set_app_state", {"key": key, "value": value})
 
+    def check_tables_exist(self) -> tuple[bool, str]:
+        """
+        檢查所有必要的資料表是否存在。
+        """
+        return self._send_request("check_tables_exist")
+
 # 可選：提供一個簡單的方式來獲取客戶端實例
 _client_instance = None
 

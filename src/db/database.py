@@ -435,6 +435,37 @@ def get_system_logs_by_filter(levels: list[str] = None, sources: list[str] = Non
             conn.close()
 
 
+def check_tables_exist() -> tuple[bool, str]:
+    """
+    檢查所有必要的資料表是否存在於資料庫中。
+    :return: 一個元組，第一個元素是布林值表示是否所有表都存在，
+             第二個元素是描述訊息。
+    """
+    required_tables = {'tasks', 'system_logs', 'app_state'}
+    conn = get_db_connection()
+    if not conn:
+        return False, "無法建立資料庫連線。"
+
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+        existing_tables = {row['name'] for row in cursor.fetchall()}
+
+        missing_tables = required_tables - existing_tables
+
+        if not missing_tables:
+            return True, "所有必要的資料表都已存在。"
+        else:
+            return False, f"資料庫結構不完整，缺少資料表: {sorted(list(missing_tables))}"
+
+    except sqlite3.Error as e:
+        log.error(f"❌ 檢查資料表是否存在時發生錯誤: {e}", exc_info=True)
+        return False, f"檢查資料表時發生資料庫錯誤: {e}"
+    finally:
+        if conn:
+            conn.close()
+
+
 if __name__ == "__main__":
     # 直接執行此檔案時，會進行初始化
     initialize_database()

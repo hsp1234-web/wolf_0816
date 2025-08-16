@@ -1230,8 +1230,34 @@ async def websocket_endpoint(websocket: WebSocket):
 
 @app.get("/api/health")
 async def health_check():
-    """提供一個簡單的健康檢查端點。"""
-    return {"status": "ok", "message": "API Server is running."}
+    """
+    提供一個全面的健康檢查端點。
+    它會檢查資料庫連線以及所有必要的資料表是否存在。
+    成功則回傳 HTTP 200 OK，失敗則回傳 503 Service Unavailable。
+    """
+    try:
+        # 透過 db_client 呼叫遠端的 check_tables_exist 函式。
+        # JSON 序列化會將 Python 的 tuple 轉換為 list。
+        result = db_client.check_tables_exist()
+        is_ok, message = result[0], result[1]
+
+        if is_ok:
+            return JSONResponse(
+                status_code=200,
+                content={"status": "ok", "message": message}
+            )
+        else:
+            log.error(f"健康檢查失敗: {message}")
+            return JSONResponse(
+                status_code=503,
+                content={"status": "error", "message": message}
+            )
+    except Exception as e:
+        log.error(f"健康檢查時發生嚴重錯誤: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "message": f"無法連線至後端服務: {str(e)}"}
+        )
 
 
 @app.post("/api/internal/notify_task_update", status_code=200)

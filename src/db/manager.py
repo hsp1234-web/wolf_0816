@@ -60,6 +60,8 @@ ACTION_MAP = {
     # JULES'S NEW FEATURE: Add app state actions
     "get_app_state": database.get_app_state,
     "set_app_state": database.set_app_state,
+    # JULES: 新增健康檢查動作
+    "check_tables_exist": database.check_tables_exist,
 }
 
 

@@ -122,7 +122,8 @@
             transition: background-color 0.2s, border-color 0.2s;
         }
         .file-drop-zone:hover { background-color: #f0f8ff; border-color: var(--button-bg-color); }
-        .hidden { display: none; }
+        /* JULES'S FIX: Use a more forceful hidden class */
+        .hidden { display: none !important; }
 
         /* --- 進度條 --- */
         .progress-container {
@@ -2104,8 +2105,12 @@
 
                     // JULES'S FIX: Hide transcript output on YouTube tab as per user request
                     if (transcriptContainer) {
-                        // 根據使用者要求，僅在「本機檔案轉錄」分頁顯示此區塊
-                        transcriptContainer.style.display = (tabId === 'local-file-tab') ? 'block' : 'none';
+                        // JULES'S FINAL FIX: Use classList toggle which is more robust
+                        if (tabId === 'local-file-tab') {
+                            transcriptContainer.classList.remove('hidden');
+                        } else {
+                            transcriptContainer.classList.add('hidden');
+                        }
                     }
                 });
             });

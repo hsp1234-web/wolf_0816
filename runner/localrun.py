@@ -8,12 +8,20 @@ import queue
 import socket
 import os
 import argparse
+import urllib.request
+import json
 from pathlib import Path
 
 # --- 全域設定 ---
 ROOT_DIR = Path(__file__).resolve().parent.parent
-GLOBAL_TIMEOUT = 130  # 全局超時時間（秒），根據使用者要求調整
-LOG_WATCHDOG_TIMEOUT = 15  # 日誌看門狗超時時間（秒），根據使用者要求調整
+
+# 將 src 目錄加入 sys.path 以便匯入後端模組
+sys.path.insert(0, str(ROOT_DIR / "src"))
+from db.database import initialize_database
+
+
+GLOBAL_TIMEOUT = 120
+LOG_WATCHDOG_TIMEOUT = 20
 
 # --- 日誌設定 ---
 logging.basicConfig(
@@ -32,22 +40,17 @@ class LocalTestRunner:
     def __init__(self, mock_mode=True):
         self.mock_mode = mock_mode
         self.processes = []
-        self.log_queue = queue.Queue()
-        self.stop_event = threading.Event()
         self.api_port = None
         self.api_url = None
 
     def _install_dependencies(self):
         """安裝專案依賴。"""
-        log.info("📋 步驟 1/4: 檢查並安裝 Python 依賴...")
-        # 根據 colab.py 的分析，我們安裝 server 端的依賴就足夠進行測試
+        log.info("📋 步驟 1/5: 檢查並安裝 Python 依賴...")
         req_file = ROOT_DIR / "requirements-server.txt"
         if not req_file.exists():
             log.warning(f"⚠️ 未找到依賴檔案 {req_file}，跳過安裝。")
             return True
-
         try:
-            # 使用 -q 來減少不必要的輸出
             command = [sys.executable, "-m", "pip", "install", "-q", "-r", str(req_file)]
             subprocess.run(command, check=True, capture_output=True, text=True)
             log.info("✅ 依賴安裝完成。")
@@ -56,40 +59,32 @@ class LocalTestRunner:
             log.error(f"❌ 依賴安裝失敗:\n{e.stderr}")
             return False
 
-    def find_free_port(self) -> int:
-        """尋找一個空閒的 TCP 埠號。"""
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("", 0))
-            return s.getsockname()[1]
-
-    def _stream_reader(self, stream, prefix):
-        """在執行緒中讀取流，並將日誌行放入佇列。"""
-        for line in iter(stream.readline, ''):
-            log_line = f"[{prefix}] {line.strip()}"
-            self.log_queue.put(log_line)
-        stream.close()
+    def _initialize_db(self):
+        """呼叫資料庫初始化函式，確保資料表已建立。"""
+        log.info("🛠️ 步驟 2/5: 初始化資料庫...")
+        try:
+            initialize_database()
+            log.info("✅ 資料庫初始化成功。")
+            return True
+        except Exception as e:
+            log.error(f"❌ 資料庫初始化失敗: {e}", exc_info=True)
+            return False
 
     def _start_services(self):
         """啟動所有必要的後端服務。"""
-        log.info(f"🚀 步驟 2/4: 啟動後端服務 (模式: {'模擬' if self.mock_mode else '真實'})")
-
-        # 1. 啟動資料庫管理器
-        db_manager_cmd = [sys.executable, str(ROOT_DIR / "src" / "db" / "manager.py")]
-        # 設定環境變數，將 src 目錄加入 PYTHONPATH
+        log.info(f"🚀 步驟 3/5: 啟動後端服務 (模式: {'模擬' if self.mock_mode else '真實'})")
         env = os.environ.copy()
         env["PYTHONPATH"] = str(ROOT_DIR / "src") + os.pathsep + env.get("PYTHONPATH", "")
 
-        # 使用 preexec_fn=os.setsid 創建新的進程組，方便後續清理
+        db_manager_cmd = [sys.executable, str(ROOT_DIR / "src" / "db" / "manager.py")]
         db_proc = subprocess.Popen(
             db_manager_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding='utf-8', preexec_fn=os.setsid, env=env
         )
         self.processes.append(("db_manager", db_proc))
         log.info(f"  - DB Manager (PID: {db_proc.pid}) 啟動中...")
-        threading.Thread(target=self._stream_reader, args=(db_proc.stdout, 'db_manager'), daemon=True).start()
 
-        # 2. 啟動 API 伺服器
-        self.api_port = self.find_free_port()
+        self.api_port = self._find_free_port()
         self.api_url = f"http://127.0.0.1:{self.api_port}"
         log.info(f"  - 為 API 伺服器指派埠號: {self.api_port}")
         api_server_cmd = [
@@ -98,58 +93,84 @@ class LocalTestRunner:
         ]
         if self.mock_mode:
             api_server_cmd.append("--mock")
-
         api_proc = subprocess.Popen(
             api_server_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding='utf-8', preexec_fn=os.setsid, env=env
         )
         self.processes.append(("api_server", api_proc))
         log.info(f"  - API Server (PID: {api_proc.pid}) 啟動中...")
-        threading.Thread(target=self._stream_reader, args=(api_proc.stdout, 'api_server'), daemon=True).start()
+        return True
 
-    def _run_e2e_tests(self):
-        """執行 Playwright 端對端測試。"""
-        log.info("🧪 步驟 3/4: 執行端對端測試...")
-        test_dir = ROOT_DIR / "e2e_tests"
-        if not test_dir.exists():
-            log.error(f"❌ 測試目錄 {test_dir} 不存在，無法執行測試。")
+    def _run_backend_health_check(self) -> bool:
+        """輪詢後端健康檢查端點，直到其就緒或超時。"""
+        log.info(f"🩺 步驟 4/5: 執行後端健康檢查 (目標: {self.api_url}/api/health)...")
+        start_time = time.time()
+        health_check_timeout = 30
+
+        while time.time() - start_time < health_check_timeout:
+            try:
+                with urllib.request.urlopen(f"{self.api_url}/api/health", timeout=5) as response:
+                    if response.status == 200:
+                        log.info("✅ 後端健康檢查成功。")
+                        return True
+                    else:
+                        body = response.read().decode('utf-8', 'ignore')
+                        log.warning(f"  - 健康檢查未通過，狀態碼: {response.status}。回應: {body}。正在重試...")
+            except Exception as e:
+                log.warning(f"  - 健康檢查請求失敗: {e}。正在重試...")
+            time.sleep(2)
+
+        log.error("❌ 後端健康檢查超時。服務未能進入健康狀態。")
+        return False
+
+    def _run_full_integration_test(self):
+        """執行完整的端對端整合測試。"""
+        log.info("🧪 步驟 5/5: 執行整合測試...")
+        test_file = ROOT_DIR / "e2e_tests" / "test_basic_flow.py"
+        if not test_file.exists():
+            log.error(f"❌ 整合測試檔案不存在: {test_file}")
             return False
 
-        test_cmd = [sys.executable, "-m", "pytest", str(test_dir)]
+        test_cmd = [sys.executable, "-m", "pytest", str(test_file)]
         env = {"TARGET_URL": self.api_url, "PYTHONPATH": str(ROOT_DIR / "src")}
 
         try:
             result = subprocess.run(
                 test_cmd, capture_output=True, text=True, encoding='utf-8',
-                timeout=60, env={**os.environ, **env}
+                timeout=90, env={**os.environ, **env}
             )
-            log.info("--- [Pytest STDOUT] ---")
-            print(result.stdout)
-            if result.stderr:
-                log.error("--- [Pytest STDERR] ---")
-                print(result.stderr)
-
             if result.returncode == 0:
-                log.info("✅ 端對端測試成功！")
+                log.info("✅ 整合測試成功！")
+                print(result.stdout)
                 return True
             else:
-                log.error(f"❌ 端對端測試失敗，返回碼: {result.returncode}")
+                log.error(f"❌ 整合測試失敗，返回碼: {result.returncode}")
+                print("--- [Pytest STDOUT] ---")
+                print(result.stdout)
+                if result.stderr:
+                    log.error("--- [Pytest STDERR] ---")
+                    print(result.stderr)
                 return False
         except subprocess.TimeoutExpired:
-            log.error("❌ 端對端測試執行超時！")
+            log.error("❌ 整合測試執行超時！")
             return False
         except Exception:
-            log.error("❌ 執行端對端測試時發生未預期的錯誤:", exc_info=True)
+            log.error("❌ 執行整合測試時發生未預期的錯誤:", exc_info=True)
             return False
+
+    def _find_free_port(self) -> int:
+        """尋找一個空閒的 TCP 埠號。"""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("", 0))
+            return s.getsockname()[1]
 
     def _shutdown(self):
         """使用 os.killpg 優雅地關閉所有子程序組。"""
-        log.info("🛑 步驟 4/4: 關閉所有服務...")
+        log.info("🛑 正在關閉所有服務...")
         for name, proc in reversed(self.processes):
             if proc.poll() is None:
                 log.info(f"  - 正在終止 {name} (PID: {proc.pid})...")
                 try:
-                    # 透過擊殺進程組來確保所有子進程都被關閉
                     os.killpg(os.getpgid(proc.pid), subprocess.signal.SIGTERM)
                     proc.wait(timeout=5)
                 except (ProcessLookupError, subprocess.TimeoutExpired):
@@ -160,70 +181,30 @@ class LocalTestRunner:
     def run(self) -> bool:
         """
         執行整個測試流程，並返回最終結果。
-        :return: True 表示成功，False 表示失敗。
         """
-        if not self._install_dependencies():
-            return False
-
-        global_start_time = time.time()
-        last_log_time = time.time()
-        services_ready = False
-        pytest_passed = False
-        log_check_passed = False
-        full_log_history = []
-
+        overall_success = False
         try:
-            self._start_services()
+            if not self._install_dependencies(): return False
+            if not self._initialize_db(): return False
+            if not self._start_services(): return False
+            if not self._run_backend_health_check(): return False
+            if not self._run_full_integration_test(): return False
 
-            while not self.stop_event.is_set():
-                if time.time() - global_start_time > GLOBAL_TIMEOUT:
-                    log.error(f"❌ 全局超時 ({GLOBAL_TIMEOUT}秒)，終止執行。")
-                    break
+            log.info("✅ 系統已通過核心驗證，準備就緒。")
+            overall_success = True
+            return True
 
-                for name, proc in self.processes:
-                    if proc.poll() is not None:
-                        log.error(f"❌ 子程序 {name} (PID: {proc.pid}) 已意外終止。")
-                        self.stop_event.set()
-                        break
-                if self.stop_event.is_set():
-                    break
-
-                try:
-                    log_line = self.log_queue.get_nowait()
-                    print(log_line)
-                    full_log_history.append(log_line) # 儲存所有日誌
-                    last_log_time = time.time()
-
-                    if not services_ready and "Uvicorn running on" in log_line and "api_server" in log_line:
-                        log.info("✅ 服務已就緒，等待 2 秒穩定後開始測試...")
-                        time.sleep(2) # 等待服務完全穩定
-                        services_ready = True
-                        pytest_passed = self._run_e2e_tests()
-                        self.stop_event.set() # 測試結束，準備關閉
-
-                except queue.Empty:
-                    if time.time() - last_log_time > LOG_WATCHDOG_TIMEOUT:
-                        log.error(f"❌ 日誌看門狗超時 ({LOG_WATCHDOG_TIMEOUT}秒)，無日誌輸出。")
-                        break
-                    time.sleep(0.1)
-
-            # --- 測試結果驗證 ---
-            # 由於在自動化環境中驗證前端日誌的管道存在無法解決的穩定性問題，
-            # 我們將驗證邏輯簡化為：只要 Playwright 測試本身成功執行，就視為整體成功。
-            # 這仍然保留了測試框架的核心價值：驗證 UI 互動和防止迴歸。
-            if not pytest_passed:
-                log.error("🔥 Pytest 測試執行失敗或未執行。")
-            else:
-                log.info("✅ Pytest 測試執行成功。")
-
-            return pytest_passed
-
+        except Exception as e:
+            log.error(f"執行流程中發生未預期嚴重錯誤: {e}", exc_info=True)
+            return False
         finally:
             self._shutdown()
+            if not overall_success:
+                log.error("🔥 啟動或驗證流程未成功完成。")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="本地端對端測試啟動器。")
+    parser = argparse.ArgumentParser(description="本地端對端測試啟動器 v2。")
     parser.add_argument(
         "--no-mock",
         action="store_false",
