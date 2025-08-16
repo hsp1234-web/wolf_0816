@@ -2074,7 +2074,8 @@
 
                     // JULES'S FIX: Hide transcript output on YouTube tab as per user request
                     if (transcriptContainer) {
-                        transcriptContainer.style.display = (tabId === 'youtube-report-tab') ? 'none' : 'block';
+                        // 根據使用者要求，僅在「本機檔案轉錄」分頁顯示此區塊
+                        transcriptContainer.style.display = (tabId === 'local-file-tab') ? 'block' : 'none';
                     }
                 });
             });
