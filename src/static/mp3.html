@@ -844,8 +844,8 @@
                 tasks.forEach(dispatchStatusUpdate);
 
                 // Finally, update the "no tasks" messages
-                noOngoingTaskMsg.style.display = ongoingTasksContainer.childElementCount > 0 ? 'none' : 'block';
-                noCompletedTaskMsg.style.display = completedTasksContainer.childElementCount > 0 ? 'none' : 'block';
+                noOngoingTaskMsg.style.display = ongoingTasksContainer.querySelectorAll('.task-item').length > 0 ? 'none' : 'block';
+                noCompletedTaskMsg.style.display = completedTasksContainer.querySelectorAll('.task-item').length > 0 ? 'none' : 'block';
                 const downloaderTasksContainer = document.getElementById('downloader-tasks');
                 document.getElementById('no-downloader-task-msg').style.display = downloaderTasksContainer.childElementCount > 0 ? 'none' : 'block';
             };
@@ -1195,18 +1195,53 @@
                 if (!payload || !payload.task_id) return;
 
                 if (payload.status === 'completed' && payload.task_type === 'gemini_process') {
+                    // This part is correct, it adds the result to the dedicated report browser area.
                     addYoutubeReportToList(payload);
-                    const taskElement = taskElements.get(payload.task_id); // Gets element by finalId
+
+                    const taskElement = taskElements.get(payload.task_id);
                     if (taskElement) {
-                        // JULES'S FIX (2025-08-16): Proper cleanup for task chains
+                        const statusSpan = taskElement.querySelector('.task-status');
+                        const filenameSpan = taskElement.querySelector('.task-filename');
+                        const resultData = payload.result || payload; // Use result from payload, fallback to payload itself
+
+                        // Update filename with the final title from the result
+                        const filename = resultData.video_title || resultData.original_filename || 'YouTube 分析';
+                        if (filenameSpan) {
+                            filenameSpan.textContent = `${filename} (YouTube 分析)`;
+                            filenameSpan.title = filename;
+                        }
+
+                        // Update status to 'completed' and add the final action buttons
+                        if (statusSpan) {
+                            statusSpan.innerHTML = ''; // Clear "In Progress..." text
+                            statusSpan.className = 'task-status status-completed';
+                            // Pass the rich result object to create the buttons
+                            let buttonGroup = createActionButtons(payload.task_id, resultData);
+                            statusSpan.appendChild(buttonGroup);
+                        }
+
+                        // Move the entire, updated element to the 'completed' list
+                        completedTasksContainer.appendChild(taskElement);
+                        if (noCompletedTaskMsg.style.display !== 'none') {
+                            noCompletedTaskMsg.style.display = 'none';
+                        }
+
+                        // Ensure the 'ongoing' list placeholder is shown if it's now empty
+                        if (ongoingTasksContainer.querySelectorAll('.task-item').length === 0) {
+                            noOngoingTaskMsg.style.display = 'block';
+                        }
+
+                        // Clean up the task map now that the chain is fully processed and moved
                         const displayId = taskElement.dataset.displayId;
                         const finalId = taskElement.dataset.finalId;
-
-                        if (displayId) taskElements.delete(displayId);
-                        if (finalId) taskElements.delete(finalId);
-
-                        taskElement.remove();
+                        if (displayId) {
+                            taskElements.delete(displayId);
+                        }
+                        if (finalId) {
+                            taskElements.delete(finalId);
+                        }
                     }
+                    // Return to prevent any other logic from processing this completed task
                     return;
                 }
 
