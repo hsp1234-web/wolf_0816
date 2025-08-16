@@ -10,7 +10,7 @@ import asyncio
 import os
 import time
 from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException, WebSocket, WebSocketDisconnect, Query
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
@@ -123,16 +123,25 @@ app.add_middleware(
 # --- 路徑設定 ---
 # 新的上傳檔案儲存目錄
 UPLOADS_DIR = ROOT_DIR / "uploads"
-# 靜態檔案目錄
-STATIC_DIR = ROOT_DIR / "src" / "static"
+# 舊的靜態檔案目錄 (用於 mp3.html)
+OLD_STATIC_DIR = ROOT_DIR / "src" / "static"
+# 新的 Vue App 靜態檔案目錄
+VUE_APP_DIST_DIR = ROOT_DIR / "vue-app" / "dist"
+
 
 # 確保目錄存在
 UPLOADS_DIR.mkdir(exist_ok=True)
-if not STATIC_DIR.exists():
-    log.warning(f"靜態檔案目錄 {STATIC_DIR} 不存在，前端頁面可能無法載入。")
+
+# 掛載舊的靜態資源 (可選，但為了相容性保留)
+if OLD_STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=OLD_STATIC_DIR), name="static")
+
+# 掛載新的 Vue App 靜態資源
+if VUE_APP_DIST_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=VUE_APP_DIST_DIR / "assets"), name="vue-assets")
+    log.info(f"Vue App 的靜態資源目錄已掛載: {VUE_APP_DIST_DIR / 'assets'}")
 else:
-    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-    # JULES'S FIX (2025-08-13): 移除有問題的 StaticFiles 掛載，改用自訂端點
+    log.warning(f"Vue App 的建置目錄 {VUE_APP_DIST_DIR} 不存在，新前端可能無法載入。")
 
 # JULES'S FIX (2025-08-13): 根據計畫，新增此端點來處理複雜檔名
 from urllib.parse import unquote
@@ -216,13 +225,44 @@ def convert_to_media_url(absolute_path_str: str) -> str:
 
 # --- API 端點 ---
 
+# --- 前端介面路由 ---
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    """提供 Vue App 的 favicon。"""
+    favicon_path = VUE_APP_DIST_DIR / "favicon.ico"
+    if favicon_path.is_file():
+        return FileResponse(favicon_path)
+    else:
+        # 如果找不到 favicon，回傳 204 No Content，避免觸發根路由
+        return Response(status_code=204)
+
 @app.get("/", response_class=HTMLResponse)
 async def serve_frontend(request: Request):
-    """根端點，提供前端操作介面。"""
-    html_file_path = STATIC_DIR / "mp3.html"
+    """根端點，提供新的 Vue 前端操作介面。"""
+    vue_index_path = VUE_APP_DIST_DIR / "index.html"
+    if not vue_index_path.is_file():
+        log.error(f"找不到 Vue 前端主頁: {vue_index_path}")
+        # 提供一個有用的錯誤訊息，幫助開發者診斷問題
+        error_message = f"""
+        <h1>500 Internal Server Error</h1>
+        <p>找不到前端主頁檔案 (index.html)。</p>
+        <p>請確認您已經在 <code>/vue-app</code> 目錄下執行 <code>bun run build</code> 來建置前端應用。</p>
+        <p>預期檔案路徑: {vue_index_path}</p>
+        """
+        return HTMLResponse(content=error_message, status_code=500)
+    return HTMLResponse(content=vue_index_path.read_text(encoding="utf-8"), status_code=200)
+
+
+# --- JULES'S NOTE: 保留舊的 mp3.html 路由 ---
+# 根據計畫，舊的 mp3.html 檔案不應被刪除，而是保留作為參考。
+# 為了能夠在需要時還能訪問它，我們將其移到一個新的路由 /legacy/mp3
+@app.get("/legacy/mp3", response_class=HTMLResponse, include_in_schema=False)
+async def serve_legacy_frontend(request: Request):
+    """提供舊版的 mp3.html 前端，用於參考。"""
+    html_file_path = OLD_STATIC_DIR / "mp3.html"
     if not html_file_path.is_file():
-        log.error(f"找不到前端檔案: {html_file_path}")
-        raise HTTPException(status_code=404, detail="找不到前端介面檔案 (mp3.html)")
+        raise HTTPException(status_code=404, detail="找不到舊版前端介面檔案 (mp3.html)")
     return HTMLResponse(content=html_file_path.read_text(encoding="utf-8"), status_code=200)
 
 

@@ -1,35 +1,317 @@
-@import './base.css';
-
-#app {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
-  font-weight: normal;
+/* --- 變數與基本設定 --- */
+:root {
+    --bg-color: #F8F9FA;
+    --text-color: #202124;
+    --card-bg-color: rgba(255, 255, 255, 0.85);
+    --card-border-color: #e0e0e0;
+    --button-bg-color: #007bff;
+    --button-hover-bg-color: #0056b3;
+    --disabled-bg-color: #ccc;
+    --progress-bar-bg: #e9ecef;
+    --success-color: #28a745;
+    --status-green: #28a745;
+    --status-yellow: #ffc107;
 }
-
-a,
-.green {
-  text-decoration: none;
-  color: hsla(160, 100%, 37%, 1);
-  transition: 0.4s;
-  padding: 3px;
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+    background-color: var(--bg-color);
+    color: var(--text-color);
+    padding: 20px;
+    font-size: 100%;
+    line-height: 1.5;
 }
+.container { max-width: 1200px; margin: auto; display: flex; flex-direction: column; gap: 24px; }
 
-@media (hover: hover) {
-  a:hover {
-    background-color: hsla(160, 100%, 37%, 0.2);
-  }
+/* --- 卡片與佈局 --- */
+.card {
+    border: 1px solid var(--card-border-color);
+    border-radius: 12px;
+    padding: 24px;
+    background-color: var(--card-bg-color);
+    backdrop-filter: blur(10px);
+    box-shadow: 0 4px 6px rgba(0,0,0,0.05);
 }
-
-@media (min-width: 1024px) {
-  body {
-    display: flex;
-    place-items: center;
-  }
-
-  #app {
+.grid-2-col {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    padding: 0 2rem;
-  }
+    grid-template-columns: 1fr; /* Default to 1 column */
+    gap: 24px;
+}
+@media (min-width: 768px) { /* 2 columns on medium screens and up */
+    .grid-2-col {
+        grid-template-columns: 1fr 1fr;
+    }
+}
+.flex-col { display: flex; flex-direction: column; gap: 16px; }
+h1 { font-size: 1.8em; font-weight: 700; }
+h2 { font-size: 1.3em; font-weight: 600; margin-bottom: 12px; }
+
+/* --- 分頁樣式 --- */
+.tab-container {
+    display: flex;
+    gap: 8px;
+    padding: 0;
+}
+.tab-button {
+    padding: 10px 20px;
+    cursor: pointer;
+    border: none;
+    background-color: #e9ecef;
+    color: var(--text-color);
+    opacity: 0.8;
+    font-size: 1em;
+    font-weight: 600;
+    border-radius: 8px;
+    transition: all 0.2s;
+}
+.tab-button:hover {
+    opacity: 1;
+}
+.tab-button.active {
+    background-color: var(--button-bg-color);
+    color: white;
+    opacity: 1;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+.tab-content {
+    display: none; /* 預設隱藏 */
+}
+.tab-content.active {
+    display: block; /* 顯示作用中的分頁 */
+}
+
+@media (max-width: 767px) {
+    body { padding: 10px; }
+    .card { padding: 16px; }
+    h1 { font-size: 1.5em; }
+    h2 { font-size: 1.2em; }
+}
+
+/* --- 表單與按鈕 --- */
+button {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    background-color: var(--button-bg-color);
+    color: white;
+    font-weight: 500;
+    transition: all 0.2s;
+}
+button:hover:not(:disabled) { background-color: var(--button-hover-bg-color); transform: translateY(-1px); }
+button:disabled { background-color: var(--disabled-bg-color); cursor: not-allowed; transform: none; }
+select {
+    width: 100%;
+    padding: 10px;
+    border-radius: 6px;
+    border: 1px solid #ccc;
+}
+.file-drop-zone {
+    border: 2px dashed #ccc;
+    border-radius: 12px;
+    padding: 30px;
+    text-align: center;
+    cursor: pointer;
+    transition: background-color 0.2s, border-color 0.2s;
+}
+.file-drop-zone:hover { background-color: #f0f8ff; border-color: var(--button-bg-color); }
+/* JULES'S FIX: Use a more forceful hidden class */
+.hidden { display: none !important; }
+
+/* --- 進度條 --- */
+.progress-container {
+    width: 100%;
+    background-color: var(--progress-bar-bg);
+    border-radius: 8px;
+    margin-top: 16px;
+    overflow: hidden;
+    position: relative;
+    height: 28px;
+    display: flex;
+    align-items: center;
+}
+.progress-bar {
+    height: 100%;
+    width: 0%;
+    background-color: var(--button-bg-color);
+    transition: width 0.2s ease-in-out;
+}
+.progress-text {
+    position: absolute;
+    width: 100%;
+    text-align: center;
+    color: var(--text-color);
+    font-weight: 600;
+    line-height: 28px;
+}
+
+/* --- 儀表板 --- */
+.dashboard-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
+.stat-item { font-size: 0.9em; }
+.status-light { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 8px; }
+.status-green { background-color: var(--status-green); box-shadow: 0 0 6px var(--status-green); }
+.status-yellow { background-color: var(--status-yellow); box-shadow: 0 0 6px var(--status-yellow); }
+
+/* --- 任務列表 --- */
+.task-list { min-height: 60px; max-height: 400px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+.task-item {
+    padding: 12px;
+    border-radius: 8px;
+    background-color: #f9f9f9;
+    border: 1px solid #eee;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap; /* Allow wrapping on small screens */
+    gap: 10px; /* Add gap for wrapped items */
+}
+.task-filename {
+    font-weight: 600;
+    /* JULES'S FIX for long filenames */
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 350px; /* Adjust as needed */
+}
+.task-status {
+    font-size: 0.9em;
+    font-weight: 500;
+    color: #666;
+    transition: color 0.3s ease; /* Smooth color transition */
+}
+.task-status.status-downloading { color: #007bff; } /* Blue */
+.task-status.status-processing { color: #fd7e14; } /* Orange */
+.task-status.status-completed { color: #28a745; } /* Green */
+.task-status.status-failed { color: #dc3545; } /* Red */
+
+/* --- 任務列表中的按鈕 --- */
+.task-list .task-actions a {
+    text-decoration: none;
+    padding: 5px 12px;
+    border-radius: 6px;
+    color: white;
+    font-size: 0.9em;
+    transition: all 0.2s;
+    display: inline-block;
+    border: none;
+    font-weight: 500;
+    text-align: center;
+}
+.task-list .task-actions a:hover {
+    transform: translateY(-1px);
+    opacity: 0.9;
+}
+.task-list .btn-preview {
+     background-color: var(--button-bg-color); /* Blue */
+}
+.task-list .btn-download {
+     background-color: var(--success-color); /* Green */
+}
+.task-list .task-actions a.btn-rename {
+    background-color: var(--status-yellow);
+    color: var(--text-color);
+}
+
+/* --- 即時輸出 --- */
+.transcript-output {
+    min-height: 100px;
+    background-color: #e9ecef;
+    padding: 16px;
+    border-radius: 8px;
+    white-space: pre-wrap;
+    font-family: monospace;
+    color: #495057;
+}
+.transcript-output p {
+    margin: 0 0 0.5em 0; /* 為每個段落增加一些底邊距，增加可讀性 */
+    line-height: 1.6; /* 增加行高 */
+}
+.log-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 20px;
+    align-items: center;
+}
+
+/* --- Modal 彈窗樣式 --- */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.6);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+    padding: 20px;
+    box-sizing: border-box;
+}
+.modal-content {
+    background-color: white;
+    padding: 24px;
+    border-radius: 12px;
+    box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+    width: 100%;
+    max-width: 900px;
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 12px;
+}
+.modal-header h2 {
+    margin: 0;
+}
+.modal-close-button {
+    background: none;
+    border: none;
+    font-size: 2em;
+    cursor: pointer;
+    color: #888;
+    line-height: 1;
+    padding: 0;
+}
+.modal-close-button:hover {
+    color: #333;
+    background-color: transparent;
+    transform: none;
+}
+.modal-body {
+    overflow-y: auto;
+    flex-grow: 1;
+}
+.modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    border-top: 1px solid #eee;
+    padding-top: 16px;
+}
+.modal-footer button, .modal-footer .button-like {
+    background-color: #6c757d;
+}
+.modal-footer a.button-like {
+     background-color: var(--success-color);
+}
+.button-like {
+    text-decoration: none;
+    padding: 10px 20px;
+    border-radius: 8px;
+    cursor: pointer;
+    background-color: var(--button-bg-color);
+    color: white;
+    font-weight: 500;
+    transition: all 0.2s;
+    display: inline-block;
+}
+.button-like:hover {
+    background-color: var(--button-hover-bg-color);
+    transform: translateY(-1px);
 }
