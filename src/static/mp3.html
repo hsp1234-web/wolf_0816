@@ -988,7 +988,8 @@
             });
 
             // --- 核心應用邏輯 ---
-            const logAction = (action, value = null) => {
+            // 將 logAction 附加到 window 物件，使其成為全域可存取函式，方便測試框架呼叫
+            window.logAction = (action, value = null) => {
                 const message = value !== null ? `${action}: ${value}` : action;
                 console.log(`Logging action: ${message}`);
                 fetch('/api/log/action', {
@@ -997,6 +998,21 @@
                     body: JSON.stringify({ action: message })
                 }).catch(err => console.error('logAction failed:', err));
             };
+
+            // --- 全域點擊日誌記錄 ---
+            // 這個監聽器會捕獲所有的點擊事件，以確保任何沒有被特別處理的按鈕點擊都能被記錄下來。
+            document.body.addEventListener('click', (event) => {
+                const target = event.target.closest('button, a'); // 尋找最近的按鈕或連結祖先
+                if (target) {
+                    // 為了避免重複記錄，我們可以未來在這裡加入一個檢查，例如檢查元素是否有 'no-global-log' class
+                    let identifier = target.id || (target.dataset && Object.values(target.dataset).join('.')) || target.textContent.trim().substring(0, 50) || target.className || 'unidentified_clickable';
+
+                    // 簡化標識符，移除不必要的細節
+                    identifier = identifier.replace(/\s+/g, ' ').trim();
+
+                    logAction('global-click', `tag:${target.tagName},id:${target.id || 'N/A'},text:'${identifier}'`);
+                }
+            }, true); // 使用捕獲階段以確保它在其他點擊事件之前執行
 
             const setupWebSocket = () => {
                 const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';

@@ -1,0 +1,49 @@
+# e2e_tests/test_basic_flow.py
+import re
+import os
+from playwright.sync_api import Page, expect
+
+# 從環境變數讀取目標 URL
+TARGET_URL = os.environ.get("TARGET_URL", "http://127.0.0.1:8000")
+
+def test_final_e2e_flow(page: Page):
+    """
+    這是一個端對端測試案例，用於驗證應用程式的核心使用者流程：
+    1. 瀏覽器打開目標 URL。
+    2. 檢查頁面標題是否正確。
+    3. 切換到「媒體下載器」分頁。
+    4. 驗證「即時轉錄輸出」區塊在該分頁下是不可見的。
+    """
+    try:
+        # 步驟 1: 導航到目標頁面
+        print(f"正在導航至: {TARGET_URL}")
+        page.goto(TARGET_URL, timeout=15000)
+
+        # 步驟 2: 驗證頁面標題
+        print("正在驗證頁面標題...")
+        expect(page).to_have_title(re.compile("音訊轉錄儀"), timeout=10000)
+        print("✅ 頁面標題 '音訊轉錄儀' 驗證成功。")
+
+        # 步驟 3: 定位並點擊「媒體下載器」分頁
+        media_downloader_tab = page.locator('button[data-tab="downloader-tab"]')
+        print("正在點擊 '媒體下載器' 分頁...")
+        expect(media_downloader_tab).to_be_visible(timeout=5000)
+        media_downloader_tab.click()
+        print("✅ '媒體下載器' 分頁點擊成功。")
+
+        # 步驟 4: 驗證「即時轉錄輸出」區塊是否不可見
+        # 根據使用者回饋，這個區塊在其他分頁應該被隱藏
+        real_time_output_area = page.locator('#transcript-container')
+        print("正在驗證 '即時轉錄輸出' 區塊是否不可見...")
+
+        # 斷言元素不可見
+        expect(real_time_output_area).to_be_hidden(timeout=5000)
+        print("✅ '即時轉錄輸出' 區塊已成功驗證為不可見。")
+
+        print("🎉 端對端測試流程驗證成功！")
+
+    except Exception as e:
+        print(f"❌ 測試過程中發生錯誤: {e}")
+        page.screenshot(path="e2e_tests/final_error.png")
+        print("📸 已儲存錯誤截圖至 e2e_tests/final_error.png")
+        raise e
