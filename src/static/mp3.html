@@ -604,30 +604,6 @@
             <div id="transcript-output" class="transcript-output" style="margin-top: 16px;">等待任務開始...</div>
         </div>
 
-        <!-- 系統日誌查看器 -->
-        <div id="log-viewer-card" class="card">
-            <h2>📜 系統日誌查看器</h2>
-            <div class="log-controls">
-                <strong>等級:</strong>
-                <label><input type="checkbox" name="log-level" value="INFO" checked> INFO</label>
-                <label><input type="checkbox" name="log-level" value="SUCCESS" checked> SUCCESS</label>
-                <label><input type="checkbox" name="log-level" value="WARN" checked> WARN</label>
-                <label><input type="checkbox" name="log-level" value="ERROR" checked> ERROR</label>
-                <label><input type="checkbox" name="log-level" value="CRITICAL" checked> CRITICAL</label>
-            </div>
-            <div class="log-controls" style="margin-top: 10px;">
-                <strong>來源:</strong>
-                <label><input type="checkbox" name="log-source" value="colab_setup" checked> Setup</label>
-                <label><input type="checkbox" name="log-source" value="orchestrator" checked> Orchestrator</label>
-                <label><input type="checkbox" name="log-source" value="api_server" checked> API Server</label>
-                <label><input type="checkbox" name="log-source" value="worker" checked> Worker</label>
-            </div>
-            <div style="margin-top: 16px; display: flex; gap: 10px;">
-                <button id="fetch-logs-btn">🔄 更新日誌</button>
-                <button id="copy-logs-btn">📋 複製日誌</button>
-            </div>
-            <pre id="log-output" class="transcript-output" style="margin-top: 16px; min-height: 200px; max-height: 500px; overflow-y: auto;">點擊「更新日誌」以載入...</pre>
-        </div>
 
         <!-- 檔案預覽區 -->
         <div id="preview-area" class="card hidden">
@@ -782,12 +758,6 @@
             const uploadCookiesBtn = document.getElementById('upload-cookies-btn'); // JULES'S NEW FEATURE
             const cookiesInput = document.getElementById('cookies-input'); // JULES'S NEW FEATURE
 
-            // --- 日誌檢視器元素 ---
-            const fetchLogsBtn = document.getElementById('fetch-logs-btn');
-            const logOutput = document.getElementById('log-output');
-            const copyLogsBtn = document.getElementById('copy-logs-btn');
-            const logLevelCheckboxes = document.querySelectorAll('input[name="log-level"]');
-            const logSourceCheckboxes = document.querySelectorAll('input[name="log-source"]');
 
             // --- 全域狀態變數 ---
             let uploadedFiles = [];
@@ -1245,13 +1215,15 @@
                 const progressContainer = taskElement.querySelector('.task-progress-container');
                 const progressBar = taskElement.querySelector('.task-progress-bar');
 
+                // JULES'S FIX: Differentiate intermediate completion from final completion
                 if (payload.status === 'completed' && payload.task_type === 'youtube_download') {
                     statusSpan.textContent = '音訊下載完成，等待 AI 分析...';
-                    statusSpan.className = 'task-status status-processing';
+                    statusSpan.className = 'task-status status-processing'; // Keep it looking "in progress"
                     if (progressContainer) {
                         const bar = progressContainer.querySelector('.task-progress-bar');
-                        if (bar) bar.style.width = '50%';
+                        if (bar) bar.style.width = '50%'; // Show 50% progress for the chain
                     }
+                    // Crucially, we return here to prevent the task from being moved to the "completed" list prematurely.
                     return;
                 }
 
@@ -1640,9 +1612,22 @@
             };
 
             const loadGeminiModels = async () => {
+                logAction('load-gemini-models-start');
                 try {
-                    const modelsRes = await fetch('/api/youtube/models');
-                    if (!modelsRes.ok) throw new Error('無法載入模型列表');
+                    const apiKey = localStorage.getItem('googleApiKey');
+                    if (!apiKey) {
+                        throw new Error('尚未在 localStorage 中找到 API 金鑰。');
+                    }
+                    const modelsRes = await fetch('/api/youtube/models', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ api_key: apiKey })
+                    });
+
+                    if (!modelsRes.ok) {
+                         const errorData = await modelsRes.json();
+                         throw new Error(errorData.detail || '無法載入模型列表');
+                    }
                     const modelsData = await modelsRes.json();
                     geminiModelSelect.innerHTML = '';
                     modelsData.models.forEach(model => {
@@ -1654,8 +1639,9 @@
                     logAction('load-gemini-models-success');
                 } catch (error) {
                     console.error("載入 Gemini 模型時出錯:", error);
-                    logAction('load-gemini-models-failed');
+                    logAction('load-gemini-models-failed', error.message);
                     geminiModelSelect.innerHTML = `<option>${error.message}</option>`;
+                    updateApiKeyUI('invalid', `無法載入模型: ${error.message}`);
                 }
             };
 
@@ -1854,12 +1840,21 @@
                 button.textContent = '正在建立任務...';
 
                 try {
+                    const apiKey = localStorage.getItem('googleApiKey');
+                    if (!downloadOnly && !apiKey) {
+                        showStatusMessage('錯誤：找不到已儲存的 API 金鑰，無法執行 AI 分析。', true);
+                        button.disabled = false;
+                        button.textContent = originalText;
+                        return;
+                    }
+
                     const payload = {
                         requests: requests,
                         model: geminiModelSelect.value,
                         download_only: downloadOnly,
                         tasks: selectedTasks.join(','),
-                        output_format: ytOutputFormatSelect.value
+                        output_format: ytOutputFormatSelect.value,
+                        api_key: apiKey // 將金鑰加入 payload
                     };
                     const response = await fetch('/api/youtube/process', {
                         method: 'POST',
@@ -2066,38 +2061,6 @@
             startPolling(); // Start the backup polling mechanism
             updateFileDisplay();
 
-            // --- 日誌檢視器邏輯 ---
-            fetchLogsBtn.addEventListener('click', async () => {
-                logAction('click-fetch-logs');
-                logOutput.textContent = '載入中...';
-                try {
-                    const levels = Array.from(document.querySelectorAll('input[name="log-level"]:checked')).map(el => el.value);
-                    const sources = Array.from(document.querySelectorAll('input[name="log-source"]:checked')).map(el => el.value);
-                    const params = new URLSearchParams();
-                    levels.forEach(level => params.append('level', level));
-                    sources.forEach(source => params.append('source', source));
-                    const response = await fetch(`/api/logs?${params.toString()}`);
-                    if (!response.ok) throw new Error(`伺服器錯誤: ${response.statusText}`);
-                    const logs = await response.json();
-                    if (logs.length === 0) {
-                        logOutput.textContent = '找不到符合條件的日誌。';
-                    } else {
-                        logOutput.textContent = logs.map(log => `[${new Date(log.timestamp).toLocaleString()}] [${log.source}] [${log.level}] ${log.message}`).join('\n');
-                    }
-                } catch (error) {
-                    logOutput.textContent = `載入日誌時發生錯誤: ${error.message}`;
-                }
-            });
-
-            copyLogsBtn.addEventListener('click', () => {
-                logAction('click-copy-logs');
-                navigator.clipboard.writeText(logOutput.textContent)
-                    .then(() => showStatusMessage('日誌已複製到剪貼簿！', false, 3000))
-                    .catch(err => showStatusMessage('複製失敗: ' + err, true));
-            });
-
-            logLevelCheckboxes.forEach(cb => cb.addEventListener('change', () => logAction('toggle-log-level-filter', cb.value)));
-            logSourceCheckboxes.forEach(cb => cb.addEventListener('change', () => logAction('toggle-log-source-filter', cb.value)));
 
             // --- 系統狀態輪詢 ---
             const cpuLabel = document.getElementById('cpu-label');
