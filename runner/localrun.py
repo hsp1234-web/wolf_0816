@@ -21,7 +21,7 @@ from db.database import initialize_database
 
 
 GLOBAL_TIMEOUT = 120
-LOG_WATCHDOG_TIMEOUT = 20
+LOG_WATCHDOG_TIMEOUT = 10  # 使用者要求的 10 秒看門狗
 
 # --- 日誌設定 ---
 logging.basicConfig(
@@ -29,12 +29,12 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     stream=sys.stdout
 )
-log = logging.getLogger('LocalRun')
+log = logging.getLogger('LocalLauncher')
 
-class LocalTestRunner:
+class LocalServerLauncher:
     """
-    負責在本地環境中完整執行端對端測試的類別。
-    它會處理依賴安裝、服務啟動、日誌監控、測試執行和最終清理。
+    負責在本地環境中啟動和監控後端服務。
+    它會處理依賴安裝、服務啟動、健康檢查和最終清理。
     """
 
     def __init__(self, mock_mode=True):
@@ -42,15 +42,21 @@ class LocalTestRunner:
         self.processes = []
         self.api_port = None
         self.api_url = None
+        self.log_queue = queue.Queue()
+        self.last_log_time = time.time()
 
     def _install_dependencies(self):
         """安裝專案依賴。"""
-        log.info("📋 步驟 1/5: 檢查並安裝 Python 依賴...")
+        log.info("📋 步驟 1/4: 檢查並安裝 Python 依賴...")
         req_file = ROOT_DIR / "requirements-server.txt"
         if not req_file.exists():
             log.warning(f"⚠️ 未找到依賴檔案 {req_file}，跳過安裝。")
             return True
         try:
+            # JULES'S FIX (2025-08-16): 新增 Playwright 瀏覽器安裝步驟
+            log.info("  - 安裝 Playwright 瀏覽器 (Chromium)...")
+            subprocess.run(["npx", "playwright", "install", "chromium"], check=True, capture_output=True)
+            log.info("  - 安裝 Python 套件...")
             command = [sys.executable, "-m", "pip", "install", "-q", "-r", str(req_file)]
             subprocess.run(command, check=True, capture_output=True, text=True)
             log.info("✅ 依賴安裝完成。")
@@ -61,7 +67,7 @@ class LocalTestRunner:
 
     def _initialize_db(self):
         """呼叫資料庫初始化函式，確保資料表已建立。"""
-        log.info("🛠️ 步驟 2/5: 初始化資料庫...")
+        log.info("🛠️ 步驟 2/4: 初始化資料庫...")
         try:
             initialize_database()
             log.info("✅ 資料庫初始化成功。")
@@ -70,12 +76,19 @@ class LocalTestRunner:
             log.error(f"❌ 資料庫初始化失敗: {e}", exc_info=True)
             return False
 
+    def _enqueue_output(self, stream, process_name):
+        """從給定的流中讀取行並將其放入佇列。"""
+        for line in iter(stream.readline, ''):
+            self.log_queue.put((process_name, line.strip()))
+        stream.close()
+
     def _start_services(self):
-        """啟動所有必要的後端服務。"""
-        log.info(f"🚀 步驟 3/5: 啟動後端服務 (模式: {'模擬' if self.mock_mode else '真實'})")
+        """啟動所有必要的後端服務，並為其輸出建立監控執行緒。"""
+        log.info(f"🚀 步驟 3/4: 啟動後端服務 (模式: {'模擬' if self.mock_mode else '真實'})")
         env = os.environ.copy()
         env["PYTHONPATH"] = str(ROOT_DIR / "src") + os.pathsep + env.get("PYTHONPATH", "")
 
+        # --- 啟動 DB Manager ---
         db_manager_cmd = [sys.executable, str(ROOT_DIR / "src" / "db" / "manager.py")]
         db_proc = subprocess.Popen(
             db_manager_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -84,6 +97,7 @@ class LocalTestRunner:
         self.processes.append(("db_manager", db_proc))
         log.info(f"  - DB Manager (PID: {db_proc.pid}) 啟動中...")
 
+        # --- 啟動 API Server ---
         self.api_port = self._find_free_port()
         self.api_url = f"http://127.0.0.1:{self.api_port}"
         log.info(f"  - 為 API 伺服器指派埠號: {self.api_port}")
@@ -99,11 +113,17 @@ class LocalTestRunner:
         )
         self.processes.append(("api_server", api_proc))
         log.info(f"  - API Server (PID: {api_proc.pid}) 啟動中...")
+
+        # --- 為所有服務建立日誌監控 ---
+        for name, proc in self.processes:
+            thread = threading.Thread(target=self._enqueue_output, args=(proc.stdout, name), daemon=True)
+            thread.start()
+
         return True
 
     def _run_backend_health_check(self) -> bool:
         """輪詢後端健康檢查端點，直到其就緒或超時。"""
-        log.info(f"🩺 步驟 4/5: 執行後端健康檢查 (目標: {self.api_url}/api/health)...")
+        log.info(f"🩺 步驟 4/4: 執行後端健康檢查 (目標: {self.api_url}/api/health)...")
         start_time = time.time()
         health_check_timeout = 30
 
@@ -117,48 +137,13 @@ class LocalTestRunner:
                         body = response.read().decode('utf-8', 'ignore')
                         log.warning(f"  - 健康檢查未通過，狀態碼: {response.status}。回應: {body}。正在重試...")
             except Exception as e:
+                # 在健康檢查期間，我們預期會看到日誌輸出，所以重置看門狗計時器
+                self.last_log_time = time.time()
                 log.warning(f"  - 健康檢查請求失敗: {e}。正在重試...")
             time.sleep(2)
 
         log.error("❌ 後端健康檢查超時。服務未能進入健康狀態。")
         return False
-
-    def _run_full_integration_test(self):
-        """執行完整的端對端整合測試。"""
-        log.info("🧪 步驟 5/5: 執行整合測試...")
-        # JULES'S FIX (2025-08-16): 改為自動探索 e2e_tests/ 目錄下的所有測試，
-        # 而非指向單一檔案，這樣更具擴展性。
-        test_directory = ROOT_DIR / "e2e_tests"
-        if not test_directory.exists():
-            log.error(f"❌ 測試目錄不存在: {test_directory}")
-            return False
-
-        test_cmd = [sys.executable, "-m", "pytest", str(test_directory)]
-        env = {"TARGET_URL": self.api_url, "PYTHONPATH": str(ROOT_DIR / "src")}
-
-        try:
-            result = subprocess.run(
-                test_cmd, capture_output=True, text=True, encoding='utf-8',
-                timeout=90, env={**os.environ, **env}
-            )
-            if result.returncode == 0:
-                log.info("✅ 整合測試成功！")
-                print(result.stdout)
-                return True
-            else:
-                log.error(f"❌ 整合測試失敗，返回碼: {result.returncode}")
-                print("--- [Pytest STDOUT] ---")
-                print(result.stdout)
-                if result.stderr:
-                    log.error("--- [Pytest STDERR] ---")
-                    print(result.stderr)
-                return False
-        except subprocess.TimeoutExpired:
-            log.error("❌ 整合測試執行超時！")
-            return False
-        except Exception:
-            log.error("❌ 執行整合測試時發生未預期的錯誤:", exc_info=True)
-            return False
 
     def _find_free_port(self) -> int:
         """尋找一個空閒的 TCP 埠號。"""
@@ -180,33 +165,59 @@ class LocalTestRunner:
                     os.killpg(os.getpgid(proc.pid), subprocess.signal.SIGKILL)
         log.info("👋 所有服務已關閉。")
 
-    def run(self) -> bool:
+    def run(self):
         """
-        執行整個測試流程，並返回最終結果。
+        執行整個伺服器啟動流程，並透過日誌看門狗監控其運行狀態。
         """
-        overall_success = False
         try:
-            if not self._install_dependencies(): return False
-            if not self._initialize_db(): return False
-            if not self._start_services(): return False
-            if not self._run_backend_health_check(): return False
-            if not self._run_full_integration_test(): return False
+            if not self._install_dependencies(): return
+            if not self._initialize_db(): return
+            if not self._start_services(): return
+            if not self._run_backend_health_check(): return
 
-            log.info("✅ 系統已通過核心驗證，準備就緒。")
-            overall_success = True
-            return True
+            log.info("✅✅✅ 伺服器已成功啟動！ ✅✅✅")
+            log.info(f"API 伺服器正在監聽: {self.api_url}")
+            log.info(f"日誌看門狗已啟動，超時設定為 {LOG_WATCHDOG_TIMEOUT} 秒。")
+            log.info("現在可以開始進行手動測試。按下 Ctrl+C 來關閉所有服務。")
 
+            while True:
+                # 檢查是否有子程序意外終止
+                for name, proc in self.processes:
+                    if proc.poll() is not None:
+                        log.error(f"🔥 服務 '{name}' (PID: {proc.pid}) 已意外終止！")
+                        raise RuntimeError(f"服務 {name} 異常退出。")
+
+                # 處理日誌佇列
+                had_output = False
+                while not self.log_queue.empty():
+                    name, line = self.log_queue.get_nowait()
+                    print(f"[{name}] {line}")
+                    had_output = True
+
+                if had_output:
+                    self.last_log_time = time.time()
+
+                # 檢查看門狗是否超時
+                if time.time() - self.last_log_time > LOG_WATCHDOG_TIMEOUT:
+                    log.error(f"🔥🔥🔥 日誌看門狗超時！超過 {LOG_WATCHDOG_TIMEOUT} 秒無任何日誌輸出。")
+                    raise RuntimeError("日誌看門狗觸發，系統可能已無回應。")
+
+                time.sleep(0.5)
+
+        except (KeyboardInterrupt, RuntimeError) as e:
+            if isinstance(e, KeyboardInterrupt):
+                log.info("\n🛑 偵測到使用者手動中斷 (Ctrl+C)。")
+            else:
+                log.error(f"\n🛑 執行期間發生錯誤: {e}")
         except Exception as e:
             log.error(f"執行流程中發生未預期嚴重錯誤: {e}", exc_info=True)
-            return False
         finally:
             self._shutdown()
-            if not overall_success:
-                log.error("🔥 啟動或驗證流程未成功完成。")
+            log.info("🔥 啟動器已關閉。")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="本地端對端測試啟動器 v2。")
+    parser = argparse.ArgumentParser(description="本地後端服務啟動器。")
     parser.add_argument(
         "--no-mock",
         action="store_false",
@@ -215,12 +226,8 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    runner = LocalTestRunner(mock_mode=args.mock_mode)
-    success = runner.run()
+    launcher = LocalServerLauncher(mock_mode=args.mock_mode)
+    launcher.run()
 
-    if success:
-        log.info("🎉 測試流程圓滿成功！")
-        sys.exit(0)
-    else:
-        log.error("🔥 測試流程失敗。")
-        sys.exit(1)
+    log.info("🎉 啟動器正常退出。")
+    sys.exit(0)
