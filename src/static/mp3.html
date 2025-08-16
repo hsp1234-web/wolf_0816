@@ -1640,9 +1640,22 @@
             };
 
             const loadGeminiModels = async () => {
+                logAction('load-gemini-models-start');
                 try {
-                    const modelsRes = await fetch('/api/youtube/models');
-                    if (!modelsRes.ok) throw new Error('無法載入模型列表');
+                    const apiKey = localStorage.getItem('googleApiKey');
+                    if (!apiKey) {
+                        throw new Error('尚未在 localStorage 中找到 API 金鑰。');
+                    }
+                    const modelsRes = await fetch('/api/youtube/models', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ api_key: apiKey })
+                    });
+
+                    if (!modelsRes.ok) {
+                         const errorData = await modelsRes.json();
+                         throw new Error(errorData.detail || '無法載入模型列表');
+                    }
                     const modelsData = await modelsRes.json();
                     geminiModelSelect.innerHTML = '';
                     modelsData.models.forEach(model => {
@@ -1654,8 +1667,9 @@
                     logAction('load-gemini-models-success');
                 } catch (error) {
                     console.error("載入 Gemini 模型時出錯:", error);
-                    logAction('load-gemini-models-failed');
+                    logAction('load-gemini-models-failed', error.message);
                     geminiModelSelect.innerHTML = `<option>${error.message}</option>`;
+                    updateApiKeyUI('invalid', `無法載入模型: ${error.message}`);
                 }
             };
 
@@ -1854,12 +1868,21 @@
                 button.textContent = '正在建立任務...';
 
                 try {
+                    const apiKey = localStorage.getItem('googleApiKey');
+                    if (!downloadOnly && !apiKey) {
+                        showStatusMessage('錯誤：找不到已儲存的 API 金鑰，無法執行 AI 分析。', true);
+                        button.disabled = false;
+                        button.textContent = originalText;
+                        return;
+                    }
+
                     const payload = {
                         requests: requests,
                         model: geminiModelSelect.value,
                         download_only: downloadOnly,
                         tasks: selectedTasks.join(','),
-                        output_format: ytOutputFormatSelect.value
+                        output_format: ytOutputFormatSelect.value,
+                        api_key: apiKey // 將金鑰加入 payload
                     };
                     const response = await fetch('/api/youtube/process', {
                         method: 'POST',

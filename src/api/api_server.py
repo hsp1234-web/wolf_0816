@@ -664,9 +664,9 @@ async def validate_api_key(request: Request):
         raise HTTPException(status_code=500, detail=f"伺服器內部錯誤: {e}")
 
 
-@app.get("/api/youtube/models")
-async def get_youtube_models():
-    """獲取可用的 Gemini 模型列表。"""
+@app.post("/api/youtube/models")
+async def get_youtube_models(request: Request):
+    """接收包含 API 金鑰的請求，獲取可用的 Gemini 模型列表。"""
     # 在模擬模式下，回傳一個固定的假列表
     if IS_MOCK_MODE:
         return {
@@ -676,15 +676,21 @@ async def get_youtube_models():
             ]
         }
 
-    # 真實模式下，從 gemini_processor.py 獲取
-    # 注意：此端點現在依賴於一個有效的 GOOGLE_API_KEY 環境變數
+    # 無狀態邏輯：直接從請求中獲取 API 金鑰
     try:
-        if not os.environ.get("GOOGLE_API_KEY"):
-             raise HTTPException(status_code=401, detail="後端尚未設定有效的 Google API 金鑰。")
+        payload = await request.json()
+        api_key = payload.get("api_key")
+        if not api_key:
+            raise HTTPException(status_code=400, detail="請求中未提供 API 金鑰。")
 
         tool_script_path = ROOT_DIR / "src" / "tools" / "gemini_processor.py"
         cmd = [sys.executable, str(tool_script_path), "--command=list_models"]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True, encoding='utf-8')
+
+        # 將從請求中收到的金鑰傳遞給子程序
+        env = os.environ.copy()
+        env["GOOGLE_API_KEY"] = api_key
+
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, encoding='utf-8', env=env)
         models = json.loads(result.stdout)
         return {"models": models}
     except subprocess.CalledProcessError as e:
@@ -711,16 +717,19 @@ async def process_youtube_urls(request: Request):
 
     # 新的彈性參數
     model = payload.get("model")
+    api_key = payload.get("api_key") # 從請求中獲取 API 金鑰
     tasks_to_run = payload.get("tasks", "summary,transcript") # e.g., "summary,transcript,translate"
     output_format = payload.get("output_format", "html") # "html" or "txt"
     download_only = payload.get("download_only", False)
     download_type = payload.get("download_type", "audio") # JULES'S NEW FEATURE
 
     if not requests_list:
-        # 在加入相容性邏輯後，更新錯誤訊息
+        # 在加入相容性 logique 後，更新錯誤訊息
         raise HTTPException(status_code=400, detail="請求中必須包含 'requests' 或 'urls'。")
     if not download_only and not model:
         raise HTTPException(status_code=400, detail="執行 AI 分析時必須提供 'model'。")
+    if not download_only and not api_key:
+        raise HTTPException(status_code=400, detail="執行 AI 分析時必須提供 'api_key'。")
 
     tasks = []
     for req_item in requests_list:
@@ -748,7 +757,8 @@ async def process_youtube_urls(request: Request):
                 "model": model,
                 "output_dir": "transcripts",
                 "tasks": tasks_to_run,
-                "output_format": output_format
+                "output_format": output_format,
+                "api_key": api_key
             }
 
             db_client.add_task(download_task_id, json.dumps(download_payload), task_type='youtube_download')
@@ -1023,6 +1033,9 @@ def trigger_youtube_processing(task_id: str, loop: asyncio.AbstractEventLoop):
             process_task_info = db_client.get_task_status(dependent_task_id)
             process_payload = json.loads(process_task_info['payload'])
             model = process_payload['model']
+            api_key = process_payload.get('api_key')
+            if not api_key:
+                raise ValueError("任務 payload 中缺少 API 金鑰，AI 分析無法進行。")
             tasks_to_run = process_payload.get('tasks', 'summary,transcript')
             output_format = process_payload.get('output_format', 'html')
 
@@ -1049,6 +1062,7 @@ def trigger_youtube_processing(task_id: str, loop: asyncio.AbstractEventLoop):
             ]
 
             proc_env = os.environ.copy()
+            proc_env["GOOGLE_API_KEY"] = api_key # 將金鑰加入子程序的環境
             process_gemini = subprocess.Popen(
                 cmd_process, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', env=proc_env
             )
