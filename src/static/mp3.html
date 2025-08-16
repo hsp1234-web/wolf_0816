@@ -1209,7 +1209,7 @@
                     const url = payload.url || payload.message || payload.task_id;
                     const taskType = payload.task_type === 'download_only' ? '僅下載音訊' : 'YouTube 分析';
                     const container = payload.task_type === 'download_only' ? document.getElementById('downloader-tasks') : ongoingTasksContainer;
-                    taskElement = createNewTaskElement(url, payload.task_id, taskType, container);
+                    taskElement = createNewTaskElement(url, payload.task_id, taskType, container, payload.url);
                 }
                 const statusSpan = taskElement.querySelector('.task-status');
                 const progressContainer = taskElement.querySelector('.task-progress-container');
@@ -1425,12 +1425,15 @@
              * @param {HTMLElement} container - 要將任務項目附加到的容器。
              * @returns {HTMLElement} 新建立的任務元素。
              */
-            const createNewTaskElement = (displayName, taskId, taskType, container = ongoingTasksContainer) => {
+            const createNewTaskElement = (displayName, taskId, taskType, container = ongoingTasksContainer, sourceUrl = '') => {
                 const noTaskMsg = container.querySelector('p');
                 if (noTaskMsg && noTaskMsg.style.display !== 'none') noTaskMsg.style.display = 'none';
 
                 const taskElement = document.createElement('div');
                 taskElement.className = 'task-item';
+                if (sourceUrl) {
+                    taskElement.dataset.sourceUrl = sourceUrl;
+                }
                 taskElement.innerHTML = `
                     <div style="flex-grow: 1; overflow: hidden; margin-right: 10px; min-width: 0;">
                         <span class="task-filename" title="${displayName}" style="display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${displayName} (${taskType})</span>
@@ -1817,8 +1820,14 @@
                     const urlInput = row.querySelector('.youtube-url-input');
                     const filenameInput = row.querySelector('.youtube-filename-input');
                     const url = urlInput.value.trim();
-                    const filename = filenameInput.value.trim();
+
+                    // JULES'S FIX: Clear any previous task elements for the same source URL
                     if (url) {
+                        document.querySelectorAll(`.task-item[data-source-url="${url}"]`).forEach(el => el.remove());
+                    }
+                    const filename = filenameInput.value.trim();
+                    // JULES'S FIX: Add basic URL validation to prevent sending garbage data
+                    if (url && (url.toLowerCase().startsWith('http') || url.toLowerCase().startsWith('www.'))) {
                         requests.push({ url, filename });
                     }
                 });
@@ -1870,7 +1879,7 @@
                         const displayId = task.task_id;
                         const finalId = task.final_task_id || task.task_id;
 
-                        const taskElement = createNewTaskElement(task.url, displayId, taskType);
+                        const taskElement = createNewTaskElement(task.url, displayId, taskType, ongoingTasksContainer, task.url);
 
                         // JULES'S FIX: Map the final task ID to the element created with the initial ID
                         if (displayId !== finalId) {
@@ -1926,12 +1935,28 @@
 
             const processDownloaderRequest = async () => {
                 logAction('click-start-download');
-                const urls = downloaderUrlsInput.value.split('\n').map(u => u.trim()).filter(u => u);
-                if (urls.length === 0) {
+                const rawUrls = downloaderUrlsInput.value.split('\n').map(u => u.trim()).filter(u => u);
+                if (rawUrls.length === 0) {
                     showStatusMessage('請輸入至少一個網址。', true);
                     return;
                 }
-                // JULES'S FIX: The /api/youtube/process endpoint now expects a 'requests' object array.
+
+                // JULES'S FIX: Add basic URL validation to prevent sending garbage data
+                const urls = rawUrls.filter(u => u.toLowerCase().startsWith('http') || u.toLowerCase().startsWith('www.'));
+                if (urls.length !== rawUrls.length) {
+                    showStatusMessage('已過濾掉無效的網址格式。請確保網址以 http 或 www 開頭。', true, 6000);
+                }
+
+                // JULES'S FIX: Clear any previous task elements for the same source URLs
+                urls.forEach(url => {
+                    document.querySelectorAll(`.task-item[data-source-url="${url}"]`).forEach(el => el.remove());
+                });
+
+                if (urls.length === 0) {
+                    showStatusMessage('請輸入有效的網址。', true);
+                    return;
+                }
+
                 const requests = urls.map(url => ({ url: url, filename: '' }));
                 const downloadType = document.querySelector('input[name="download-type"]:checked').value;
                 const payload = {
@@ -1953,7 +1978,7 @@
                     result.tasks.forEach(task => {
                         const taskType = `僅下載${downloadType === 'video' ? '影片' : '音訊'}`;
                         const downloaderTaskContainer = document.getElementById('downloader-tasks');
-                        createNewTaskElement(task.url, task.task_id, taskType, downloaderTaskContainer);
+                        createNewTaskElement(task.url, task.task_id, taskType, downloaderTaskContainer, task.url);
                         if (socket && socket.readyState === WebSocket.OPEN) {
                             socket.send(JSON.stringify({ type: 'START_YOUTUBE_PROCESSING', payload: { task_id: task.task_id }}));
                         }
@@ -2047,8 +2072,12 @@
                 // It intentionally ignores the 'downloader-tasks' list, which is managed separately by its own handler.
                 const parentId = taskElement.parentElement ? taskElement.parentElement.id : null;
                 if (parentId !== 'downloader-tasks' && parentId !== 'youtube-file-browser') {
-                    const isCompleted = payload.status === 'completed' || payload.status === 'failed';
-                    const correctContainer = isCompleted ? completedTasksContainer : ongoingTasksContainer;
+                    // JULES'S FIX: A task is considered "finally" completed only if its status is 'completed'
+                    // AND it's NOT a 'youtube_download' task (which is an intermediate step).
+                    // 'gemini_process' tasks are handled separately by addYoutubeReportToList and removed, so they don't need a special check here.
+                    const isFinallyCompleted = (payload.status === 'completed' && payload.task_type !== 'youtube_download') || payload.status === 'failed';
+
+                    const correctContainer = isFinallyCompleted ? completedTasksContainer : ongoingTasksContainer;
                     if (taskElement.parentElement !== correctContainer) {
                         correctContainer.appendChild(taskElement);
                     }
