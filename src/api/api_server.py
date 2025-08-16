@@ -125,6 +125,8 @@ app.add_middleware(
 UPLOADS_DIR = ROOT_DIR / "uploads"
 # 靜態檔案目錄
 STATIC_DIR = ROOT_DIR / "src" / "static"
+# API 金鑰的共享儲存檔案
+API_KEY_STORAGE_FILE = UPLOADS_DIR / ".api_key_storage"
 
 # 確保目錄存在
 UPLOADS_DIR.mkdir(exist_ok=True)
@@ -647,7 +649,13 @@ async def validate_api_key(request: Request):
         result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', env=env, check=False)
 
         if result.returncode == 0:
-            log.info(f"API 金鑰驗證成功。")
+            log.info(f"API 金鑰驗證成功。正在將其寫入共享儲存檔案: {API_KEY_STORAGE_FILE}")
+            try:
+                with open(API_KEY_STORAGE_FILE, "w", encoding="utf-8") as f:
+                    f.write(api_key)
+            except IOError as e:
+                log.error(f"無法寫入 API 金鑰檔案: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=f"無法儲存 API 金鑰: {e}")
             return {"valid": True}
         else:
             log.warning(f"API 金鑰驗證失敗。Stderr: {result.stderr.strip()}")
@@ -676,15 +684,24 @@ async def get_youtube_models():
             ]
         }
 
-    # 真實模式下，從 gemini_processor.py 獲取
-    # 注意：此端點現在依賴於一個有效的 GOOGLE_API_KEY 環境變數
+    # 新邏輯：從共享檔案獲取 API 金鑰
     try:
-        if not os.environ.get("GOOGLE_API_KEY"):
-             raise HTTPException(status_code=401, detail="後端尚未設定有效的 Google API 金鑰。")
+        try:
+            with open(API_KEY_STORAGE_FILE, "r", encoding="utf-8") as f:
+                api_key = f.read().strip()
+            if not api_key:
+                raise FileNotFoundError  # 將空檔案視為找不到
+        except FileNotFoundError:
+            raise HTTPException(status_code=401, detail="後端尚未設定或找不到有效的 Google API 金鑰。請先驗證金鑰。")
 
         tool_script_path = ROOT_DIR / "src" / "tools" / "gemini_processor.py"
         cmd = [sys.executable, str(tool_script_path), "--command=list_models"]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True, encoding='utf-8')
+
+        # 將從檔案讀取的金鑰傳遞給子程序
+        env = os.environ.copy()
+        env["GOOGLE_API_KEY"] = api_key
+
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, encoding='utf-8', env=env)
         models = json.loads(result.stdout)
         return {"models": models}
     except subprocess.CalledProcessError as e:
@@ -1048,7 +1065,18 @@ def trigger_youtube_processing(task_id: str, loop: asyncio.AbstractEventLoop):
                 "--output-format", output_format
             ]
 
+            # 新增：從共享檔案獲取 API 金鑰，確保背景任務能正確驗證
+            try:
+                with open(API_KEY_STORAGE_FILE, "r", encoding="utf-8") as f:
+                    api_key = f.read().strip()
+                if not api_key:
+                    raise FileNotFoundError
+            except FileNotFoundError:
+                raise ValueError("無法在共享儲存中找到 Google API 金鑰，AI 分析無法進行。")
+
             proc_env = os.environ.copy()
+            proc_env["GOOGLE_API_KEY"] = api_key # 將金鑰加入子程序的環境
+
             process_gemini = subprocess.Popen(
                 cmd_process, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', env=proc_env
             )
