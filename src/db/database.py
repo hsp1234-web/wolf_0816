@@ -466,6 +466,59 @@ def check_tables_exist() -> tuple[bool, str]:
             conn.close()
 
 
+def delete_task(task_id: str) -> bool:
+    """
+    根據 task_id 刪除一個任務。
+    主要用於測試後的清理。
+    """
+    sql = "DELETE FROM tasks WHERE task_id = ?"
+    conn = get_db_connection()
+    if not conn: return False
+    try:
+        with conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (task_id,))
+            # The rowcount attribute tells us how many rows were affected.
+            if cursor.rowcount > 0:
+                log.info(f"✅ 已從資料庫成功刪除任務: {task_id}")
+                return True
+            else:
+                log.warning(f"⚠️ 嘗試刪除一個不存在的任務: {task_id}")
+                return False
+    except sqlite3.Error as e:
+        log.error(f"❌ 刪除任務 {task_id} 時發生資料庫錯誤: {e}", exc_info=True)
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def delete_task(task_id: str) -> bool:
+    """
+    根據 task_id 刪除一個任務。
+    主要用於測試後的清理。
+    """
+    sql = "DELETE FROM tasks WHERE task_id = ?"
+    conn = get_db_connection()
+    if not conn: return False
+    try:
+        with conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (task_id,))
+            if cursor.rowcount > 0:
+                log.info(f"✅ 已從資料庫成功刪除任務: {task_id}")
+                return True
+            else:
+                log.warning(f"⚠️ 嘗試刪除一個不存在的任務: {task_id}")
+                return False
+    except sqlite3.Error as e:
+        log.error(f"❌ 刪除任務 {task_id} 時發生資料庫錯誤: {e}", exc_info=True)
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
 if __name__ == "__main__":
     # 直接執行此檔案時，會進行初始化
     initialize_database()

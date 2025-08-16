@@ -828,12 +828,47 @@
 
             const updateTaskLists = (tasks) => {
                 if (!Array.isArray(tasks)) return;
-                // Add a console log for debugging the raw data from the API
-                // console.log("DEBUG: Raw tasks from API:", JSON.stringify(tasks));
 
+                const processedTaskIds = new Set();
+                const taskMap = new Map(tasks.map(t => [t.task_id, t]));
+
+                // 1. 識別並處理所有完整的 YouTube 任務鏈
+                tasks.forEach(task => {
+                    if (task.type === 'gemini_process' && task.depends_on) {
+                        const initialTaskId = task.depends_on;
+                        const initialTask = taskMap.get(initialTaskId);
+
+                        if (initialTask) {
+                            processedTaskIds.add(initialTask.task_id);
+                            processedTaskIds.add(task.task_id);
+
+                            let taskElement = taskElements.get(initialTask.task_id) || taskElements.get(task.task_id);
+
+                            if (!taskElement) {
+                                const url = (initialTask.payload && initialTask.payload.url) ? initialTask.payload.url : 'YouTube 分析';
+                                const taskType = 'YouTube 分析';
+                                taskElement = createNewTaskElement(url, initialTask.task_id, taskType, null, url);
+                            }
+
+                            taskElements.set(initialTask.task_id, taskElement);
+                            taskElements.set(task.task_id, taskElement);
+                            taskElement.dataset.displayId = initialTask.task_id;
+                            taskElement.dataset.finalId = task.task_id;
+
+                            dispatchStatusUpdate(task);
+                        }
+                    }
+                });
+
+                // 2. 處理所有尚未處理的獨立任務
+                tasks.forEach(task => {
+                    if (!processedTaskIds.has(task.task_id)) {
+                        dispatchStatusUpdate(task);
+                    }
+                });
+
+                // 3. 移除在最新 API 回應中已不存在的舊任務
                 const taskIdsFromResponse = new Set(tasks.map(t => t.task_id));
-
-                // First, remove any tasks from the UI that are no longer in the backend response
                 taskElements.forEach((element, taskId) => {
                     if (!taskIdsFromResponse.has(taskId)) {
                         element.remove();
@@ -841,14 +876,14 @@
                     }
                 });
 
-                // Then, update or add tasks
-                tasks.forEach(dispatchStatusUpdate);
-
-                // Finally, update the "no tasks" messages
+                // 4. 更新「無任務」的提示訊息
                 noOngoingTaskMsg.style.display = ongoingTasksContainer.querySelectorAll('.task-item').length > 0 ? 'none' : 'block';
                 noCompletedTaskMsg.style.display = completedTasksContainer.querySelectorAll('.task-item').length > 0 ? 'none' : 'block';
                 const downloaderTasksContainer = document.getElementById('downloader-tasks');
-                document.getElementById('no-downloader-task-msg').style.display = downloaderTasksContainer.childElementCount > 0 ? 'none' : 'block';
+                if (downloaderTasksContainer) {
+                    const noMsg = document.getElementById('no-downloader-task-msg');
+                    if(noMsg) noMsg.style.display = downloaderTasksContainer.childElementCount > 0 ? 'none' : 'block';
+                }
             };
 
             const initialLoad = async () => {
@@ -902,14 +937,18 @@
                 logAction('open-preview-modal', taskId);
                 const modalBody = document.querySelector('#preview-modal .modal-body');
 
+                const urlParts = previewUrl.split('/');
+                const fileName = urlParts.pop();
+                const encodedFileName = encodeURIComponent(fileName);
+                const safePreviewUrl = [...urlParts, encodedFileName].join('/');
+
                 modalBody.innerHTML = '';
                 modalTitle.textContent = `預覽: ${filename}`;
 
                 if (fileType.startsWith('video/')) {
-                    modalBody.dataset.lastPreviewUrl = previewUrl; // For testability
+                    modalBody.dataset.lastPreviewUrl = safePreviewUrl; // For testability
                     const video = document.createElement('video');
-                    // JULES'S FIX (2025-08-16): Construct an absolute URL to be more robust
-                    video.src = new URL(previewUrl, window.location.origin).href;
+                    video.src = new URL(safePreviewUrl, window.location.origin).href;
                     video.controls = true;
                     video.autoplay = true;
                     video.style.width = '100%';
@@ -919,10 +958,9 @@
                     };
                     modalBody.appendChild(video);
                 } else if (fileType.startsWith('audio/')) {
-                    modalBody.dataset.lastPreviewUrl = previewUrl; // For testability
+                    modalBody.dataset.lastPreviewUrl = safePreviewUrl; // For testability
                     const audio = document.createElement('audio');
-                    // JULES'S FIX (2025-08-16): Construct an absolute URL to be more robust
-                    audio.src = new URL(previewUrl, window.location.origin).href;
+                    audio.src = new URL(safePreviewUrl, window.location.origin).href;
                     audio.controls = true;
                     audio.autoplay = true;
                     audio.style.width = '100%';
@@ -932,7 +970,7 @@
                     modalBody.appendChild(audio);
                 } else if (fileType === 'text/html') {
                     const iframe = document.createElement('iframe');
-                    iframe.src = previewUrl;
+                    iframe.src = safePreviewUrl;
                     iframe.style.width = '100%';
                     iframe.style.height = '75vh';
                     iframe.style.border = 'none';
@@ -946,7 +984,7 @@
                     pre.textContent = '正在載入預覽...';
                     modalBody.appendChild(pre);
                     try {
-                        const response = await fetch(previewUrl);
+                        const response = await fetch(safePreviewUrl);
                         if (!response.ok) throw new Error(`伺服器錯誤: ${response.statusText}`);
                         pre.textContent = await response.text();
                     } catch (error) {
@@ -954,16 +992,14 @@
                         pre.style.color = 'red';
                     }
                 } else {
-                    modalBody.innerHTML = `<p style="text-align: center; margin-top: 20px;">此檔案類型 (${fileType}) 無法直接預覽。<br><br><a href="${previewUrl}" target="_blank" rel="noopener noreferrer">點此在新分頁中打開</a></p>`;
+                    modalBody.innerHTML = `<p style="text-align: center; margin-top: 20px;">此檔案類型 (${fileType}) 無法直接預覽。<br><br><a href="${safePreviewUrl}" target="_blank" rel="noopener noreferrer">點此在新分頁中打開</a></p>`;
                 }
 
-                // JULES'S FIX (2025-08-13): 確保下載按鈕總是正確指向 API 端點。
-                // taskId 必須有效才能使此功能運作。
                 modalDownloadBtn.href = `/api/download/${taskId}`;
                 modalDownloadBtn.download = filename;
 
                 modalCopyLinkBtn.onclick = () => {
-                    const publicUrl = new URL(previewUrl, window.location.origin).href;
+                    const publicUrl = new URL(safePreviewUrl, window.location.origin).href;
                     logAction('copy-modal-link', publicUrl);
                     navigator.clipboard.writeText(publicUrl).then(() => {
                         showStatusMessage('報告連結已複製！', false, 3000);
@@ -1091,6 +1127,7 @@
             };
 
             const handleTranscriptionUpdate = (type, payload) => {
+                console.log(`DEBUG: handleTranscriptionUpdate, type: ${type}, taskId: ${payload.task_id}`);
                 if (!payload || !payload.task_id) return;
                 let taskElement = taskElements.get(payload.task_id);
                 if (!taskElement) {
@@ -1211,6 +1248,7 @@
             };
 
             const handleYoutubeStatus = (payload) => {
+                console.log(`DEBUG: handleYoutubeStatus, taskId: ${payload.task_id}, status: ${payload.status}, type: ${payload.task_type}`);
                 if (!payload || !payload.task_id) return;
 
                 if (payload.status === 'completed' && payload.task_type === 'gemini_process') {
@@ -2119,6 +2157,7 @@
 
             // JULES'S NEW FEATURE: Load task history on page load
             const dispatchStatusUpdate = (task) => {
+                console.log(`DEBUG: dispatchStatusUpdate for task ${task.task_id}`);
                 const payload = {
                     ...(task.payload || {}),
                     ...(task.result || {}),

@@ -62,6 +62,8 @@ ACTION_MAP = {
     "set_app_state": database.set_app_state,
     # JULES: 新增健康檢查動作
     "check_tables_exist": database.check_tables_exist,
+    # JULES (2025-08-16): 新增刪除任務的動作，主要用於測試清理
+    "delete_task": database.delete_task,
 }
 
 

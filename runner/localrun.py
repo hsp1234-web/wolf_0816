@@ -126,12 +126,14 @@ class LocalTestRunner:
     def _run_full_integration_test(self):
         """執行完整的端對端整合測試。"""
         log.info("🧪 步驟 5/5: 執行整合測試...")
-        test_file = ROOT_DIR / "e2e_tests" / "test_basic_flow.py"
-        if not test_file.exists():
-            log.error(f"❌ 整合測試檔案不存在: {test_file}")
+        # JULES'S FIX (2025-08-16): 改為自動探索 e2e_tests/ 目錄下的所有測試，
+        # 而非指向單一檔案，這樣更具擴展性。
+        test_directory = ROOT_DIR / "e2e_tests"
+        if not test_directory.exists():
+            log.error(f"❌ 測試目錄不存在: {test_directory}")
             return False
 
-        test_cmd = [sys.executable, "-m", "pytest", str(test_file)]
+        test_cmd = [sys.executable, "-m", "pytest", str(test_directory)]
         env = {"TARGET_URL": self.api_url, "PYTHONPATH": str(ROOT_DIR / "src")}
 
         try:

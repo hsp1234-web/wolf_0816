@@ -161,6 +161,12 @@ class DBClient:
         """
         return self._send_request("check_tables_exist")
 
+    def delete_task(self, task_id: str) -> bool:
+        """
+        (主要用於測試) 根據 task_id 刪除一個任務。
+        """
+        return self._send_request("delete_task", {"task_id": task_id})
+
 # 可選：提供一個簡單的方式來獲取客戶端實例
 _client_instance = None
 
