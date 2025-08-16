@@ -2047,8 +2047,12 @@
                 // It intentionally ignores the 'downloader-tasks' list, which is managed separately by its own handler.
                 const parentId = taskElement.parentElement ? taskElement.parentElement.id : null;
                 if (parentId !== 'downloader-tasks' && parentId !== 'youtube-file-browser') {
-                    const isCompleted = payload.status === 'completed' || payload.status === 'failed';
-                    const correctContainer = isCompleted ? completedTasksContainer : ongoingTasksContainer;
+                    // JULES'S FIX: A task is considered "finally" completed only if its status is 'completed'
+                    // AND it's NOT a 'youtube_download' task (which is an intermediate step).
+                    // 'gemini_process' tasks are handled separately by addYoutubeReportToList and removed, so they don't need a special check here.
+                    const isFinallyCompleted = (payload.status === 'completed' && payload.task_type !== 'youtube_download') || payload.status === 'failed';
+
+                    const correctContainer = isFinallyCompleted ? completedTasksContainer : ongoingTasksContainer;
                     if (taskElement.parentElement !== correctContainer) {
                         correctContainer.appendChild(taskElement);
                     }
