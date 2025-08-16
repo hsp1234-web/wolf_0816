@@ -1196,10 +1196,16 @@
 
                 if (payload.status === 'completed' && payload.task_type === 'gemini_process') {
                     addYoutubeReportToList(payload);
-                    const taskElement = taskElements.get(payload.task_id);
+                    const taskElement = taskElements.get(payload.task_id); // Gets element by finalId
                     if (taskElement) {
+                        // JULES'S FIX (2025-08-16): Proper cleanup for task chains
+                        const displayId = taskElement.dataset.displayId;
+                        const finalId = taskElement.dataset.finalId;
+
+                        if (displayId) taskElements.delete(displayId);
+                        if (finalId) taskElements.delete(finalId);
+
                         taskElement.remove();
-                        taskElements.delete(payload.task_id);
                     }
                     return;
                 }
@@ -1884,6 +1890,9 @@
                         // JULES'S FIX: Map the final task ID to the element created with the initial ID
                         if (displayId !== finalId) {
                             taskElements.set(finalId, taskElement);
+                            // JULES'S FIX (2025-08-16): Store both IDs on the element for later cleanup
+                            taskElement.dataset.displayId = displayId;
+                            taskElement.dataset.finalId = finalId;
                         }
 
                         if (socket && socket.readyState === WebSocket.OPEN) {
