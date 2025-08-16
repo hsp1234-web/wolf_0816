@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT_DIR / "src"))
 from db.database import initialize_database
 
 
-GLOBAL_TIMEOUT = 120
+GLOBAL_TIMEOUT = 100  # 使用者要求的 100 秒全局超時
 LOG_WATCHDOG_TIMEOUT = 10  # 使用者要求的 10 秒看門狗
 
 # --- 日誌設定 ---
@@ -167,8 +167,9 @@ class LocalServerLauncher:
 
     def run(self):
         """
-        執行整個伺服器啟動流程，並透過日誌看門狗監控其運行狀態。
+        執行整個伺服器啟動流程，並透過日誌看門狗和全局超時監控其運行狀態。
         """
+        start_time = time.time()
         try:
             if not self._install_dependencies(): return
             if not self._initialize_db(): return
@@ -177,10 +178,16 @@ class LocalServerLauncher:
 
             log.info("✅✅✅ 伺服器已成功啟動！ ✅✅✅")
             log.info(f"API 伺服器正在監聽: {self.api_url}")
-            log.info(f"日誌看門狗已啟動，超時設定為 {LOG_WATCHDOG_TIMEOUT} 秒。")
+            log.info(f"日誌看門狗已啟動 (超時: {LOG_WATCHDOG_TIMEOUT} 秒)。")
+            log.info(f"全局超時已設定 (限制: {GLOBAL_TIMEOUT} 秒)。")
             log.info("現在可以開始進行手動測試。按下 Ctrl+C 來關閉所有服務。")
 
             while True:
+                # 檢查全局超時
+                if time.time() - start_time > GLOBAL_TIMEOUT:
+                    log.error(f"🔥🔥🔥 全局超時！已達到 {GLOBAL_TIMEOUT} 秒的執行時間上限。")
+                    raise RuntimeError("全局超時觸發。")
+
                 # 檢查是否有子程序意外終止
                 for name, proc in self.processes:
                     if proc.poll() is not None:
