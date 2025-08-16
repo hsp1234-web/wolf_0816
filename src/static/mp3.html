@@ -907,7 +907,8 @@
                 if (fileType.startsWith('video/')) {
                     modalBody.dataset.lastPreviewUrl = previewUrl; // For testability
                     const video = document.createElement('video');
-                    video.src = previewUrl;
+                    // JULES'S FIX (2025-08-16): Construct an absolute URL to be more robust
+                    video.src = new URL(previewUrl, window.location.origin).href;
                     video.controls = true;
                     video.autoplay = true;
                     video.style.width = '100%';
@@ -919,7 +920,8 @@
                 } else if (fileType.startsWith('audio/')) {
                     modalBody.dataset.lastPreviewUrl = previewUrl; // For testability
                     const audio = document.createElement('audio');
-                    audio.src = previewUrl;
+                    // JULES'S FIX (2025-08-16): Construct an absolute URL to be more robust
+                    audio.src = new URL(previewUrl, window.location.origin).href;
                     audio.controls = true;
                     audio.autoplay = true;
                     audio.style.width = '100%';
@@ -1330,12 +1332,9 @@
                     }
 
                     const isDownloaderTask = taskElement.parentElement.id === 'downloader-tasks';
-                    if (!isDownloaderTask) {
-                        completedTasksContainer.appendChild(taskElement);
-                        if (noCompletedTaskMsg.style.display !== 'none') noCompletedTaskMsg.style.display = 'none';
-                    }
                     // JULES'S FIX: 在新增勾選框前，先檢查是否已存在
-                    if (!taskElement.querySelector('.task-checkbox')) {
+                    // 只有下載器任務才需要這個用於打包的勾選框
+                    if (isDownloaderTask && !taskElement.querySelector('.task-checkbox')) {
                         const checkbox = document.createElement('input');
                         checkbox.type = 'checkbox';
                         checkbox.className = 'task-checkbox';
@@ -1344,8 +1343,23 @@
                         checkbox.addEventListener('change', () => logAction('toggle-task-checkbox', payload.task_id));
                         taskElement.prepend(checkbox);
                     }
-                    if(isDownloaderTask) {
+
+                    if (isDownloaderTask) {
+                        // JULES'S FIX (2025-08-16): Per user request, also add a copy to the main completed list.
+                        // This improves user experience by centralizing all completed tasks.
+                        const clonedTask = taskElement.cloneNode(true);
+                        // Remove the checkbox from the cloned item as it's not needed in the general list.
+                        const clonedCheckbox = clonedTask.querySelector('.task-checkbox');
+                        if (clonedCheckbox) {
+                            clonedCheckbox.remove();
+                        }
+                        completedTasksContainer.appendChild(clonedTask);
+                        if (noCompletedTaskMsg.style.display !== 'none') noCompletedTaskMsg.style.display = 'none';
                         document.getElementById('zip-download-btn').disabled = false;
+                    } else {
+                        // For all other task types, just move them to the completed container.
+                        completedTasksContainer.appendChild(taskElement);
+                        if (noCompletedTaskMsg.style.display !== 'none') noCompletedTaskMsg.style.display = 'none';
                     }
                 } else if (payload.status === 'failed') {
                     if (progressContainer) progressContainer.style.display = 'none';
