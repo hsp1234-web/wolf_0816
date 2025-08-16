@@ -1818,7 +1818,8 @@
                     const filenameInput = row.querySelector('.youtube-filename-input');
                     const url = urlInput.value.trim();
                     const filename = filenameInput.value.trim();
-                    if (url) {
+                    // JULES'S FIX: Add basic URL validation to prevent sending garbage data
+                    if (url && (url.toLowerCase().startsWith('http') || url.toLowerCase().startsWith('www.'))) {
                         requests.push({ url, filename });
                     }
                 });
@@ -1926,12 +1927,23 @@
 
             const processDownloaderRequest = async () => {
                 logAction('click-start-download');
-                const urls = downloaderUrlsInput.value.split('\n').map(u => u.trim()).filter(u => u);
-                if (urls.length === 0) {
+                const rawUrls = downloaderUrlsInput.value.split('\n').map(u => u.trim()).filter(u => u);
+                if (rawUrls.length === 0) {
                     showStatusMessage('請輸入至少一個網址。', true);
                     return;
                 }
-                // JULES'S FIX: The /api/youtube/process endpoint now expects a 'requests' object array.
+
+                // JULES'S FIX: Add basic URL validation to prevent sending garbage data
+                const urls = rawUrls.filter(u => u.toLowerCase().startsWith('http') || u.toLowerCase().startsWith('www.'));
+                if (urls.length !== rawUrls.length) {
+                    showStatusMessage('已過濾掉無效的網址格式。請確保網址以 http 或 www 開頭。', true, 6000);
+                }
+
+                if (urls.length === 0) {
+                    showStatusMessage('請輸入有效的網址。', true);
+                    return;
+                }
+
                 const requests = urls.map(url => ({ url: url, filename: '' }));
                 const downloadType = document.querySelector('input[name="download-type"]:checked').value;
                 const payload = {
@@ -2047,8 +2059,12 @@
                 // It intentionally ignores the 'downloader-tasks' list, which is managed separately by its own handler.
                 const parentId = taskElement.parentElement ? taskElement.parentElement.id : null;
                 if (parentId !== 'downloader-tasks' && parentId !== 'youtube-file-browser') {
-                    const isCompleted = payload.status === 'completed' || payload.status === 'failed';
-                    const correctContainer = isCompleted ? completedTasksContainer : ongoingTasksContainer;
+                    // JULES'S FIX: A task is considered "finally" completed only if its status is 'completed'
+                    // AND it's NOT a 'youtube_download' task (which is an intermediate step).
+                    // 'gemini_process' tasks are handled separately by addYoutubeReportToList and removed, so they don't need a special check here.
+                    const isFinallyCompleted = (payload.status === 'completed' && payload.task_type !== 'youtube_download') || payload.status === 'failed';
+
+                    const correctContainer = isFinallyCompleted ? completedTasksContainer : ongoingTasksContainer;
                     if (taskElement.parentElement !== correctContainer) {
                         correctContainer.appendChild(taskElement);
                     }
