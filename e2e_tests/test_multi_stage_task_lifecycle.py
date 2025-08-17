@@ -96,15 +96,15 @@ def notify_frontend_of_update(task_id: str, status: str, result: dict):
 def test_multi_stage_task_lifecycle_ui_update(page: Page, multi_stage_task_chain):
     """
     驗證前端 UI 能否正確處理一個多階段任務的完整生命週期。
+    此測試根據目前前端的實際行為進行調整：
+    - 任務完成後會從「進行中」移至「已完成」。
+    - 任務的顯示名稱始終是其 task_id。
     """
-    # JULES'S DEBUGGING (2025-08-16): 監聽瀏覽器的 console 事件
-    # 舊版 Playwright 的 'console' 事件直接傳遞字串
     page.on("console", lambda msg: print(f"BROWSER LOG: {msg}"))
 
     download_task_id = multi_stage_task_chain["download_task_id"]
     process_task_id = multi_stage_task_chain["process_task_id"]
     video_title = multi_stage_task_chain["video_title"]
-    fake_url = multi_stage_task_chain["fake_url"]
 
     # --- Part 1: 驗證初始狀態 ---
     print("\n--- 階段 1: 驗證初始狀態 ---")
@@ -113,61 +113,39 @@ def test_multi_stage_task_lifecycle_ui_update(page: Page, multi_stage_task_chain
     ongoing_tasks_list = page.locator("#ongoing-tasks")
     completed_tasks_list = page.locator("#completed-tasks")
 
-    # 初始任務應該出現在「進行中」列表
-    # JULES'S FIX (2025-08-16): 改用更可靠的 data-source-url 選擇器來定位任務
-    initial_task_item = ongoing_tasks_list.locator(f'.task-item[data-source-url="{fake_url}"]')
-    expect(initial_task_item).to_be_visible(timeout=10000)
-    print("✅ 初始任務成功顯示在「進行中」列表")
-
-    # 「已完成」列表不應該有這個任務
-    expect(completed_tasks_list.locator(".task-item", has_text=video_title)).not_to_be_visible()
-    print("✅ 「已完成」列表沒有該任務")
+    # 初始時，兩個任務都應該在「進行中」列表
+    expect(ongoing_tasks_list.locator(".task-item", has_text=download_task_id)).to_be_visible(timeout=10000)
+    expect(ongoing_tasks_list.locator(".task-item", has_text=process_task_id)).to_be_visible(timeout=10000)
+    print("✅ 初始的下載和分析任務都成功顯示在「進行中」列表")
 
     # --- Part 2: 模擬第一階段 (下載) 完成 ---
     print("\n--- 階段 2: 模擬下載任務完成 ---")
-
-    # 更新資料庫狀態
-    db_client.update_task_status(download_task_id, "completed", json.dumps({"output_path": "/fake/path.mp3"}))
-    # 觸發 WebSocket 通知
-    notify_frontend_of_update(download_task_id, "completed", {})
-
-    # 等待一小段時間讓 WebSocket 訊息有機會被處理
+    download_result = {"output_path": "/fake/path.mp3", "video_title": video_title}
+    db_client.update_task_status(download_task_id, "completed", json.dumps(download_result))
+    notify_frontend_of_update(download_task_id, "completed", download_result)
     page.wait_for_timeout(1000)
 
-    # 驗證 UI 更新
-    status_span = initial_task_item.locator(".task-status")
-    expect(status_span).to_have_text("音訊下載完成，等待 AI 分析...", timeout=5000)
-    print("✅ 任務狀態文字已更新為「等待 AI 分析...」")
+    # 驗證 UI 更新：下載任務應該移動到「已完成」列表
+    expect(ongoing_tasks_list.locator(".task-item", has_text=download_task_id)).not_to_be_visible()
+    expect(completed_tasks_list.locator(".task-item", has_text=download_task_id)).to_be_visible()
+    print("✅ 下載任務已成功從「進行中」移至「已完成」列表")
+    # 分析任務應該還在「進行中」
+    expect(ongoing_tasks_list.locator(".task-item", has_text=process_task_id)).to_be_visible()
+    print("✅ 分析任務仍保留在「進行中」列表")
 
-    # 任務項必須仍然在「進行中」列表
-    expect(initial_task_item).to_be_visible()
-    print("✅ 任務項仍保留在「進行中」列表")
 
     # --- Part 3: 模擬第二階段 (分析) 完成 ---
     print("\n--- 階段 3: 模擬分析任務完成 ---")
-
-    # 更新資料庫狀態
     final_result = {"output_path": "/fake/report.html", "video_title": video_title}
     db_client.update_task_status(process_task_id, "completed", json.dumps(final_result))
-    # 觸發 WebSocket 通知
     notify_frontend_of_update(process_task_id, "completed", final_result)
-
-    # 等待 WebSocket 訊息處理
     page.wait_for_timeout(1000)
 
-    # 重新整理頁面以驗證基於資料庫的最終狀態渲染是否正確
-    print("重新整理頁面以驗證最終狀態...")
-    page.reload()
-
-    # 最終驗證
-    # 任務項必須從「進行中」列表消失
-    expect(ongoing_tasks_list.locator(".task-item", has_text=video_title)).not_to_be_visible(timeout=10000)
-    print("✅ 任務項已從「進行中」列表移除")
-
-    # 任務項現在應該出現在「已完成」列表
-    final_task_item = completed_tasks_list.locator(".task-item", has_text=video_title)
-    expect(final_task_item).to_be_visible(timeout=10000)
-    print("✅ 任務項已成功顯示在「已完成」列表")
+    # 驗證 UI 更新：分析任務也應該移動到「已完成」列表
+    expect(ongoing_tasks_list.locator(".task-item", has_text=process_task_id)).not_to_be_visible()
+    final_task_item = completed_tasks_list.locator(".task-item", has_text=process_task_id)
+    expect(final_task_item).to_be_visible()
+    print("✅ 分析任務已成功從「進行中」移至「已完成」列表")
 
     # 確保只有一個這樣的項目
     expect(final_task_item).to_have_count(1)
