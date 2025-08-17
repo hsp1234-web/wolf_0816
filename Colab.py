@@ -112,7 +112,7 @@ class StatusServerRequestHandler(http.server.BaseHTTPRequestHandler):
 
         # 發送一條初始訊息，確認連線成功
         initial_message = {"log": "\\033[33m[SYSTEM] 成功連接至日誌串流...\\033[0m"}
-        self.wfile.write(f"data: {json.dumps(initial_message)}\\n\\n".encode('utf-8'))
+        self.wfile.write(f"data: {json.dumps(initial_message)}\n\n".encode('utf-8'))
         self.wfile.flush()
 
         while True:
@@ -120,11 +120,11 @@ class StatusServerRequestHandler(http.server.BaseHTTPRequestHandler):
                 log_line = self.log_queue.get(timeout=30)
                 if log_line is None:  # 結束信號
                     break
-                self.wfile.write(f"data: {json.dumps(log_line)}\\n\\n".encode('utf-8'))
+                self.wfile.write(f"data: {json.dumps(log_line)}\n\n".encode('utf-8'))
                 self.wfile.flush()
             except queue.Empty:
                 # 發送註解以保持連線，防止超時
-                self.wfile.write(b': heartbeat\\n\\n')
+                self.wfile.write(b': heartbeat\n\n')
                 self.wfile.flush()
             except BrokenPipeError:
                 # 客戶端已斷開連線
@@ -571,11 +571,10 @@ def main(project_path_str: str):
         time.sleep(1) # 等待狀態伺服器线程完全啟動
         max_retries, retry_delay = 20, 1
 
-        # --- JULES' FINAL FIX (2025-08-17) ---
-        # 實作 JS 層級的 Promise.race 超時機制，以主動處理 proxyPort 的掛起問題。
-        # 同時縮短 Python 層級的超時，作為最終的安全網。
-        js_timeout_ms = 8000
-        py_timeout_sec = 10
+        # --- JULES' FINAL FIX (2025-08-18) ---
+        # 採用更積極的超時策略，縮短等待時間，提升重試的靈敏度。
+        js_timeout_ms = 4000  # 從 8000ms 縮短
+        py_timeout_sec = 5    # 從 10s 縮短
 
         js_get_url_script = f'''
         (async () => {{
@@ -595,7 +594,9 @@ def main(project_path_str: str):
 
         # -- 開始具備超時保護的代理連結獲取迴圈 --
         for attempt in range(max_retries):
-            log_manager.log("INFO", f"正在嘗試取得代理連結... (第 {attempt + 1}/{max_retries} 次)")
+            # *** JULES' ELEGANT FIX (2025-08-18) ***
+            # 主執行緒只更新狀態，不直接打印，由 DisplayManager 統一渲染，避免競爭。
+            shared_stats['status'] = f"取得代理連結... ({attempt + 1}/{max_retries})"
 
             # 在獨立執行緒中執行耗時的 JS，以防主執行緒被卡死
             result_queue = queue.Queue()
@@ -618,6 +619,7 @@ def main(project_path_str: str):
                 if output.get('error'):
                     # 直接處理從執行緒傳來的錯誤，而不是重新拋出，以確保迴圈繼續。
                     log_manager.log("ERROR", f"獲取代理連結的背景執行緒發生錯誤: {output['error']}")
+                    shared_stats['status'] = f"背景執行緒錯誤，準備重試... ({attempt + 1}/{max_retries})"
                     time.sleep(retry_delay)
                     continue # 強制繼續下一次重試
 
@@ -626,6 +628,7 @@ def main(project_path_str: str):
                 # -- JS 成功返回，開始執行探測邏輯 --
                 if result and result.get('error'):
                     log_manager.log("WARN", f"獲取代理連結時發生 JS 錯誤: {result['error']}")
+                    shared_stats['status'] = f"JS 錯誤，準備重試... ({attempt + 1}/{max_retries})"
                 elif result and result.get('url') and result['url'].strip().startswith('http'):
                     candidate_url = result['url'].strip()
                     # 根據使用者需求 (2025-08-17)，移除主動連結探測。
@@ -638,12 +641,15 @@ def main(project_path_str: str):
                     break # 成功，跳出迴圈
                 else:
                     log_manager.log("WARN", f"收到無效的代理回傳值: '{str(result)[:100]}...'")
+                    shared_stats['status'] = f"回傳值無效，準備重試... ({attempt + 1}/{max_retries})"
 
             except queue.Empty:
-                log_manager.log("WARN", "操作超時 (15秒)，`eval_js` 可能已卡住。正在強制繼續，進行下一次重試...")
+                log_manager.log("WARN", f"操作超時 ({py_timeout_sec}秒)，`eval_js` 可能已卡住。正在強制繼續，進行下一次重試...")
+                shared_stats['status'] = f"操作超時，準備重試... ({attempt + 1}/{max_retries})"
             except Exception as e:
                 # 為了確保絕對不會有例外導致迴圈中止，捕捉所有可能的錯誤
                 log_manager.log("ERROR", f"獲取代理連結迴圈發生未預期錯誤: {e}")
+                shared_stats['status'] = f"未預期錯誤，準備重試... ({attempt + 1}/{max_retries})"
                 # 即使發生未知錯誤，也繼續重試
                 pass
 
@@ -671,7 +677,7 @@ def main(project_path_str: str):
         log_manager.log("INFO", "背景工作者執行緒已結束。")
 
     except KeyboardInterrupt:
-        if log_manager: log_manager.log("WARN", "🛑 偵測到使用者手動中斷...")
+        if log_manager: log_manager.log("WARN", "� 偵測到使用者手動中斷...")
     except Exception as e:
         if log_manager: log_manager.log("CRITICAL", f"❌ 發生未預期的致命錯誤: {e}")
         else: print(f"❌ 發生未預期的致命錯誤: {e}")
@@ -749,4 +755,4 @@ if __name__ == "__main__":
         main(project_path_str=globals()['PROJECT_PATH_FROM_DOWNLOADER'])
     else:
         print("❌ 錯誤：找不到專案資料夾。")
-        print("請確認您已成功執行第一個「🐺 善狼下載器」儲存格，並且沒有出現任何錯誤。")
+        print("請確認您已成功執行第一個「📥 GIT 下載器」儲存格，並且沒有出現任何錯誤。")
