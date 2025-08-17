@@ -1,3 +1,55 @@
+# Colab 啟動器更新說明
+
+本文檔旨在說明對 Colab 啟動器 (`Colab.py`) 進行的重大更新。舊版啟動器在效率和穩定性上存在一些根本性問題，新版採用了「兩階段代理啟動器」架構，旨在提供更快速、更可靠的啟動體驗。
+
+## 問題分析：舊版啟動器的挑戰
+
+### 1. 啟動時的阻塞
+舊的腳本在執行任何操作前，會先用 `pip` 安裝 `requirements-server.txt`。如果這個檔案包含的依賴較多，整個啟動流程就會被卡在第一步，使用者需要長時間等待才能看到任何進展。
+
+### 2. 未能完全利用 `uv`
+腳本雖然在背景安裝 worker 依賴時使用了高速的 `uv`，但在最開始安裝核心依賴時，用的仍然是傳統的 `pip`，未能最大化安裝效率。
+
+### 3. 代理網址不穩定的根源：競態條件 (Race Condition)
+舊機制是先啟動後端的 Uvicorn 伺服器，然後在主控台日誌中「等待」一個就緒訊號，再用 `google.colab.kernel.proxyPort` 這個 JavaScript 指令去「抓取」Colab 分配的代理網址。這個過程非常脆弱，因為 Uvicorn 雖然啟動了，但 Colab 的代理服務可能還沒完全準備好，導致 JavaScript 指令抓取失敗或返回無效值。這是啟動有時會失敗的根本原因。
+
+---
+
+## 全新設計方案：「兩階段代理啟動器」
+
+我們重新設計了整個啟動流程，採用一個更穩健、更高效的「兩階段」架構。
+
+### **第一階段：立即啟動「狀態與代理」伺服器 (目標：秒級反應)**
+1.  **不安裝，立即執行**：Colab 儲存格一執行，不安裝任何東西，只用 Python 內建函式庫。
+2.  **啟動微型伺服器**：在背景立即啟動一個極簡的 Python 臨時伺服器。
+3.  **立即獲取代理網址**：讓這個微型伺服器佔據一個埠號，並立刻呼叫 `google.colab.kernel.proxyPort` 為它自己取得一個公開的、永久不變的代理網址。
+4.  **立即顯示網址**：將這個穩定、有效的網址立刻顯示給使用者。
+
+### **第二階段：在背景執行真正的準備工作**
+1.  **啟動背景執行緒**：將所有耗時的工作（依賴安裝、主程式啟動）全部放到另一個背景執行緒中。
+2.  **高速安裝**：在這個執行緒裡，使用 `uv` 來高速安裝所有依賴。
+3.  **啟動核心應用**：所有依賴都安裝完畢後，才啟動原本的 `orchestrator.py` 主應用程式。
+4.  **無縫交接**：
+    - 在主應用程式啟動前，優雅地關閉微型伺服器。
+    - 利用 `SO_REUSEADDR` 這個通訊端選項，確保主應用程式可以立即重用剛被釋放的埠號，避免「地址已被佔用」的錯誤。
+    - 一旦主應用程式啟動，使用者正在查看的那個穩定網址，其背後的服務就會從「臨時狀態頁」無縫切換到「真正的應用程式」。
+
+### 新設計的優勢
+*   **極致的效率體驗**：使用者在執行儲存格後的幾秒內就能得到一個可以互動的網址和儀表板，徹底解決了「啟動慢、無反饋」的問題。
+*   **絕對穩定的代理網址**：我們不再去「猜測」和「抓取」主應用的網址，而是在一開始就為我們自己的微型伺服器創造並鎖定一個網址。這個網址從頭到尾都是有效的，從根本上解決了代理網址不穩定的問題。
+
+---
+
+## 新版 Colab 啟動器程式碼
+
+底下是修改後 `Colab.py` 的完整程式碼。您可以點擊「顯示程式碼」來查看，並使用「一鍵複製」按鈕來方便地將其貼到您的 Colab 儲存格中。
+
+<details>
+<summary>點此顯示/隱藏 Colab.py 完整程式碼</summary>
+
+<div style="position: relative;">
+<button onclick="copyCode(this)" style="position: absolute; top: 10px; right: 10px; z-index: 10; padding: 5px 10px; font-size: 12px; cursor: pointer;">複製程式碼</button>
+<pre><code id="colab-code" class="language-python">
 # -*- coding: utf-8 -*-
 #@title 🐺 善狼啟動器 (Part 2: 執行)
 #@markdown ---
@@ -426,3 +478,23 @@ if __name__ == "__main__":
     else:
         print("❌ 錯誤：找不到專案資料夾。")
         print("請確認您已成功執行第一個「🐺 善狼下載器」儲存格，並且沒有出現任何錯誤。")
+
+</code></pre>
+</div>
+</details>
+
+<script>
+function copyCode(button) {
+    const codeElement = document.getElementById('colab-code');
+    const textToCopy = codeElement.innerText;
+    navigator.clipboard.writeText(textToCopy).then(() => {
+        button.innerText = '已複製!';
+        setTimeout(() => {
+            button.innerText = '複製程式碼';
+        }, 2000);
+    }).catch(err => {
+        console.error('無法複製程式碼: ', err);
+        button.innerText = '複製失敗';
+    });
+}
+</script>
