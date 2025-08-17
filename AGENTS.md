@@ -18,8 +18,22 @@ The primary goal is to restore all backend API endpoints and integrate them corr
   - `pydub`
   - `WeasyPrint`
 
-## 3. `localtest` Execution Script
+## 3. `localtest` Execution Script and Frontend Build
 
+### Frontend Build Prerequisite
+
+**CRITICAL:** Before running any tests (especially E2E tests using `localtest`), the Vue.js frontend application **must** be built. The backend server serves the static files from the `vue-app/dist` directory, which is only created after the build process.
+
+To build the frontend, execute the following commands from the project root:
+```bash
+cd vue-app
+bun install
+bun run build
+cd ..
+```
+Failure to do this will result in E2E tests failing with timeouts, as the frontend will not load.
+
+### `localtest` Script Requirements
 A new script named `localtest` must be created by referencing the existing `local Run` script. This script will be the standard way to run the application for testing purposes.
 
 ### `localtest` Requirements:
