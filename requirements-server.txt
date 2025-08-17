@@ -9,3 +9,6 @@ websocket-client
 requests
 pytest
 pytest-playwright
+torch
+torchaudio
+torchvision

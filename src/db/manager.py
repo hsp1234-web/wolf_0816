@@ -41,7 +41,8 @@ logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 log = logging.getLogger('DBManagerServer')
 
 # --- 伺服器設定 ---
-HOST, PORT = "127.0.0.1", 49999 # JULES: Hardcoded port to fix race condition
+HOST = "127.0.0.1"
+PORT_FILE = Path(__file__).parent / "db_manager.port"
 
 # --- 指令分派 ---
 # 建立一個函式名稱與指令 action 的對應字典
@@ -134,39 +135,41 @@ def run_server():
     """
     啟動資料庫管理者伺服器。
     """
-    # 在伺服器啟動前，先主動清理任何可能存在的舊 port 檔案，確保一致性
-    port_file = Path(__file__).parent / "db_manager.port"
-    if port_file.exists():
-        try:
-            port_file.unlink()
-            log.info(f"已成功移除舊的埠號檔案: {port_file}")
-        except OSError as e:
-            # 即便移除失敗，也只記錄錯誤，不中斷啟動流程
-            log.error(f"無法移除舊的埠號檔案: {e}", exc_info=True)
-
-    # 這是整個系統中，唯一應該呼叫 `initialize_database` 的地方
     try:
         log.info("資料庫管理者伺服器啟動前，正在進行資料庫初始化...")
         database.initialize_database()
         log.info("✅ 資料庫初始化成功。")
     except sqlite3.Error as e:
         log.critical(f"❌ 資料庫初始化失敗，伺服器無法啟動: {e}")
-        # 在這種嚴重錯誤下，我們應該讓程序以非零代碼退出
         sys.exit(1)
 
-    # 建立 TCP 伺服器
-    # 讓 server 在程式結束後可以立即重用同一個位址
+    # 建立 TCP 伺服器，綁定到一個隨機的空閒埠號 (port=0)
     socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer((HOST, PORT), DBRequestHandler) as server:
-        # 獲取實際綁定的埠號
-        actual_port = server.server_address[1]
-        log.info(f"🚀 資料庫管理者伺服器已在 {HOST}:{actual_port} 上啟動...")
+    try:
+        with socketserver.TCPServer((HOST, 0), DBRequestHandler) as server:
+            # 獲取實際綁定的埠號
+            actual_port = server.server_address[1]
+            log.info(f"🚀 資料庫管理者伺服器已在 {HOST}:{actual_port} 上啟動...")
 
-        try:
-            # 啟動伺服器，它將一直運行直到被中斷 (例如 Ctrl+C)
-            server.serve_forever()
-        finally:
-            log.info("伺服器已關閉。")
+            # 將埠號寫入檔案，以便客戶端可以找到它
+            try:
+                PORT_FILE.write_text(str(actual_port))
+                log.info(f"已將埠號寫入: {PORT_FILE}")
+            except IOError as e:
+                log.critical(f"❌ 無法寫入埠號檔案，客戶端將無法連線: {e}")
+                sys.exit(1)
+
+            try:
+                # 啟動伺服器
+                server.serve_forever()
+            finally:
+                log.info("伺服器正在關閉...")
+                # 清理埠號檔案
+                if PORT_FILE.exists():
+                    PORT_FILE.unlink()
+    except Exception as e:
+        log.critical(f"🔥 啟動 DB Manager 伺服器時發生嚴重錯誤: {e}", exc_info=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -165,8 +165,9 @@ def process_transcription_task(task: dict, use_mock: bool):
 
             # 步驟 6: 通知 API Server 任務已完成，以便廣播給前端
             try:
-                # 注意：這裡假設 api_server 在 42649 port 上運行 (根據 circus.ini)
-                notify_url = "http://127.0.0.1:42649/api/internal/notify_task_update"
+                # JULES'S FIX: 從環境變數讀取動態 API port，如果不存在則回退到預設值
+                api_port = os.environ.get('API_PORT', 42649)
+                notify_url = f"http://127.0.0.1:{api_port}/api/internal/notify_task_update"
 
                 # 我們只傳送前端 UI 更新所需的最小資訊
                 frontend_payload = {
