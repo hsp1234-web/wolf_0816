@@ -182,7 +182,6 @@ class LocalServerLauncher:
             log.info(f"全局超時已設定 (限制: {GLOBAL_TIMEOUT} 秒)。")
             log.info("現在可以開始進行手動測試。按下 Ctrl+C 來關閉所有服務。")
 
-            heartbeat_timer = time.time()
             while True:
                 # 檢查全局超時
                 if time.time() - start_time > GLOBAL_TIMEOUT:
@@ -204,13 +203,6 @@ class LocalServerLauncher:
 
                 if had_output:
                     self.last_log_time = time.time()
-
-                # JULES'S FIX: 新增心跳日誌以避免看門狗因系統閒置而超時
-                if time.time() - heartbeat_timer > 5:
-                    log.info("❤️ Heartbeat: 系統運行中...")
-                    self.last_log_time = time.time() # 心跳也應重置看門狗
-                    heartbeat_timer = time.time()
-
 
                 # 檢查看門狗是否超時
                 if time.time() - self.last_log_time > LOG_WATCHDOG_TIMEOUT:

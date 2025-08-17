@@ -12,3 +12,5 @@ pytest-playwright
 torch
 torchaudio
 torchvision
+opencc-python-reimplemented
+faster-whisper

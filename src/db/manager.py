@@ -27,12 +27,11 @@ import socketserver
 import json
 import logging
 import sqlite3
+import sys
 from pathlib import Path
 
 # 讓此腳本可以存取上層目錄的 db.database 模組
-import sys
 sys.path.append(str(Path(__file__).resolve().parent.parent))
-
 from db import database
 
 # --- 日誌設定 ---
@@ -45,8 +44,6 @@ HOST = "127.0.0.1"
 PORT_FILE = Path(__file__).parent / "db_manager.port"
 
 # --- 指令分派 ---
-# 建立一個函式名稱與指令 action 的對應字典
-# 這樣可以避免巨大的 if/elif/else 結構，也更安全
 ACTION_MAP = {
     "initialize_database": database.initialize_database,
     "add_task": database.add_task,
@@ -58,78 +55,56 @@ ACTION_MAP = {
     "get_all_tasks": database.get_all_tasks,
     "get_system_logs": database.get_system_logs_by_filter,
     "find_dependent_task": database.find_dependent_task,
-    # JULES'S NEW FEATURE: Add app state actions
     "get_app_state": database.get_app_state,
     "set_app_state": database.set_app_state,
-    # JULES: 新增健康檢查動作
     "check_tables_exist": database.check_tables_exist,
-    # JULES (2025-08-16): 新增刪除任務的動作，主要用於測試清理
     "delete_task": database.delete_task,
 }
-
 
 class DBRequestHandler(socketserver.BaseRequestHandler):
     """
     處理來自客戶端請求的處理器。
-    每個連線都會建立一個此類別的實例。
     """
     def handle(self):
         log.info(f"來自 {self.client_address} 的新連線。")
         try:
             while True:
-                # 接收資料的長度 (4-byte header)
                 header = self.request.recv(4)
-                if not header:
-                    break # 連線已關閉
-
+                if not header: break
                 data_len = int.from_bytes(header, 'big')
-
-                # 根據長度接收完整的資料
                 data = self.request.recv(data_len)
-                if not data:
-                    break
+                if not data: break
 
                 request = json.loads(data.decode('utf-8'))
                 log.info(f"收到請求: {request}")
 
                 action = request.get("action")
                 params = request.get("params", {})
-
                 response = {}
                 try:
                     if action in ACTION_MAP:
-                        # 從字典中獲取對應的函式
                         func = ACTION_MAP[action]
-
-                        # 呼叫函式並傳入參數
                         result = func(**params)
-
                         response["status"] = "success"
                         response["data"] = result
                     else:
                         response["status"] = "error"
                         response["message"] = f"未知的 action: {action}"
                         log.warning(f"收到了未知的 action: {action}")
-
                 except Exception as e:
                     log.error(f"執行 action '{action}' 時發生錯誤: {e}", exc_info=True)
                     response["status"] = "error"
-                    # 將例外轉為字串，以便序列化
                     response["message"] = f"執行 '{action}' 時發生內部錯誤: {str(e)}"
 
-                # 將回應序列化並發送回客戶端
                 response_bytes = json.dumps(response).encode('utf-8')
                 response_header = len(response_bytes).to_bytes(4, 'big')
-
                 self.request.sendall(response_header + response_bytes)
-
         except ConnectionResetError:
             log.warning(f"客戶端 {self.client_address} 強制中斷了連線。")
         except Exception as e:
             log.error(f"處理連線 {self.client_address} 時發生未預期的錯誤: {e}", exc_info=True)
         finally:
             log.info(f"連線 {self.client_address} 已關閉。")
-
 
 def run_server():
     """
@@ -143,15 +118,11 @@ def run_server():
         log.critical(f"❌ 資料庫初始化失敗，伺服器無法啟動: {e}")
         sys.exit(1)
 
-    # 建立 TCP 伺服器，綁定到一個隨機的空閒埠號 (port=0)
     socketserver.TCPServer.allow_reuse_address = True
     try:
         with socketserver.TCPServer((HOST, 0), DBRequestHandler) as server:
-            # 獲取實際綁定的埠號
             actual_port = server.server_address[1]
             log.info(f"🚀 資料庫管理者伺服器已在 {HOST}:{actual_port} 上啟動...")
-
-            # 將埠號寫入檔案，以便客戶端可以找到它
             try:
                 PORT_FILE.write_text(str(actual_port))
                 log.info(f"已將埠號寫入: {PORT_FILE}")
@@ -160,17 +131,14 @@ def run_server():
                 sys.exit(1)
 
             try:
-                # 啟動伺服器
                 server.serve_forever()
             finally:
                 log.info("伺服器正在關閉...")
-                # 清理埠號檔案
                 if PORT_FILE.exists():
                     PORT_FILE.unlink()
     except Exception as e:
         log.critical(f"🔥 啟動 DB Manager 伺服器時發生嚴重錯誤: {e}", exc_info=True)
         sys.exit(1)
-
 
 if __name__ == "__main__":
     run_server()
