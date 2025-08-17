@@ -19,6 +19,7 @@ from typing import Optional, Dict, List
 # 匯入新的資料庫客戶端
 # from db import database # REMOVED: No longer used directly
 from db.client import get_client
+from core.feature_manager import feature_manager
 
 # --- JULES 於 2025-08-09 的修改：設定應用程式全域時區 ---
 # 為了確保所有日誌和資料庫時間戳都使用一致的時區，我們在應用程式啟動的
@@ -102,10 +103,20 @@ db_client = get_client()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 在應用程式啟動時執行的程式碼
+    log.info("--- 應用程式啟動流程開始 ---")
+
+    # 1. 設定資料庫日誌
     setup_database_logging()
-    log.info("資料庫日誌處理器已透過 lifespan 事件設定。")
+    log.info("步驟 1/2: 資料庫日誌處理器已設定。")
+
+    # 2. 啟動背景功能安裝
+    feature_manager.initialize_features()
+    log.info("步驟 2/2: AI 功能初始化程序已在背景啟動。")
+
+    log.info("--- 應用程式啟動流程完成 ---")
     yield
     # 可以在此處加入應用程式關閉時執行的程式碼
+    log.info("--- 應用程式關閉 ---")
 
 # --- FastAPI 應用實例 ---
 app = FastAPI(title="鳳凰音訊轉錄儀 API (v3 - 重構)", version="3.0", lifespan=lifespan)
@@ -138,6 +149,21 @@ else:
 # JULES'S FIX (2025-08-13): 根據計畫，新增此端點來處理複雜檔名
 from urllib.parse import unquote
 from fastapi.responses import FileResponse
+
+
+# --- JULES'S NEW FEATURE: Feature Status API ---
+
+@app.get("/api/features/status", response_class=JSONResponse)
+async def get_features_status():
+    """
+    獲取所有 AI 功能的當前狀態。
+    """
+    try:
+        status = feature_manager.get_status()
+        return JSONResponse(content={"features": status})
+    except Exception as e:
+        log.error(f"獲取功能狀態時 API 發生錯誤: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="無法獲取功能狀態")
 
 
 # --- JULES'S NEW FEATURE: App State API Endpoints ---
@@ -261,6 +287,14 @@ async def create_transcription_task(
     接收音訊檔案，根據模型是否存在，決定是直接建立轉錄任務，
     還是先建立一個下載任務和一個依賴於它的轉錄任務。
     """
+    # 保護端點：檢查 Whisper 功能是否就緒
+    if feature_manager.get_feature_status("whisper") != "ready":
+        raise HTTPException(
+            status_code=503,
+            detail="Whisper 功能目前無法使用，可能正在安裝中。請稍後再試。",
+            headers={"Retry-After": "30"},
+        )
+
     # 1. 檢查模型是否存在
     model_is_present = check_model_exists(model_size)
 
@@ -702,7 +736,25 @@ async def process_youtube_urls(request: Request):
     """
     接收 YouTube URL，並根據前端傳來的參數，建立對應的下載和 AI 分析任務。
     """
+    # 保護端點：檢查相關功能是否就緒
+    if feature_manager.get_feature_status("ytdlp") != "ready":
+        raise HTTPException(
+            status_code=503,
+            detail="YouTube 下載功能目前無法使用，可能正在安裝中。請稍後再試。",
+            headers={"Retry-After": "30"},
+        )
+
     payload = await request.json()
+    download_only = payload.get("download_only", False)
+
+    # 如果是 AI 分析任務，還需要檢查 Whisper 功能
+    if not download_only and feature_manager.get_feature_status("whisper") != "ready":
+        raise HTTPException(
+            status_code=503,
+            detail="Whisper 轉錄功能目前無法使用，可能正在安裝中。請稍後再試。",
+            headers={"Retry-After": "30"},
+        )
+
     requests_list = payload.get("requests", [])
 
     # JULES'S FIX: 為了相容舊的 local_run.py 測試腳本

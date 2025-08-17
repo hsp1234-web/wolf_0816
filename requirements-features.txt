@@ -1,0 +1,4 @@
+# This file contains the heavy AI/ML dependencies that should be installed
+# on-demand by the FeatureManager.
+openai-whisper
+torch

@@ -73,7 +73,8 @@ class LocalTestRunner:
             env = os.environ.copy()
             env["API_URL"] = self.main_server_url
             pytest_cmd = [sys.executable, "-m", "pytest", str(ROOT_DIR / "e2e_tests")]
-            result = subprocess.run(pytest_cmd, capture_output=True, text=True, encoding='utf-8', env=env, timeout=60)
+            # JULES'S FIX: 增加 E2E 測試的超時時間，因為模擬安裝會增加總測試時間
+            result = subprocess.run(pytest_cmd, capture_output=True, text=True, encoding='utf-8', env=env, timeout=120)
 
             if result.returncode != 0:
                 log.error(f"❌ E2E 測試失敗! 返回碼: {result.returncode}")

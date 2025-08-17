@@ -26,7 +26,7 @@
           <input type="number" id="beam-size-input" v-model.number="beamSize" min="1" max="10" style="width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #ccc; box-sizing: border-box;">
           <small style="font-size: 0.8em; color: #666;">建議值為 5。較大的值可能更準確但較慢。</small>
         </div>
-        <button id="confirm-settings-btn" @click="confirmSettings">✓ 確認設定</button>
+        <button id="confirm-settings-btn" @click="confirmSettings" :disabled="!featureStore.isWhisperReady">✓ 確認設定</button>
         <!-- TODO: 模型下載進度條邏輯 -->
       </div>
       <div class="card flex-col">
@@ -59,10 +59,10 @@
     <div style="text-align: center; margin-top: 24px;">
       <button
         id="start-processing-btn"
-        :disabled="uploadedFiles.length === 0"
+        :disabled="uploadedFiles.length === 0 || !featureStore.isWhisperReady"
         @click="startProcessing"
       >
-        {{ uploadedFiles.length > 0 ? `✨ 開始處理 ${uploadedFiles.length} 個檔案` : '✨ 請先選擇檔案' }}
+        {{ buttonText }}
       </button>
       <!-- TODO: 上傳進度條邏輯 -->
     </div>
@@ -70,11 +70,13 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { useTasksStore } from '@/stores/tasks'
+import { useFeatureStore } from '@/stores/features'
 import { logAction } from '@/utils/logging'
 
 const tasksStore = useTasksStore()
+const featureStore = useFeatureStore()
 
 // --- 組件本地狀態 ---
 const model = ref('tiny')
@@ -82,6 +84,17 @@ const language = ref('zh')
 const beamSize = ref(1)
 const uploadedFiles = ref([])
 const fileInput = ref(null) // 用於觸發檔案選擇器
+
+// --- 計算屬性 ---
+const buttonText = computed(() => {
+  if (!featureStore.isWhisperReady) {
+    return '🔄 Whisper 功能正在初始化...'
+  }
+  if (uploadedFiles.value.length > 0) {
+    return `✨ 開始處理 ${uploadedFiles.value.length} 個檔案`
+  }
+  return '✨ 請先選擇檔案'
+})
 
 // --- 檔案處理方法 ---
 const handleFileSelect = (event) => {

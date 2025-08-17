@@ -336,6 +336,18 @@ export const useTasksStore = defineStore('tasks', {
             console.error('處理 YouTube 請求時發生錯誤:', error);
             throw new Error(error.response?.data?.detail || '建立 YouTube 分析任務失敗');
         }
+    },
+
+    /**
+     * 由 features store 在所有功能就緒時呼叫。
+     * 可用於觸發依賴 AI 功能的相關操作。
+     */
+    onFeaturesReady() {
+      console.log('所有 AI 功能已就緒，系統完全啟動。');
+      // 目前，我們只是記錄一條訊息。
+      // 未來可以在這裡觸發一次性的任務列表刷新，
+      // 以確保顯示的狀態是最新的。
+      // this.fetchTasks();
     }
   }
 })

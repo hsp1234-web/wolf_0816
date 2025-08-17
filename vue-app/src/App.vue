@@ -67,6 +67,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useTasksStore } from './stores/tasks'
+import { useFeatureStore } from './stores/features'
 import { logAction } from './utils/logging'
 import Dashboard from './components/Dashboard.vue'
 import TaskUploader from './components/TaskUploader.vue'
@@ -78,6 +79,7 @@ import TranscriptOutput from './components/TranscriptOutput.vue'
 
 // 獲取 Pinia store 的實例
 const tasksStore = useTasksStore()
+const featureStore = useFeatureStore()
 
 // 控制當前作用中分頁的狀態
 const activeTab = ref('transcribe')
@@ -93,6 +95,8 @@ onMounted(() => {
   tasksStore.fetchTasks()
   // 建立 WebSocket 連線
   tasksStore.connectWebSocket()
+  // 開始輪詢 AI 功能狀態
+  featureStore.pollFeatureStatus()
 })
 </script>
 

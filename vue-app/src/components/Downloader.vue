@@ -16,7 +16,14 @@
             ></textarea>
           </div>
           <div style="text-align: center; margin-top: 16px;">
-            <button id="start-download-btn" @click="startDownload" style="width: 100%; padding: 12px; font-size: 1.1em;">開始下載</button>
+            <button
+              id="start-download-btn"
+              @click="startDownload"
+              :disabled="!featureStore.isYtdlpReady"
+              style="width: 100%; padding: 12px; font-size: 1.1em;"
+            >
+              {{ buttonText }}
+            </button>
           </div>
         </div>
         <!-- 右側：詳細選項 -->
@@ -68,13 +75,19 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { useTasksStore } from '@/stores/tasks'
+import { useFeatureStore } from '@/stores/features'
 import { logAction } from '@/utils/logging'
 
 const tasksStore = useTasksStore()
+const featureStore = useFeatureStore()
 const urls = ref('')
 const downloadType = ref('audio')
+
+const buttonText = computed(() => {
+  return featureStore.isYtdlpReady ? '開始下載' : '🔄 下載功能正在初始化...'
+})
 
 const startDownload = async () => {
   const urlList = urls.value.split('\n').map(u => u.trim()).filter(u => u)
