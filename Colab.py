@@ -609,20 +609,14 @@ def main(project_path_str: str):
                     log_manager.log("WARN", f"獲取代理連結時發生 JS 錯誤: {result['error']}")
                 elif result and result.get('url') and result['url'].strip().startswith('http'):
                     candidate_url = result['url'].strip()
-                    log_manager.log("DEBUG", f"取得候選 URL: {candidate_url}，正在進行主動探測...")
-                    try:
-                        # 使用 GET(stream=True) 進行探測，這對輕量級伺服器更通用
-                        # stream=True 讓我們只獲取響應頭而不下載內容，效率高
-                        response = requests.get(candidate_url, timeout=5, stream=True)
-                        if response.status_code == 200:
-                            log_manager.log("SUCCESS", "✅ 主動探測成功，確認連結可用！")
-                            shared_stats['proxy_url'] = candidate_url
-                            log_manager.log("SUCCESS", f"✅✅✅ 成功取得並驗證代理連結！")
-                            break # 成功，跳出迴圈
-                        else:
-                            log_manager.log("WARN", f"探測失敗，狀態碼: {response.status_code}。將重試。")
-                    except requests.exceptions.RequestException as probe_e:
-                        log_manager.log("WARN", f"探測失敗，網路錯誤: {str(probe_e)[:100]}...。將重試。")
+                    # 根據使用者需求 (2025-08-17)，移除主動連結探測。
+                    # Colab 的 proxyPort API 返回的連結在某些情況下，即使功能正常，
+                    # 在啟動初期探測也會收到 404。為提高相容性和啟動速度，
+                    # 我們直接信任 API 返回的第一個 URL。
+                    log_manager.log("INFO", f"取得候選 URL: {candidate_url}，根據設定跳過主動探測。")
+                    shared_stats['proxy_url'] = candidate_url
+                    log_manager.log("SUCCESS", "✅ 成功取得代理連結！")
+                    break # 成功，跳出迴圈
                 else:
                     log_manager.log("WARN", f"收到無效的代理回傳值: '{str(result)[:100]}...'")
 
