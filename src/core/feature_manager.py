@@ -45,49 +45,50 @@ class FeatureManager:
     def _check_and_install(self, feature: str):
         """
         檢查並安裝單一功能的依賴。
-        這是一個阻塞操作，應該在單獨的執行緒中執行。
+        如果設定了 MOCK_INSTALL_DELAY，則只會模擬延遲，不進行實際安裝。
         """
         self._set_status(feature, "installing")
         log.info(f"[{feature}] 開始檢查和安裝...")
 
         try:
-            # 模擬安裝延遲，用於 E2E 測試
+            # 測試環境下的模擬邏輯
             if self.mock_delay > 0:
-                log.info(f"[{feature}] 偵測到 MOCK_INSTALL_DELAY，將等待 {self.mock_delay} 秒...")
+                log.info(f"[{feature}] (模擬模式) 偵測到 MOCK_INSTALL_DELAY，將等待 {self.mock_delay} 秒...")
                 time.sleep(self.mock_delay)
+                log.info(f"[{feature}] (模擬模式) 等待完成。")
 
-            # 根據功能名稱決定要檢查的模組
-            modules_to_check = {
-                "whisper": ["torch", "whisper"],
-                "ytdlp": ["yt_dlp"],
-            }
+            # 真實環境下的安裝邏輯
+            else:
+                modules_to_check = {
+                    "whisper": ["torch", "whisper"],
+                    "ytdlp": ["yt_dlp"],
+                }
 
-            if feature not in modules_to_check:
-                raise ValueError(f"未知的 feature: {feature}")
+                if feature not in modules_to_check:
+                    raise ValueError(f"未知的 feature: {feature}")
 
-            # 檢查所有相關模組是否都已安裝
-            all_modules_present = True
-            for module_name in modules_to_check[feature]:
-                try:
-                    __import__(module_name)
-                    log.info(f"[{feature}] 檢查通過: 模組 '{module_name}' 已安裝。")
-                except ImportError:
-                    log.warning(f"[{feature}] 檢查失敗: 模組 '{module_name}' 未安裝。")
-                    all_modules_present = False
-                    break # 只要有一個缺少，就停止檢查並進行安裝
+                all_modules_present = True
+                for module_name in modules_to_check[feature]:
+                    try:
+                        __import__(module_name)
+                    except ImportError:
+                        all_modules_present = False
+                        break
 
-            if not all_modules_present:
-                log.info(f"[{feature}] 偵測到缺少依賴，將從 requirements-features.txt 進行安裝...")
-                req_path = os.path.join(ROOT_DIR, 'requirements-features.txt')
-                if not os.path.exists(req_path):
-                    raise FileNotFoundError(f"找不到 requirements-features.txt 於 {req_path}")
+                if not all_modules_present:
+                    log.info(f"[{feature}] 偵測到缺少依賴，將從 requirements-features.txt 進行安裝...")
+                    req_path = os.path.join(ROOT_DIR, 'requirements-features.txt')
+                    if not os.path.exists(req_path):
+                        raise FileNotFoundError(f"找不到 requirements-features.txt 於 {req_path}")
 
-                # JULES'S FIX: 加入 --no-input 防止在非互動式環境中掛起
-                pip_command = [
-                    sys.executable, '-m', 'pip', 'install', '--no-input', '-r', req_path
-                ]
-                subprocess.run(pip_command, check=True, capture_output=True, text=True)
-                log.info(f"[{feature}] 成功從 {req_path} 安裝依賴。")
+                    pip_command = [
+                        sys.executable, '-m', 'pip', 'install', '--no-input', '-r', req_path
+                    ]
+                    # 在真實環境中，我們可能希望看到輸出，所以移除 capture_output=True
+                    subprocess.run(pip_command, check=True, text=True)
+                    log.info(f"[{feature}] 成功從 {req_path} 安裝依賴。")
+                else:
+                    log.info(f"[{feature}] 所有依賴均已存在，無需安裝。")
 
             self._set_status(feature, "ready")
 
