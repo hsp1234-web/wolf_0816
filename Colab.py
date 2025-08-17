@@ -433,18 +433,35 @@ def main(project_path_str: str):
         # 步驟 3: (關鍵) 立即取得代理連結
         time.sleep(1) # 等待臨時伺服器线程完全啟動
         max_retries, retry_delay = 20, 1
+
+        js_get_url_script = f'''
+        (async () => {{
+            try {{
+                const url = await google.colab.kernel.proxyPort({port}, {{'cache': false}});
+                return {{'url': url, 'error': null}};
+            }} catch (e) {{
+                return {{'url': null, 'error': e.toString()}};
+            }}
+        }})()
+        '''
+
         for attempt in range(max_retries):
+            log_manager.log("INFO", f"正在嘗試取得代理連結... (第 {attempt + 1}/{max_retries} 次)")
             try:
-                log_manager.log("INFO", f"正在嘗試取得代理連結... (第 {attempt + 1}/{max_retries} 次)")
-                url = colab_output.eval_js(f'google.colab.kernel.proxyPort({port})')
-                if url and url.strip().startswith('http'):
-                    shared_stats['proxy_url'] = url.strip()
+                result = colab_output.eval_js(js_get_url_script)
+
+                if result and result.get('error'):
+                    log_manager.log("WARN", f"獲取代理連結時發生 JS 錯誤: {result['error']}")
+                elif result and result.get('url') and result['url'].strip().startswith('http'):
+                    shared_stats['proxy_url'] = result['url'].strip()
                     log_manager.log("SUCCESS", f"✅✅✅ 成功取得永久代理連結！")
                     break
                 else:
-                    log_manager.log("WARN", f"收到無效的代理回傳值: '{str(url)[:50]}...'")
+                    log_manager.log("WARN", f"收到無效的代理回傳值: '{str(result)[:100]}...'")
+
             except Exception as e:
-                log_manager.log("WARN", f"獲取代理連結時發生錯誤: {e}")
+                log_manager.log("WARN", f"獲取代理連結時發生 Python 錯誤: {e}")
+
             time.sleep(retry_delay)
 
         if not shared_stats.get('proxy_url'):
@@ -506,26 +523,15 @@ def main(project_path_str: str):
 
                 num_logs = len(latest_logs)
 
-                # 產生包含獨立 JS 函式的 HTML
+                # 產生自包含的 HTML，確保核心停止後 JS 仍可運作
                 collapsible_html = f'''
-                <script>
-                    function copyLogsToClipboard(button, text) {{
-                        navigator.clipboard.writeText(text).then(
-                            () => {{ button.innerText = '✅ 已複製!'; }},
-                            () => {{ button.innerText = '❌ 複製失敗'; }}
-                        );
-                        setTimeout(() => {{
-                            button.innerText = `📋 複製這 {num_logs} 條日誌`;
-                        }}, 2000);
-                    }}
-                </script>
                 <details style="margin-top: 15px; border: 1px solid #e0e0e0; padding: 12px; border-radius: 8px; background-color: #f9f9f9;">
                     <summary style="cursor: pointer; font-weight: bold; color: #333;">
                         點此展開/收合最近 {num_logs} 條詳細日誌
                     </summary>
                     <div style="margin-top: 12px;">
                         <button
-                            onclick="copyLogsToClipboard(this, {logs_for_copy_js})"
+                            onclick='navigator.clipboard.writeText({logs_for_copy_js}).then(() => {{this.innerText="✅ 已複製!";}}, () => {{this.innerText="❌ 複製失敗";}}); setTimeout(() => {{this.innerText="📋 複製這 {num_logs} 條日誌";}}, 2000)'
                             style="padding: 6px 12px; margin-bottom: 12px; cursor: pointer; border: 1px solid #ccc; border-radius: 5px; background-color: #fff;">
                             📋 複製這 {num_logs} 條日誌
                         </button>
