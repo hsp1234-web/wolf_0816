@@ -7,6 +7,10 @@ import threading
 import time
 from typing import Dict, List
 
+# JULES: 從 api_server.py 引入相同的模式檢測邏輯
+# 這將讓我們能夠根據環境變數決定是否要跳過實際的安裝步驟
+IS_MOCK_MODE = os.environ.get("API_MODE", "real") == "mock"
+
 log = logging.getLogger('feature_manager')
 log.setLevel(logging.INFO)
 if not log.handlers:
@@ -45,50 +49,51 @@ class FeatureManager:
     def _check_and_install(self, feature: str):
         """
         檢查並安裝單一功能的依賴。
-        如果設定了 MOCK_INSTALL_DELAY，則只會模擬延遲，不進行實際安裝。
+        如果 IS_MOCK_MODE 為 True，則立即將狀態設為 ready，並跳過所有檢查。
         """
         self._set_status(feature, "installing")
         log.info(f"[{feature}] 開始檢查和安裝...")
 
+        # JULES'S FIX: 根據 AGENTS.md 的要求，在模擬模式下完全跳過安裝
+        if IS_MOCK_MODE:
+            log.info(f"[{feature}] (模擬模式) 跳過實際安裝，直接將狀態設為 'ready'。")
+            # 模擬一個短暫的延遲，讓 UI 看起來更自然
+            time.sleep(self.mock_delay if self.mock_delay > 0 else 1)
+            self._set_status(feature, "ready")
+            return
+
         try:
-            # 測試環境下的模擬邏輯
-            if self.mock_delay > 0:
-                log.info(f"[{feature}] (模擬模式) 偵測到 MOCK_INSTALL_DELAY，將等待 {self.mock_delay} 秒...")
-                time.sleep(self.mock_delay)
-                log.info(f"[{feature}] (模擬模式) 等待完成。")
-
             # 真實環境下的安裝邏輯
+            modules_to_check = {
+                "whisper": ["torch", "whisper"],
+                "ytdlp": ["yt_dlp"],
+            }
+
+            if feature not in modules_to_check:
+                raise ValueError(f"未知的 feature: {feature}")
+
+            all_modules_present = True
+            for module_name in modules_to_check[feature]:
+                try:
+                    __import__(module_name)
+                except ImportError:
+                    all_modules_present = False
+                    break
+
+            if not all_modules_present:
+                log.info(f"[{feature}] 偵測到缺少依賴，將從 requirements-features.txt 進行安裝...")
+                req_path = os.path.join(ROOT_DIR, 'requirements-features.txt')
+                if not os.path.exists(req_path):
+                    raise FileNotFoundError(f"找不到 requirements-features.txt 於 {req_path}")
+
+                pip_command = [
+                    sys.executable, '-m', 'pip', 'install', '--no-input', '-r', req_path
+                ]
+                # 在真實環境中，我們可能希望看到輸出，所以移除 capture_output=True
+                subprocess.run(pip_command, check=True, text=True)
+                log.info(f"[{feature}] 成功從 {req_path} 安裝依賴。")
             else:
-                modules_to_check = {
-                    "whisper": ["torch", "whisper"],
-                    "ytdlp": ["yt_dlp"],
-                }
-
-                if feature not in modules_to_check:
-                    raise ValueError(f"未知的 feature: {feature}")
-
-                all_modules_present = True
-                for module_name in modules_to_check[feature]:
-                    try:
-                        __import__(module_name)
-                    except ImportError:
-                        all_modules_present = False
-                        break
-
-                if not all_modules_present:
-                    log.info(f"[{feature}] 偵測到缺少依賴，將從 requirements-features.txt 進行安裝...")
-                    req_path = os.path.join(ROOT_DIR, 'requirements-features.txt')
-                    if not os.path.exists(req_path):
-                        raise FileNotFoundError(f"找不到 requirements-features.txt 於 {req_path}")
-
-                    pip_command = [
-                        sys.executable, '-m', 'pip', 'install', '--no-input', '-r', req_path
-                    ]
-                    # 在真實環境中，我們可能希望看到輸出，所以移除 capture_output=True
-                    subprocess.run(pip_command, check=True, text=True)
-                    log.info(f"[{feature}] 成功從 {req_path} 安裝依賴。")
-                else:
-                    log.info(f"[{feature}] 所有依賴均已存在，無需安裝。")
+                log.info(f"[{feature}] 所有依賴均已存在，無需安裝。")
 
             self._set_status(feature, "ready")
 

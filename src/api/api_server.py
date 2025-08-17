@@ -700,8 +700,8 @@ async def validate_api_key(request: Request):
         raise HTTPException(status_code=500, detail=f"伺服器內部錯誤: {e}")
 
 
-@app.get("/api/youtube/models")
-async def get_youtube_models():
+@app.post("/api/youtube/models")
+async def get_youtube_models(request: Request):
     """獲取可用的 Gemini 模型列表。"""
     # 在模擬模式下，回傳一個固定的假列表
     if IS_MOCK_MODE:
@@ -713,19 +713,28 @@ async def get_youtube_models():
         }
 
     # 真實模式下，從 gemini_processor.py 獲取
-    # 注意：此端點現在依賴於一個有效的 GOOGLE_API_KEY 環境變數
     try:
-        if not os.environ.get("GOOGLE_API_KEY"):
-             raise HTTPException(status_code=401, detail="後端尚未設定有效的 Google API 金鑰。")
+        # 從 POST body 中獲取 API 金鑰
+        payload = await request.json()
+        api_key = payload.get("api_key")
+        if not api_key:
+            raise HTTPException(status_code=400, detail="請求中未提供 API 金鑰。")
 
         tool_script_path = ROOT_DIR / "src" / "tools" / "gemini_processor.py"
         cmd = [sys.executable, str(tool_script_path), "--command=list_models"]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True, encoding='utf-8')
+
+        # 將金鑰作為環境變數傳遞給子程序
+        env = os.environ.copy()
+        env["GOOGLE_API_KEY"] = api_key
+
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, encoding='utf-8', env=env)
         models = json.loads(result.stdout)
         return {"models": models}
     except subprocess.CalledProcessError as e:
         log.error(f"獲取 Gemini 模型列表失敗，可能是因為 API 金鑰無效。Stderr: {e.stderr}")
         raise HTTPException(status_code=401, detail="無法使用提供的 API 金鑰獲取模型列表。")
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="無效的 JSON 請求。")
     except Exception as e:
         log.error(f"獲取 Gemini 模型列表時發生錯誤: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="無法獲取 Gemini 模型列表。")
@@ -1051,8 +1060,12 @@ def trigger_youtube_processing(task_id: str, loop: asyncio.AbstractEventLoop):
             stdout_output, stderr_output = process_dl.communicate()
 
             if process_dl.returncode != 0:
-                raise RuntimeError(f"YouTube downloader failed. stderr: {stderr_output}")
+                # JULES'S FIX: 增強錯誤日誌，同時記錄 stdout 和 stderr
+                error_log_message = f"YouTube downloader failed. stderr: [{stderr_output.strip()}], stdout: [{stdout_output.strip()}]"
+                log.error(f"❌ [執行緒] {error_log_message}")
+                raise RuntimeError(error_log_message)
 
+            # 只有在成功時才嘗試解析 stdout
             download_result = json.loads(stdout_output)
             media_file_path = download_result['output_path'] # This is an absolute path
             video_title = download_result.get('video_title', '無標題影片')

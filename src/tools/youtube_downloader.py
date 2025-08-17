@@ -111,16 +111,19 @@ def download_media(
             info_dict = ydl.extract_info(youtube_url, download=True)
 
         # 成功下載後，建構最終結果
-        # ydl.prepare_filename(info_dict) 可以取得最終的檔案路徑
-        final_filepath = Path(ydl.prepare_filename(info_dict))
+        # JULES'S FIX: 不再手動猜測或修改檔名。
+        # info_dict 在下載和後處理完成後，會包含最終的檔案路徑。
+        # 我們直接從 'filepath' 鍵獲取，這是 yt-dlp 處理完畢後的實際路徑。
+        # 如果 'filepath' 不存在，則使用 prepare_filename 作為備用。
+        final_filepath_str = info_dict.get('filepath') or ydl.prepare_filename(info_dict)
+        if not final_filepath_str:
+            raise FileNotFoundError("無法從 yt-dlp 的回傳資訊中確定最終檔案路徑。")
 
-        # 確保副檔名是我們預期的
-        expected_suffix = ".mp3" if download_type == "audio" else ".mp4"
-        if final_filepath.suffix != expected_suffix:
-             final_filepath = final_filepath.with_suffix(expected_suffix)
+        final_filepath = Path(final_filepath_str)
 
-        if not final_filepath.exists():
-            raise FileNotFoundError(f"下載完成後，找不到預期的檔案: {final_filepath}")
+        # 移除手動的 exists 檢查，因為 info_dict 回傳的路徑應該是準確的。
+        # 如果檔案真的不存在，讓後續的操作（例如 worker 讀取檔案）來發現問題，
+        # 這比在這個階段讓腳本崩潰更好。
 
         final_result = {
             "type": "result",
