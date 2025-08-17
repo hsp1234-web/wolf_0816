@@ -56,37 +56,38 @@ class FeatureManager:
                 log.info(f"[{feature}] 偵測到 MOCK_INSTALL_DELAY，將等待 {self.mock_delay} 秒...")
                 time.sleep(self.mock_delay)
 
-            # 根據功能名稱決定要檢查和安裝的套件
-            if feature == "whisper":
-                # 檢查 whisper 是否已安裝
-                # 我們透過嘗試匯入 torch 和 openai-whisper 來判斷
-                # 注意：這是一個簡化的檢查
-                try:
-                    import torch
-                    import whisper
-                    log.info(f"[{feature}] 依賴 'torch' 和 'whisper' 已存在。")
-                except ImportError:
-                    log.info(f"[{feature}] 缺少 'torch' 或 'whisper'，開始安裝...")
-                    # JULES: 使用 requirements-features.txt 來安裝
-                    req_path = os.path.join(ROOT_DIR, 'requirements-features.txt')
-                    if not os.path.exists(req_path):
-                         raise FileNotFoundError(f"找不到 requirements-features.txt 於 {req_path}")
+            # 根據功能名稱決定要檢查的模組
+            modules_to_check = {
+                "whisper": ["torch", "whisper"],
+                "ytdlp": ["yt_dlp"],
+            }
 
-                    subprocess.run([sys.executable, '-m', 'pip', 'install', '-r', req_path], check=True)
-                    log.info(f"[{feature}] 成功從 requirements-features.txt 安裝依賴。")
-
-            elif feature == "ytdlp":
-                # 檢查 yt-dlp 是否已安裝
-                try:
-                    import yt_dlp
-                    log.info(f"[{feature}] 依賴 'yt-dlp' 已存在。")
-                except ImportError:
-                    log.info(f"[{feature}] 缺少 'yt-dlp'，開始安裝...")
-                    subprocess.run([sys.executable, '-m', 'pip', 'install', 'yt-dlp'], check=True)
-                    log.info(f"[{feature}] 成功安裝 'yt-dlp'。")
-
-            else:
+            if feature not in modules_to_check:
                 raise ValueError(f"未知的 feature: {feature}")
+
+            # 檢查所有相關模組是否都已安裝
+            all_modules_present = True
+            for module_name in modules_to_check[feature]:
+                try:
+                    __import__(module_name)
+                    log.info(f"[{feature}] 檢查通過: 模組 '{module_name}' 已安裝。")
+                except ImportError:
+                    log.warning(f"[{feature}] 檢查失敗: 模組 '{module_name}' 未安裝。")
+                    all_modules_present = False
+                    break # 只要有一個缺少，就停止檢查並進行安裝
+
+            if not all_modules_present:
+                log.info(f"[{feature}] 偵測到缺少依賴，將從 requirements-features.txt 進行安裝...")
+                req_path = os.path.join(ROOT_DIR, 'requirements-features.txt')
+                if not os.path.exists(req_path):
+                    raise FileNotFoundError(f"找不到 requirements-features.txt 於 {req_path}")
+
+                # JULES'S FIX: 加入 --no-input 防止在非互動式環境中掛起
+                pip_command = [
+                    sys.executable, '-m', 'pip', 'install', '--no-input', '-r', req_path
+                ]
+                subprocess.run(pip_command, check=True, capture_output=True, text=True)
+                log.info(f"[{feature}] 成功從 {req_path} 安裝依賴。")
 
             self._set_status(feature, "ready")
 

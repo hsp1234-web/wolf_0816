@@ -2,3 +2,4 @@
 # on-demand by the FeatureManager.
 openai-whisper
 torch
+yt-dlp
