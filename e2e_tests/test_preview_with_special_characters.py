@@ -10,29 +10,17 @@ from playwright.sync_api import Page, expect
 # 專案根目錄
 ROOT_DIR = Path(__file__).resolve().parent.parent
 UPLOADS_DIR = ROOT_DIR / "uploads"
-# 從環境變數讀取由測試運行器提供的目標 URL
-TARGET_URL = os.environ.get("API_URL", "http://127.0.0.1:8001")
 
-# --- Database Client ---
-# 確保 sys.path 包含 src 目錄，以便匯入 db 客戶端
-import sys
-sys.path.insert(0, str(ROOT_DIR / "src"))
-try:
-    from db.client import get_client
-    db_client = get_client()
-except ImportError as e:
-    print(f"無法匯入資料庫客戶端: {e}")
-    db_client = None
+# --- Database Client is now provided by a fixture ---
 
 # --- Test Fixture for Setup and Teardown ---
 @pytest.fixture(scope="function")
-def special_char_task():
+def special_char_task(db_client_fixture):
     """
     一個 Pytest fixture，用於在測試前後自動建立和清理
     一個包含特殊字元檔名的任務。
     """
-    if not db_client:
-        pytest.skip("資料庫客戶端無法使用，跳過此測試")
+    db_client = db_client_fixture
 
     # 1. Setup: 建立假檔案和假任務
     task_id = str(uuid.uuid4())
@@ -84,7 +72,7 @@ def special_char_task():
         print(f"清理過程中發生錯誤: {e}")
 
 # --- Test Case ---
-def test_preview_of_file_with_special_characters(page: Page, special_char_task):
+def test_preview_of_file_with_special_characters(page: Page, live_server: str, special_char_task):
     """
     驗證前端是否可以正確處理並預覽帶有特殊字元的檔名。
     """
@@ -92,9 +80,10 @@ def test_preview_of_file_with_special_characters(page: Page, special_char_task):
 
     task_info = special_char_task
     video_title = task_info["video_title"]
+    target_url = live_server
 
     print(f"正在測試標題為 '{video_title}' 的任務")
-    page.goto(TARGET_URL)
+    page.goto(target_url)
 
     print("切換到媒體下載器分頁...")
     # JULES'S FIX (2025-08-17): 更新為 Vue app 的新版定位器
@@ -113,7 +102,7 @@ def test_preview_of_file_with_special_characters(page: Page, special_char_task):
 
     print("正在監聽 /media/ 請求...")
     with page.expect_response(
-        lambda response: response.url.startswith(f"{TARGET_URL}/media/") and response.status == 200,
+        lambda response: response.url.startswith(f"{target_url}/media/") and response.status == 200,
         timeout=10000
     ) as response_info:
         print("點擊「預覽」按鈕...")
