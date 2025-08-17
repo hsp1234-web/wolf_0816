@@ -612,7 +612,7 @@ def main(project_path_str: str):
 
             try:
                 # 等待 JS 執行結果，使用新的、較短的 Python 超時
-                output = result_queue.get(timeout={py_timeout_sec})
+                output = result_queue.get(timeout=py_timeout_sec)
 
                 # 檢查執行緒中是否發生錯誤
                 if output.get('error'):
