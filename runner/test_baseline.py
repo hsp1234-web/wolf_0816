@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import subprocess
 import sys
 import time
@@ -22,11 +23,13 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     stream=sys.stdout
 )
-log = logging.getLogger('LocalTestRunner')
+log = logging.getLogger('BaselineTestRunner')
 
 class TestRunner:
     """
+    (基準測試版本)
     負責在本地模擬環境中啟動伺服器、執行 E2E 測試，並確保在超時內完成。
+    此版本增加了詳細的計時功能，以建立效能基準。
     """
     def __init__(self):
         self.processes = []
@@ -34,23 +37,38 @@ class TestRunner:
         self.api_url = None
         self.log_queue = queue.Queue()
         self.exit_code = 0
+        self.timings = {} # 用於儲存每個步驟的耗時
+
+    def _time_execution(self, step_name: str, func, *args, **kwargs) -> bool:
+        """一個包裝器，用於計時並執行一個步驟。"""
+        log.info(f"--- 開始步驟: {step_name} ---")
+        start_time = time.monotonic()
+        try:
+            result = func(*args, **kwargs)
+            if not result:
+                log.error(f"步驟 '{step_name}' 回傳失敗狀態。")
+        except Exception as e:
+            log.error(f"步驟 '{step_name}' 拋出未處理的異常: {e}", exc_info=True)
+            result = False
+
+        end_time = time.monotonic()
+        duration = end_time - start_time
+        self.timings[step_name] = duration
+        log.info(f"--- 結束步驟: {step_name} (耗時: {duration:.2f} 秒) ---")
+        return result
 
     def _install_dependencies(self):
-        """安裝測試所需的依賴 (使用 uv 進行優化)。"""
+        """安裝測試所需的依賴。"""
         log.info("📋 步驟 1/6: 安裝測試依賴...")
         try:
             log.info("  - 安裝 Playwright 瀏覽器 (chromium)...")
+            # 注意：Playwright 的安裝可能很耗時，但通常有快取。
             subprocess.run(["npx", "playwright", "install", "chromium"], check=True, capture_output=True, timeout=120)
 
-            # --- UV 優化 ---
-            log.info("  - 正在安裝 uv 套件...")
-            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "uv"], check=True, capture_output=True)
-
             req_file = ROOT_DIR / "requirements-server.txt"
-            log.info(f"  - 從 {req_file} 安裝 Python 套件 (使用 uv)...")
-            command = [sys.executable, "-m", "uv", "pip", "install", "-q", "-r", str(req_file)]
+            log.info(f"  - 從 {req_file} 安裝 Python 套件 (使用 pip)...")
+            command = [sys.executable, "-m", "pip", "install", "-q", "-r", str(req_file)]
             subprocess.run(command, check=True, capture_output=True, text=True)
-            # --- 優化結束 ---
 
             log.info("✅ 依賴安裝完成。")
             return True
@@ -107,7 +125,6 @@ class TestRunner:
         env["PYTHONPATH"] = str(ROOT_DIR / "src") + os.pathsep + env.get("PYTHONPATH", "")
         env["API_MODE"] = "mock"
 
-        # --- 啟動 DB Manager ---
         db_manager_cmd = [sys.executable, str(ROOT_DIR / "src" / "db" / "manager.py")]
         db_proc = subprocess.Popen(
             db_manager_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -115,9 +132,8 @@ class TestRunner:
         )
         self.processes.append(("db_manager", db_proc))
         log.info(f"  - DB Manager (PID: {db_proc.pid}) 啟動中...")
-        time.sleep(2) # 等待 DB Manager 建立 port 檔案
+        time.sleep(2)
 
-        # --- 啟動 API Server ---
         self.api_port = self._find_free_port()
         self.api_url = f"http://127.0.0.1:{self.api_port}"
         log.info(f"  - 為 API 伺服器指派埠號: {self.api_port}")
@@ -126,7 +142,6 @@ class TestRunner:
             sys.executable, str(ROOT_DIR / "src" / "api" / "api_server.py"),
             "--port", str(self.api_port)
         ]
-
         api_proc = subprocess.Popen(
             api_server_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding='utf-8', preexec_fn=os.setsid, env=env
@@ -167,7 +182,6 @@ class TestRunner:
         log.info("🧪 步驟 6/6: 執行 Playwright E2E 測試...")
         env = os.environ.copy()
         env["API_URL"] = self.api_url
-
         test_dir = ROOT_DIR / "e2e_tests"
         pytest_cmd = [sys.executable, "-m", "pytest", str(test_dir)]
 
@@ -175,24 +189,17 @@ class TestRunner:
             result = subprocess.run(
                 pytest_cmd, capture_output=True, text=True, encoding='utf-8', env=env, timeout=60
             )
-            print("--- Pytest stdout ---")
-            print(result.stdout)
-            print("--- Pytest stderr ---")
-            print(result.stderr)
-
-            if result.returncode == 0:
-                log.info("✅ 所有 E2E 測試通過！")
-                self.exit_code = 0
-            else:
+            if result.returncode != 0:
                 log.error(f"❌ E2E 測試失敗，返回碼: {result.returncode}")
+                print("--- Pytest stdout ---\n" + result.stdout)
+                print("--- Pytest stderr ---\n" + result.stderr)
                 self.exit_code = 1
-
+            else:
+                log.info("✅ 所有 E2E 測試通過！")
         except subprocess.TimeoutExpired:
             log.error("❌ Pytest 執行超時！")
             self.exit_code = 1
-        except Exception as e:
-            log.error(f"❌ 執行測試時發生嚴重錯誤: {e}", exc_info=True)
-            self.exit_code = 1
+        return self.exit_code == 0
 
     def _find_free_port(self) -> int:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -201,16 +208,16 @@ class TestRunner:
 
     def _shutdown(self):
         log.info("🛑 正在關閉所有服務...")
+        # 省略詳細關閉邏輯...
         for name, proc in reversed(self.processes):
             if proc.poll() is None:
-                try:
-                    os.killpg(os.getpgid(proc.pid), subprocess.signal.SIGTERM)
-                    proc.wait(timeout=5)
-                except (ProcessLookupError, subprocess.TimeoutExpired, AttributeError):
-                    try:
-                        os.killpg(os.getpgid(proc.pid), subprocess.signal.SIGKILL)
-                    except Exception:
-                        pass
+                try: os.killpg(os.getpgid(proc.pid), subprocess.signal.SIGTERM)
+                except Exception: pass
+        time.sleep(2)
+        for name, proc in reversed(self.processes):
+            if proc.poll() is None:
+                try: os.killpg(os.getpgid(proc.pid), subprocess.signal.SIGKILL)
+                except Exception: pass
         log.info("👋 所有服務已關閉。")
 
     def _print_logs(self):
@@ -218,22 +225,59 @@ class TestRunner:
             name, line = self.log_queue.get_nowait()
             print(f"[{name}] {line}")
 
+    def _print_timing_report(self, overall_start_time):
+        """印出計時報告"""
+        log.info("="*50)
+        log.info("📊 效能計時報告 (基準測試)")
+        log.info("="*50)
+
+        total_till_health_check = 0
+        for step, duration in self.timings.items():
+            log.info(f"  - {step:<25}: {duration:.2f} 秒")
+            if step != "執行 E2E 測試":
+                total_till_health_check += duration
+
+        log.info("-" * 50)
+        log.info(f"  - {'服務就緒總時間 (到健康檢查通過)':<25}: {total_till_health_check:.2f} 秒")
+
+        overall_duration = time.monotonic() - overall_start_time
+        log.info(f"  - {'測試流程總耗時':<25}: {overall_duration:.2f} 秒")
+        log.info("="*50)
+
+
     def run(self):
-        start_time = time.time()
+        overall_start_time = time.monotonic()
         try:
-            if not self._install_dependencies(): self.exit_code = 1; return
-            if not self._build_frontend(): self.exit_code = 1; return
-            if not self._initialize_db(): self.exit_code = 1; return
-            if not self._start_services(): self.exit_code = 1; return
-            if not self._run_health_check(): self.exit_code = 1; return
-            self._run_tests()
+            steps = [
+                ("安裝依賴", self._install_dependencies),
+                ("建置前端", self._build_frontend),
+                ("初始化資料庫", self._initialize_db),
+                ("啟動服務", self._start_services),
+                ("健康檢查", self._run_health_check),
+            ]
+
+            for name, step_func in steps:
+                if not self._time_execution(name, step_func):
+                    self.exit_code = 1
+                    return
+
+            # 健康檢查通過後，服務已就緒
+            time_to_ready = time.monotonic() - overall_start_time
+            self.timings["服務就緒總時間"] = time_to_ready
+            log.info(f"🎉🎉🎉 服務已就緒！總耗時: {time_to_ready:.2f} 秒 🎉🎉🎉")
+
+            # 執行測試是可選的，但我們還是計時它
+            if not self._time_execution("執行 E2E 測試", self._run_tests):
+                self.exit_code = 1
+
         except Exception as e:
-            log.error(f"\n🛑 執行期間發生錯誤: {e}", exc_info=True)
+            log.error(f"\n🛑 執行期間發生嚴重錯誤: {e}", exc_info=True)
             self.exit_code = 1
         finally:
             self._print_logs()
             self._shutdown()
-            if time.time() - start_time > GLOBAL_TIMEOUT:
+            self._print_timing_report(overall_start_time)
+            if time.monotonic() - overall_start_time > GLOBAL_TIMEOUT:
                 log.error(f"🔥🔥🔥 全局超時！已達到 {GLOBAL_TIMEOUT} 秒的執行時間上限。")
                 self.exit_code = 1
             log.info(f"測試流程結束，退出碼: {self.exit_code}")

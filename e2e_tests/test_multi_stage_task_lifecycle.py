@@ -81,7 +81,7 @@ def notify_frontend_of_update(api_url: str, task_id: str, status: str, result: d
 
 
 # --- Test Case ---
-def test_multi_stage_task_lifecycle_ui_update(page: Page, live_server: str, multi_stage_task_chain):
+def test_multi_stage_task_lifecycle_ui_update(page: Page, live_server: str, multi_stage_task_chain, db_client_fixture):
     """
     驗證前端 UI 能否正確處理一個多階段任務的完整生命週期。
     此測試根據目前前端的實際行為進行調整：
@@ -110,7 +110,7 @@ def test_multi_stage_task_lifecycle_ui_update(page: Page, live_server: str, mult
     # --- Part 2: 模擬第一階段 (下載) 完成 ---
     print("\n--- 階段 2: 模擬下載任務完成 ---")
     download_result = {"output_path": "/fake/path.mp3", "video_title": video_title}
-    db_client.update_task_status(download_task_id, "completed", json.dumps(download_result))
+    db_client_fixture.update_task_status(download_task_id, "completed", json.dumps(download_result))
     notify_frontend_of_update(target_url, download_task_id, "completed", download_result)
     page.wait_for_timeout(1000)
 
@@ -127,7 +127,7 @@ def test_multi_stage_task_lifecycle_ui_update(page: Page, live_server: str, mult
     # --- Part 3: 模擬第二階段 (分析) 完成 ---
     print("\n--- 階段 3: 模擬分析任務完成 ---")
     final_result = {"output_path": "/fake/report.html", "video_title": video_title}
-    db_client.update_task_status(process_task_id, "completed", json.dumps(final_result))
+    db_client_fixture.update_task_status(process_task_id, "completed", json.dumps(final_result))
     notify_frontend_of_update(target_url, process_task_id, "completed", final_result)
     page.wait_for_timeout(1000)
 
