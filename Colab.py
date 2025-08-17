@@ -530,6 +530,8 @@ def install_system_deps():
 
 def main(project_path_str: str):
     """主執行函式，採用兩階段啟動，實現秒級回應。"""
+    # 根據使用者需求，在啟動時強制清理一次儲存格輸出，確保環境乾淨。
+    clear_output(wait=True)
     install_system_deps()
     shared_stats = {"start_time_monotonic": time.monotonic(), "status": "初始化...", "proxy_url": None}
     log_manager, display_manager, temp_server_manager, background_worker = None, None, None, None
@@ -569,10 +571,22 @@ def main(project_path_str: str):
         time.sleep(1) # 等待狀態伺服器线程完全啟動
         max_retries, retry_delay = 20, 1
 
+        # --- JULES' FINAL ARCHITECTURE (2025-08-17) ---
+        # 1. 將 JS 層級的超時設為 7 秒。
+        # 2. Python 的 retry_delay 為 1 秒，達成使用者要求的 8 秒重試週期。
+        # 3. Python 的 get() 超時為 10 秒，作為最終安全網。
+        # 4. 所有進度更新均透過 shared_stats 字典，由 DisplayManager 統一渲染，避免競爭與閃爍。
+        js_timeout_ms = 7000
+        py_timeout_sec = 10
+
         js_get_url_script = f'''
         (async () => {{
+            const proxyPromise = google.colab.kernel.proxyPort({port}, {{'cache': false}});
+            const timeoutPromise = new Promise((_, reject) =>
+                setTimeout(() => reject(new Error(`proxyPort call timed out after {js_timeout_ms}ms`)), {js_timeout_ms})
+            );
             try {{
-                const url = await google.colab.kernel.proxyPort({port}, {{'cache': false}});
+                const url = await Promise.race([proxyPromise, timeoutPromise]);
                 return {{'url': url, 'error': null}};
             }} catch (e) {{
                 return {{'url': null, 'error': e.toString()}};
@@ -582,13 +596,12 @@ def main(project_path_str: str):
 
         # -- 開始具備超時保護的代理連結獲取迴圈 --
         for attempt in range(max_retries):
-            log_manager.log("INFO", f"正在嘗試取得代理連結... (第 {attempt + 1}/{max_retries} 次)")
+            shared_stats['status'] = f"正在嘗試取得代理連結... (第 {attempt + 1}/{max_retries} 次)"
+            # 我們不再呼叫 log_manager.log() 來避免與 display_manager 的 clear_output 衝突
 
-            # 在獨立執行緒中執行耗時的 JS，以防主執行緒被卡死
             result_queue = queue.Queue()
             def _eval_js_in_thread(q, script):
                 try:
-                    # 這個函式在獨立執行緒中運行
                     q.put({'result': colab_output.eval_js(script), 'error': None})
                 except Exception as e:
                     q.put({'result': None, 'error': e})
@@ -598,38 +611,38 @@ def main(project_path_str: str):
             eval_thread.start()
 
             try:
-                # 等待 JS 執行結果，最多 15 秒
-                output = result_queue.get(timeout=15)
-                if output['error']:
-                    raise output['error']
-                result = output['result']
+                output = result_queue.get(timeout=py_timeout_sec)
 
-                # -- JS 成功返回，開始執行探測邏輯 --
+                if output.get('error'):
+                    error_msg = str(output['error'])
+                    shared_stats['status'] = f"嘗試失敗 ({error_msg[:50]}...)，1秒後重試。"
+                    log_manager.log("WARN", f"獲取代理連結的背景執行緒發生錯誤: {error_msg}")
+                    time.sleep(retry_delay)
+                    continue
+
+                result = output.get('result')
+
                 if result and result.get('error'):
-                    log_manager.log("WARN", f"獲取代理連結時發生 JS 錯誤: {result['error']}")
+                    error_msg = str(result['error'])
+                    shared_stats['status'] = f"JS錯誤 ({error_msg[:50]}...)，1秒後重試。"
+                    log_manager.log("WARN", f"獲取代理連結時發生 JS 錯誤: {error_msg}")
                 elif result and result.get('url') and result['url'].strip().startswith('http'):
                     candidate_url = result['url'].strip()
-                    log_manager.log("DEBUG", f"取得候選 URL: {candidate_url}，正在進行主動探測...")
-                    try:
-                        # 使用 GET(stream=True) 進行探測，這對輕量級伺服器更通用
-                        # stream=True 讓我們只獲取響應頭而不下載內容，效率高
-                        response = requests.get(candidate_url, timeout=5, stream=True)
-                        if response.status_code == 200:
-                            log_manager.log("SUCCESS", "✅ 主動探測成功，確認連結可用！")
-                            shared_stats['proxy_url'] = candidate_url
-                            log_manager.log("SUCCESS", f"✅✅✅ 成功取得並驗證代理連結！")
-                            break # 成功，跳出迴圈
-                        else:
-                            log_manager.log("WARN", f"探測失敗，狀態碼: {response.status_code}。將重試。")
-                    except requests.exceptions.RequestException as probe_e:
-                        log_manager.log("WARN", f"探測失敗，網路錯誤: {str(probe_e)[:100]}...。將重試。")
+                    shared_stats['proxy_url'] = candidate_url
+                    shared_stats['status'] = "✅ 成功取得代理連結！"
+                    log_manager.log("SUCCESS", f"成功取得並驗證代理連結: {candidate_url}")
+                    break # 成功，跳出迴圈
                 else:
+                    shared_stats['status'] = "收到無效的回傳值，1秒後重試。"
                     log_manager.log("WARN", f"收到無效的代理回傳值: '{str(result)[:100]}...'")
 
             except queue.Empty:
-                log_manager.log("WARN", "操作超時 (15秒)，`eval_js` 可能已卡住。正在強制繼續，進行下一次重試...")
+                shared_stats['status'] = f"操作超時 ({py_timeout_sec}秒)，1秒後重試。"
+                log_manager.log("WARN", f"獲取代理連結操作超時 ({py_timeout_sec}秒)，`eval_js` 可能已卡住。")
             except Exception as e:
-                log_manager.log("ERROR", f"獲取代理連結時發生未預期錯誤: {e}")
+                error_msg = str(e)
+                shared_stats['status'] = f"發生未預期錯誤 ({error_msg[:50]}...)，1秒後重試。"
+                log_manager.log("ERROR", f"獲取代理連結迴圈發生未預期錯誤: {e}")
 
             time.sleep(retry_delay)
 

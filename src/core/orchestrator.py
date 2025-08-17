@@ -230,6 +230,14 @@ def main():
 
         log.info("✅ 資料庫管理者服務已完全就緒。")
 
+        # 根據 2025-08-17 的使用者回報，此處存在競爭條件 (race condition)。
+        # 即使 wait_for_service 確認埠號已開啟，DB Manager 的內部程序
+        # (例如，資料庫 schema 的建立) 可能尚未完全完成。
+        # 加入一個短暫的延遲作為緩衝，確保在設定日誌處理器之前，
+        # `system_logs` 資料表已確實可用。
+        log.info("正在等待 2 秒作為緩衝，以確保資料庫 schema 完全就緒...")
+        time.sleep(2)
+
         # --- JULES' FIX START ---
         # 修復：在 DB Manager 就緒後，再設定資料庫日誌，以避免 race condition
         setup_database_logging()
