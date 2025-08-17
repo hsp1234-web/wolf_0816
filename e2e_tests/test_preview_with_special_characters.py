@@ -10,29 +10,17 @@ from playwright.sync_api import Page, expect
 # 專案根目錄
 ROOT_DIR = Path(__file__).resolve().parent.parent
 UPLOADS_DIR = ROOT_DIR / "uploads"
-# 從環境變數讀取由測試運行器提供的目標 URL
-TARGET_URL = os.environ.get("API_URL", "http://127.0.0.1:8001")
 
-# --- Database Client ---
-# 確保 sys.path 包含 src 目錄，以便匯入 db 客戶端
-import sys
-sys.path.insert(0, str(ROOT_DIR / "src"))
-try:
-    from db.client import get_client
-    db_client = get_client()
-except ImportError as e:
-    print(f"無法匯入資料庫客戶端: {e}")
-    db_client = None
+# --- Database Client is now provided by a fixture ---
 
 # --- Test Fixture for Setup and Teardown ---
 @pytest.fixture(scope="function")
-def special_char_task():
+def special_char_task(db_client_fixture):
     """
     一個 Pytest fixture，用於在測試前後自動建立和清理
     一個包含特殊字元檔名的任務。
     """
-    if not db_client:
-        pytest.skip("資料庫客戶端無法使用，跳過此測試")
+    db_client = db_client_fixture
 
     # 1. Setup: 建立假檔案和假任務
     task_id = str(uuid.uuid4())
@@ -84,8 +72,7 @@ def special_char_task():
         print(f"清理過程中發生錯誤: {e}")
 
 # --- Test Case ---
-@pytest.mark.skip(reason="此測試揭露了一個前端 bug：預覽模態框未對包含特殊字元的 URL 進行編碼，導致 404 錯誤。在前端修復前，暫時跳過此測試。")
-def test_preview_of_file_with_special_characters(page: Page, special_char_task):
+def test_preview_of_file_with_special_characters(page: Page, live_server: str, special_char_task):
     """
     驗證前端是否可以正確處理並預覽帶有特殊字元的檔名。
     """
@@ -93,9 +80,10 @@ def test_preview_of_file_with_special_characters(page: Page, special_char_task):
 
     task_info = special_char_task
     video_title = task_info["video_title"]
+    target_url = live_server
 
     print(f"正在測試標題為 '{video_title}' 的任務")
-    page.goto(TARGET_URL)
+    page.goto(target_url)
 
     print("切換到媒體下載器分頁...")
     # JULES'S FIX (2025-08-17): 更新為 Vue app 的新版定位器
@@ -103,8 +91,9 @@ def test_preview_of_file_with_special_characters(page: Page, special_char_task):
 
     # JULES'S FIX (2025-08-17): 已完成任務現在位於全域的 #completed-tasks 容器中
     completed_tasks_container = page.locator("#completed-tasks")
-    # JULES'S FIX (2025-08-17): 由於前端的 bug，任務會以 task_id 顯示，而不是 video_title
-    task_item = completed_tasks_container.locator(".task-item", has_text=task_info["task_id"])
+    # [JULES'S FIX 2025-08-17] 之前因為前端 bug，這裡用 task_id 搜尋。
+    # 現在前端 bug 已修復，我們驗證正確的行為：UI 應該顯示 video_title。
+    task_item = completed_tasks_container.locator(".task-item", has_text=video_title)
     expect(task_item).to_be_visible(timeout=10000)
     print(f"✅ 在 UI 上成功找到任務 '{video_title}'")
 
@@ -113,7 +102,7 @@ def test_preview_of_file_with_special_characters(page: Page, special_char_task):
 
     print("正在監聽 /media/ 請求...")
     with page.expect_response(
-        lambda response: response.url.startswith(f"{TARGET_URL}/media/") and response.status == 200,
+        lambda response: response.url.startswith(f"{target_url}/media/") and response.status == 200,
         timeout=10000
     ) as response_info:
         print("點擊「預覽」按鈕...")
@@ -127,7 +116,8 @@ def test_preview_of_file_with_special_characters(page: Page, special_char_task):
     assert "%26" in response.url, "URL 中缺少了 '&' 的編碼 '%26'"
     print("✅ URL 編碼驗證成功")
 
-    preview_modal = page.locator("#preview-modal")
+    # JULES'S FIX (2025-08-17): 修正預覽彈窗的定位器
+    preview_modal = page.locator(".modal-overlay")
     expect(preview_modal).to_be_visible()
     print("✅ 預覽彈窗已成功顯示")
 

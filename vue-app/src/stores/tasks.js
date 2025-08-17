@@ -32,6 +32,16 @@ export const useTasksStore = defineStore('tasks', {
 
         // 遍歷 API 回傳的任務
         tasks.forEach(task => {
+          // [JULES'S FIX 2025-08-17] 將標題複製邏輯也應用於初始載入
+          if (task.result) {
+            const newTitle = task.result.video_title || task.result.original_filename;
+            if (newTitle) {
+              if (!task.payload) task.payload = {};
+              task.payload.video_title = newTitle;
+              task.payload.original_filename = newTitle;
+            }
+          }
+
           if (task.status === 'completed' || task.status === 'failed') {
             this.completedTasks.push(task)
           } else {
@@ -149,6 +159,22 @@ export const useTasksStore = defineStore('tasks', {
             task.status = payload.status;
         }
 
+        // [JULES'S FIX] 根據 `DOC/bug.md` 的分析，修復任務標題顯示問題。
+        // 當後端傳來任務更新時，`video_title` 或 `original_filename` 位於 `payload.result` 中。
+        // 前端 UI 元件預期從 `task.payload` 中讀取這些值。
+        // 因此，我們需要將這些值從 `result` 複製到 `payload`。
+        if (payload.result) {
+          const newTitle = payload.result.video_title || payload.result.original_filename;
+          if (newTitle) {
+            // 確保 task.payload 物件存在
+            if (!task.payload) {
+              task.payload = {};
+            }
+            // 將新標題同時更新到兩個欄位，以確保 UI 的一致性
+            task.payload.video_title = newTitle;
+            task.payload.original_filename = newTitle;
+          }
+        }
 
         // 檢查任務是否完成或失敗
         if (task.status === 'completed' || task.status === 'failed') {

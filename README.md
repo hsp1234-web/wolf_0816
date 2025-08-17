@@ -77,8 +77,9 @@ python3 runner/localtest.py
 *   [x] **架構重構**：已完成穩定的多程序架構（協調器、資料庫管理器、API 伺服器）。
 *   [x] **前端遷移**：已成功將前端從單一 HTML 檔案遷移至 Vue.js 單頁應用。
 *   [x] **功能完整**：本地檔案轉錄與 YouTube 影片處理功能均已完整實現。
+*   [x] **前端錯誤修復**：修復了任務標題無法正確顯示，以及檔名包含特殊字元時預覽失敗的問題。
 *   [x] **本地啟動器**：提供穩定的本地服務啟動器 (`runner/localrun.py`) 與測試執行器 (`runner/localtest.py`)。
-*   [x] **E2E 測試修復**：已修復因前端遷移導致的端對端測試，確保自動化驗證流程正常運作。
+*   [x] **E2E 測試增強**：已修復並增強了基於 Playwright 的端對端測試，並透過共享的 fixture (`conftest.py`) 實現了伺服器生命週期的自動化管理。
 
 ---
 ## 📁 檔案結構
@@ -90,20 +91,28 @@ python3 runner/localtest.py
 │   ├── ARCHITECTURE_RESEARCH.md        # 初始後端架構研究
 │   └── ...                             # 其他歷史文件
 ├── config/                             # 所有環境設定檔
-├── e2e_tests/                          # 端對端測試
-├── runner/                             # 任務啟動器腳本 (localrun, localtest)
+├── e2e_tests/                          # 端對端 (E2E) 測試
+│   ├── conftest.py                     # (重要) Pytest Fixtures，用於管理測試伺服器
+│   └── test_*.py                       # Playwright 測試案例
+├── runner/                             # 任務啟動器腳本
+│   ├── localrun.py                     # 啟動本地開發伺服器
+│   └── localtest.py                    # 執行完整的自動化測試
 ├── src/                                # 主要後端應用程式原始碼
 │   ├── api/
+│   │   └── api_server.py               # FastAPI 伺服器
 │   ├── core/
+│   │   └── orchestrator.py             # 服務協調器 (已棄用，由 runner 取代)
 │   ├── db/
+│   │   └── manager.py                  # 資料庫管理服務
+│   ├── tasks/
+│   │   └── worker.py                   # 處理背景任務的 Worker
 │   └── ...
 ├── vue-app/                            # Vue.js 前端應用程式原始碼
-│   ├── src/
 │   ├── dist/                           # 前端建置後的產出目錄
-│   ├── package.json
-│   └── ...
+│   ├── src/                            # Vue 元件與邏輯
+│   ├── bun.lockb
+│   └── package.json
 ├── .gitignore
-├── package.json
 ├── pyproject.toml
 └── README.md                           # 專案主說明文件
 ```
