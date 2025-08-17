@@ -530,6 +530,8 @@ def install_system_deps():
 
 def main(project_path_str: str):
     """主執行函式，採用兩階段啟動，實現秒級回應。"""
+    # 根據使用者需求，在啟動時強制清理一次儲存格輸出，確保環境乾淨。
+    clear_output(wait=True)
     install_system_deps()
     shared_stats = {"start_time_monotonic": time.monotonic(), "status": "初始化...", "proxy_url": None}
     log_manager, display_manager, temp_server_manager, background_worker = None, None, None, None
@@ -600,36 +602,39 @@ def main(project_path_str: str):
             try:
                 # 等待 JS 執行結果，最多 15 秒
                 output = result_queue.get(timeout=15)
-                if output['error']:
-                    raise output['error']
-                result = output['result']
+
+                # 檢查執行緒中是否發生錯誤
+                if output.get('error'):
+                    # 直接處理從執行緒傳來的錯誤，而不是重新拋出，以確保迴圈繼續。
+                    log_manager.log("ERROR", f"獲取代理連結的背景執行緒發生錯誤: {output['error']}")
+                    time.sleep(retry_delay)
+                    continue # 強制繼續下一次重試
+
+                result = output.get('result')
 
                 # -- JS 成功返回，開始執行探測邏輯 --
                 if result and result.get('error'):
                     log_manager.log("WARN", f"獲取代理連結時發生 JS 錯誤: {result['error']}")
                 elif result and result.get('url') and result['url'].strip().startswith('http'):
                     candidate_url = result['url'].strip()
-                    log_manager.log("DEBUG", f"取得候選 URL: {candidate_url}，正在進行主動探測...")
-                    try:
-                        # 使用 GET(stream=True) 進行探測，這對輕量級伺服器更通用
-                        # stream=True 讓我們只獲取響應頭而不下載內容，效率高
-                        response = requests.get(candidate_url, timeout=5, stream=True)
-                        if response.status_code == 200:
-                            log_manager.log("SUCCESS", "✅ 主動探測成功，確認連結可用！")
-                            shared_stats['proxy_url'] = candidate_url
-                            log_manager.log("SUCCESS", f"✅✅✅ 成功取得並驗證代理連結！")
-                            break # 成功，跳出迴圈
-                        else:
-                            log_manager.log("WARN", f"探測失敗，狀態碼: {response.status_code}。將重試。")
-                    except requests.exceptions.RequestException as probe_e:
-                        log_manager.log("WARN", f"探測失敗，網路錯誤: {str(probe_e)[:100]}...。將重試。")
+                    # 根據使用者需求 (2025-08-17)，移除主動連結探測。
+                    # Colab 的 proxyPort API 返回的連結在某些情況下，即使功能正常，
+                    # 在啟動初期探測也會收到 404。為提高相容性和啟動速度，
+                    # 我們直接信任 API 返回的第一個 URL。
+                    log_manager.log("INFO", f"取得候選 URL: {candidate_url}，根據設定跳過主動探測。")
+                    shared_stats['proxy_url'] = candidate_url
+                    log_manager.log("SUCCESS", "✅ 成功取得代理連結！")
+                    break # 成功，跳出迴圈
                 else:
                     log_manager.log("WARN", f"收到無效的代理回傳值: '{str(result)[:100]}...'")
 
             except queue.Empty:
                 log_manager.log("WARN", "操作超時 (15秒)，`eval_js` 可能已卡住。正在強制繼續，進行下一次重試...")
             except Exception as e:
-                log_manager.log("ERROR", f"獲取代理連結時發生未預期錯誤: {e}")
+                # 為了確保絕對不會有例外導致迴圈中止，捕捉所有可能的錯誤
+                log_manager.log("ERROR", f"獲取代理連結迴圈發生未預期錯誤: {e}")
+                # 即使發生未知錯誤，也繼續重試
+                pass
 
             time.sleep(retry_delay)
 
