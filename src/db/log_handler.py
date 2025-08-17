@@ -16,7 +16,7 @@ if not handler_log.handlers:
     console_handler.setFormatter(formatter)
     handler_log.addHandler(console_handler)
 
-DB_FILE = Path(__file__).parent / "queue.db"
+DB_FILE = Path(__file__).parent / "tasks.db"
 
 class DatabaseLogHandler(logging.Handler):
     """

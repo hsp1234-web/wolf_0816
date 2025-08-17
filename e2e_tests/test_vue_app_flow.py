@@ -141,7 +141,7 @@ def test_vue_app_full_flow(page: Page, live_server: str):
     # 步驟 3: 驗證任務出現在「進行中」
     print("➡️ 驗證任務是否出現在「進行中」列表...")
     # 等待上傳列表被清空
-    expect(page.locator(".file-list-item")).not.to_be_visible(timeout=5000)
+    expect(page.locator(".file-list-item")).not_to_be_visible(timeout=5000)
 
     # 找到進行中任務
     pending_task_selector = f"div.task-card:has-text('{TEST_MP3_PATH.name}')"
@@ -158,7 +158,7 @@ def test_vue_app_full_flow(page: Page, live_server: str):
     # 等待最多 90 秒讓任務完成 (包含下載、轉錄等)
     expect(completed_task).to_be_visible(timeout=90000)
     # 驗證舊的進行中任務已消失
-    expect(pending_task).not.to_be_visible()
+    expect(pending_task).not_to_be_visible()
     print("✅ 任務已成功移至「已完成」列表。")
 
     # 步驟 5: 驗證已完成任務的操作
