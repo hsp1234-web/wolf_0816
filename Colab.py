@@ -8,6 +8,8 @@
 UI_REFRESH_SECONDS = 0.5 #@param {type:"number"}
 #@markdown **日誌顯示行數**
 LOG_DISPLAY_LINES = 10 #@param {type:"integer"}
+#@markdown **最大日誌複製數量**
+LOG_COPY_MAX_LINES = 500 #@param {type:"integer"}
 #@markdown **時區設定**
 TIMEZONE = "Asia/Taipei" #@param {type:"string"}
 #@markdown ---
@@ -36,6 +38,7 @@ import subprocess
 import socket
 import http.server
 import socketserver
+import sqlite3
 try:
     import pytz
 except ImportError:
@@ -60,28 +63,88 @@ from google.colab import output as colab_output, userdata
 # ==============================================================================
 
 class LogManager:
-    """日誌管理器：負責記錄、過濾和儲存所有日誌訊息。"""
-    def __init__(self, max_lines, timezone_str, log_levels_to_show):
+    """日誌管理器：負責記錄、過濾和儲存所有日誌訊息，並將其持久化到 SQLite 資料庫。"""
+    def __init__(self, max_lines, timezone_str, log_levels_to_show, db_path):
+        # 舊的記憶體部分，用於即時儀表板顯示，保持不變
         self._log_deque = deque(maxlen=max_lines)
-        self._full_history = []
-        self._lock = threading.Lock()
-        self.timezone = pytz.timezone(timezone_str)
         self.log_levels_to_show = log_levels_to_show
 
-    def log(self, level: str, message: str):
+        # 新的資料庫部分
+        self.timezone = pytz.timezone(timezone_str)
+        self._db_path = db_path
+        self._db_conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        self._lock = threading.Lock() # 鎖定資料庫和 deque 的寫入操作
+
+        self._initialize_db()
+
+    def _initialize_db(self):
+        """初始化資料庫，清除舊表並建立新表。"""
         with self._lock:
-            log_entry = {"timestamp": datetime.now(self.timezone), "level": level.upper(), "message": str(message)}
-            self._log_deque.append(log_entry)
-            self._full_history.append(log_entry)
+            cursor = self._db_conn.cursor()
+            cursor.execute("DROP TABLE IF EXISTS logs")
+            cursor.execute("""
+                CREATE TABLE logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    level TEXT NOT NULL,
+                    message TEXT NOT NULL
+                )
+            """)
+            self._db_conn.commit()
+
+    def log(self, level: str, message: str):
+        """記錄一條日誌到記憶體和資料庫。"""
+        with self._lock:
+            now = datetime.now(self.timezone)
+            log_entry_for_display = {"timestamp": now, "level": level.upper(), "message": str(message)}
+            self._log_deque.append(log_entry_for_display)
+
+            # 寫入資料庫
+            cursor = self._db_conn.cursor()
+            cursor.execute(
+                "INSERT INTO logs (timestamp, level, message) VALUES (?, ?, ?)",
+                (now.isoformat(), level.upper(), str(message))
+            )
+            self._db_conn.commit()
 
     def get_display_logs(self) -> list:
+        """從記憶體中獲取用於動態顯示的日誌。"""
         with self._lock:
             all_logs = list(self._log_deque)
             return [log for log in all_logs if self.log_levels_to_show.get(f"SHOW_LOG_LEVEL_{log['level']}", False)]
 
+    def _db_rows_to_dict_list(self, rows) -> list:
+        """將資料庫查詢結果轉換為字典列表，並處理時間戳。"""
+        log_list = []
+        for row in rows:
+            try:
+                timestamp = datetime.fromisoformat(row[1])
+            except ValueError:
+                timestamp = datetime.now(self.timezone) # Fallback
+            log_list.append({"timestamp": timestamp, "level": row[2], "message": row[3]})
+        return log_list
+
     def get_full_history(self) -> list:
+        """從資料庫獲取完整的日誌歷史。"""
         with self._lock:
-            return self._full_history
+            cursor = self._db_conn.cursor()
+            cursor.execute("SELECT * FROM logs ORDER BY id ASC")
+            rows = cursor.fetchall()
+            return self._db_rows_to_dict_list(rows)
+
+    def get_latest_logs(self, limit: int) -> list:
+        """從資料庫獲取最新的 N 條日誌。"""
+        with self._lock:
+            cursor = self._db_conn.cursor()
+            cursor.execute("SELECT * FROM logs ORDER BY id DESC LIMIT ?", (limit,))
+            rows = cursor.fetchall()
+            # 因為是 DESC 拿出來的，要反轉回來才是時間正序
+            return self._db_rows_to_dict_list(reversed(rows))
+
+    def close(self):
+        """關閉資料庫連線。"""
+        if self._db_conn:
+            self._db_conn.close()
 
 ANSI_COLORS = {
     "SUCCESS": "\033[32m", "WARN": "\033[33m", "ERROR": "\033[31m",
@@ -345,8 +408,14 @@ def main(project_path_str: str):
 
     try:
         # 步驟 1: 初始化日誌和顯示管理器
+        db_path = Path(project_path_str) / "launcher_logs.db"
         log_levels = {name: globals()[name] for name in globals() if name.startswith("SHOW_LOG_LEVEL_")}
-        log_manager = LogManager(max_lines=LOG_DISPLAY_LINES, timezone_str=TIMEZONE, log_levels_to_show=log_levels)
+        log_manager = LogManager(
+            max_lines=LOG_DISPLAY_LINES,
+            timezone_str=TIMEZONE,
+            log_levels_to_show=log_levels,
+            db_path=str(db_path)
+        )
         display_manager = DisplayManager(log_manager=log_manager, stats_dict=shared_stats, refresh_rate=UI_REFRESH_SECONDS)
         display_manager.start()
         log_manager.log("INFO", "顯示管理器已啟動。")
@@ -361,7 +430,7 @@ def main(project_path_str: str):
 
         # 步驟 3: (關鍵) 立即取得代理連結
         time.sleep(1) # 等待臨時伺服器线程完全啟動
-        max_retries, retry_delay = 5, 2
+        max_retries, retry_delay = 20, 1
         for attempt in range(max_retries):
             try:
                 log_manager.log("INFO", f"正在嘗試取得代理連結... (第 {attempt + 1}/{max_retries} 次)")
@@ -406,18 +475,59 @@ def main(project_path_str: str):
         if background_worker: background_worker.stop()
         if temp_server_manager and temp_server_manager._thread.is_alive(): temp_server_manager.stop()
         if display_manager and display_manager._thread.is_alive(): display_manager.stop()
+
         end_time = datetime.now(pytz.timezone(TIMEZONE))
         if log_manager and display_manager:
             clear_output(); print("\n".join(display_manager._build_output_buffer()))
             print("\n--- ✅ 所有任務完成，系統已安全關閉 ---")
-            # 顯示複製按鈕等收尾工作
-            full_log_history = log_manager.get_full_history()
-            js_screen = json.dumps("\n".join(display_manager._build_output_buffer()))
-            js_logs = json.dumps("\n".join([f"[{log['timestamp'].isoformat()}] [{log['level']}] {log['message']}" for log in full_log_history]))
-            display(HTML(f"""<script>function copyToClipboard(text) {{navigator.clipboard.writeText(text);}}</script>
-                <button onclick='copyToClipboard({js_screen})'>📋 複製上方儲存格輸出</button>
-                <button onclick='copyToClipboard({js_logs})'>📄 複製完整詳細日誌</button>"""))
+
+            # 步驟 A: 歸檔完整日誌並顯示路徑
             archive_reports(log_manager, start_time, end_time, shared_stats.get('status', '未知'))
+
+            # 步驟 B: 準備並顯示可收合的最新日誌
+            try:
+                latest_logs = log_manager.get_latest_logs(LOG_COPY_MAX_LINES)
+
+                # 準備日誌內容以供複製和顯示
+                log_strings_for_copy = []
+                log_strings_for_html = []
+                for log in latest_logs:
+                    log_line = f"[{log['timestamp'].isoformat()}] [{log['level']}] {log['message']}"
+                    log_strings_for_copy.append(log_line)
+                    # 為了 HTML 顯示，逸出特殊字元
+                    log_strings_for_html.append(
+                        log_line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                    )
+
+                logs_for_copy_js = json.dumps("\n".join(log_strings_for_copy))
+                logs_for_html_display = "\n".join(log_strings_for_html)
+
+                num_logs = len(latest_logs)
+
+                # 產生 HTML
+                collapsible_html = f'''
+                <details style="margin-top: 15px; border: 1px solid #e0e0e0; padding: 12px; border-radius: 8px; background-color: #f9f9f9;">
+                    <summary style="cursor: pointer; font-weight: bold; color: #333;">
+                        點此展開/收合最近 {num_logs} 條詳細日誌
+                    </summary>
+                    <div style="margin-top: 12px;">
+                        <button
+                            onclick="navigator.clipboard.writeText({logs_for_copy_js}).then(() => this.innerText='已複製!').catch(() => this.innerText='複製失敗'); setTimeout(() => this.innerText = '📋 複製這 {num_logs} 條日誌', 2000)"
+                            style="padding: 6px 12px; margin-bottom: 12px; cursor: pointer; border: 1px solid #ccc; border-radius: 5px; background-color: #fff;">
+                            📋 複製這 {num_logs} 條日誌
+                        </button>
+                        <pre style="background-color: #fff; padding: 12px; border: 1px solid #e0e0e0; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; font-family: monospace; font-size: 13px; color: #444;"><code>{logs_for_html_display}</code></pre>
+                    </div>
+                </details>
+                '''
+                display(HTML(collapsible_html))
+
+            except Exception as e:
+                print(f"❌ 顯示最終日誌報告時發生錯誤: {e}")
+
+        # 最後關閉資料庫連線
+        if log_manager:
+            log_manager.close()
 
 if __name__ == "__main__":
     if 'PROJECT_PATH_FROM_DOWNLOADER' in globals() and Path(globals()['PROJECT_PATH_FROM_DOWNLOADER']).exists():
