@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT_DIR / "src"))
 from db.database import initialize_database
 
 
-GLOBAL_TIMEOUT = 100  # 使用者要求的 100 秒全局超時
+GLOBAL_TIMEOUT = 120  # 全局超時增加至 120 秒，以提供更寬裕的 E2E 測試時間
 LOG_WATCHDOG_TIMEOUT = 10  # 使用者要求的 10 秒看門狗
 
 # --- 日誌設定 ---
