@@ -454,6 +454,8 @@ class BackgroundWorker:
                 if uvicorn_ready_pattern.search(line):
                     self._stats['status'] = "✅ 伺服器運行中"
                     self._log_manager.log("SUCCESS", "✅ 主應用程式已成功接管埠號並運行！")
+                    # 發送就緒信號，通知前端可以重新載入
+                    self.log_queue.put({"status": "ready"})
 
             self.server_process.wait()
             if self._stats['status'] != "✅ 伺服器運行中":
@@ -594,6 +596,19 @@ def main(project_path_str: str):
         }})()
         '''
 
+        # 步驟 4: (並行任務) 啟動背景工作者執行緒，處理所有耗時任務
+        # 我們現在將它移到獲取連結之前，讓安裝可以和網址獲取並行執行
+        log_manager.log("INFO", "啟動背景工作者，開始並行安裝依賴...")
+        background_worker = BackgroundWorker(
+            log_manager=log_manager,
+            stats_dict=shared_stats,
+            project_path_str=project_path_str,
+            port=port,
+            temp_server_manager=temp_server_manager,
+            log_queue=log_queue
+        )
+        background_worker.start()
+
         # -- 開始具備超時保護的代理連結獲取迴圈 --
         for attempt in range(max_retries):
             shared_stats['status'] = f"正在嘗試取得代理連結... (第 {attempt + 1}/{max_retries} 次)"
@@ -648,20 +663,8 @@ def main(project_path_str: str):
 
         if not shared_stats.get('proxy_url'):
             shared_stats['status'] = "❌ 取得代理連結失敗"
-            log_manager.log("CRITICAL", "無法取得代理連結，啟動中止。")
-            return
-
-        # 步驟 4: 啟動背景工作者執行緒，處理所有耗時任務
-        log_manager.log("INFO", "啟動背景工作者，開始安裝依賴...")
-        background_worker = BackgroundWorker(
-            log_manager=log_manager,
-            stats_dict=shared_stats,
-            project_path_str=project_path_str,
-            port=port,
-            temp_server_manager=temp_server_manager,
-            log_queue=log_queue
-        )
-        background_worker.start()
+            log_manager.log("CRITICAL", "無法取得代理連結，但背景安裝任務仍在繼續。")
+            # 我們不再從此處返回，而是讓主執行緒繼續等待背景工作者完成。
 
         # 步驟 5: 主執行緒等待背景工作者完成
         background_worker._thread.join()

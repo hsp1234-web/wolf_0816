@@ -1,3 +1,3 @@
 # Include core and heavy dependencies
--r requirements-core.txt
--r requirements-heavy.txt
+-r requirements-server.txt
+-r requirements-worker.txt
