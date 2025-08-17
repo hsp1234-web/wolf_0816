@@ -56,10 +56,19 @@ class LocalServerLauncher:
             # JULES'S FIX (2025-08-16): 新增 Playwright 瀏覽器安裝步驟
             log.info("  - 安裝 Playwright 瀏覽器 (Chromium)...")
             subprocess.run(["npx", "playwright", "install", "chromium"], check=True, capture_output=True)
-            log.info("  - 安裝 Python 套件...")
+            log.info("  - 安裝伺服器 Python 套件...")
             command = [sys.executable, "-m", "pip", "install", "-q", "-r", str(req_file)]
             subprocess.run(command, check=True, capture_output=True, text=True)
-            log.info("✅ 依賴安裝完成。")
+
+            log.info("  - 安裝 Worker Python 套件...")
+            worker_req_file = ROOT_DIR / "requirements-worker.txt"
+            if worker_req_file.exists():
+                command_worker = [sys.executable, "-m", "pip", "install", "-q", "-r", str(worker_req_file)]
+                subprocess.run(command_worker, check=True, capture_output=True, text=True)
+            else:
+                log.warning(f"⚠️ 未找到 Worker 依賴檔案 {worker_req_file}，跳過安裝。")
+
+            log.info("✅ 所有 Python 依賴安裝完成。")
             return True
         except subprocess.CalledProcessError as e:
             log.error(f"❌ 依賴安裝失敗:\n{e.stderr}")
@@ -113,6 +122,19 @@ class LocalServerLauncher:
         )
         self.processes.append(("api_server", api_proc))
         log.info(f"  - API Server (PID: {api_proc.pid}) 啟動中...")
+
+        # --- 啟動 Worker ---
+        worker_cmd = [sys.executable, str(ROOT_DIR / "src" / "tasks" / "worker.py")]
+        if self.mock_mode:
+            worker_cmd.append("--mock")
+        # JULES'S FIX (2025-08-16): 將 API 埠號傳遞給 worker
+        env["API_PORT"] = str(self.api_port)
+        worker_proc = subprocess.Popen(
+            worker_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding='utf-8', preexec_fn=os.setsid, env=env
+        )
+        self.processes.append(("worker", worker_proc))
+        log.info(f"  - Worker (PID: {worker_proc.pid}) 啟動中...")
 
         # --- 為所有服務建立日誌監控 ---
         for name, proc in self.processes:

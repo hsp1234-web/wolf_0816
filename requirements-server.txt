@@ -8,9 +8,6 @@ pytest-mock
 websocket-client
 requests
 pytest
+playwright
 pytest-playwright
-torch
-torchaudio
-torchvision
 opencc-python-reimplemented
-faster-whisper
