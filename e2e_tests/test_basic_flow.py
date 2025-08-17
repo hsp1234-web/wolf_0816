@@ -1,23 +1,21 @@
 # e2e_tests/test_basic_flow.py
 import re
-import os
 from playwright.sync_api import Page, expect
 
-# 從環境變數讀取由測試運行器提供的目標 URL
-TARGET_URL = os.environ.get("API_URL", "http://127.0.0.1:8001")
+# TARGET_URL 現在由 live_server fixture 提供，不再需要從環境變數讀取
 
-def test_final_e2e_flow(page: Page):
+def test_final_e2e_flow(page: Page, live_server: str):
     """
     這是一個端對端測試案例，用於驗證應用程式的核心使用者流程：
-    1. 瀏覽器打開目標 URL。
+    1. 瀏覽器打開由 live_server fixture 提供的目標 URL。
     2. 檢查頁面標題是否正確。
     3. 切換到「媒體下載器」分頁。
     4. 驗證「即時轉錄輸出」區塊在該分頁下是不可見的。
     """
     try:
         # 步驟 1: 導航到目標頁面
-        print(f"正在導航至: {TARGET_URL}")
-        page.goto(TARGET_URL, timeout=15000)
+        print(f"正在導航至: {live_server}")
+        page.goto(live_server, timeout=15000)
 
         # 步驟 2: 驗證頁面標題
         print("正在驗證頁面標題...")

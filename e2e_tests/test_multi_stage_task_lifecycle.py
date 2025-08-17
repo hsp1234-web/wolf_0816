@@ -8,30 +8,14 @@ import pytest
 from playwright.sync_api import Page, expect
 
 # --- Test Setup ---
-ROOT_DIR = Path(__file__).resolve().parent.parent
-# 從環境變數讀取由測試運行器提供的目標 URL
-TARGET_URL = os.environ.get("API_URL", "http://127.0.0.1:8001")
-API_URL = TARGET_URL
-
-# --- Database Client ---
-import sys
-sys.path.insert(0, str(ROOT_DIR / "src"))
-try:
-    from db.client import get_client
-    db_client = get_client()
-except ImportError as e:
-    print(f"無法匯入資料庫客戶端: {e}")
-    db_client = None
+# 移除了所有在模組層級的設定和匯入，改為使用 Pytest Fixtures
 
 # --- Test Fixture for Setup and Teardown ---
 @pytest.fixture(scope="function")
-def multi_stage_task_chain():
+def multi_stage_task_chain(db_client): # <-- db_client 現在透過 fixture 注入
     """
     建立一個多階段任務鏈 (youtube_download -> gemini_process) 並在測試後清理。
     """
-    if not db_client:
-        pytest.skip("資料庫客戶端無法使用，跳過此測試")
-
     # 1. Setup: 建立假任務鏈
     download_task_id = str(uuid.uuid4())
     process_task_id = str(uuid.uuid4())
@@ -72,11 +56,11 @@ def multi_stage_task_chain():
     except Exception as e:
         print(f"清理過程中發生錯誤: {e}")
 
-def notify_frontend_of_update(task_id: str, status: str, result: dict):
+def notify_frontend_of_update(api_url: str, task_id: str, status: str, result: dict):
     """
     一個輔助函式，用於呼叫後端內部 API 來觸發 WebSocket 廣播。
     """
-    notification_url = f"{API_URL}/api/internal/notify_task_update"
+    notification_url = f"{api_url}/api/internal/notify_task_update"
     try:
         response = requests.post(notification_url, json={
             "task_id": task_id,
@@ -93,7 +77,7 @@ def notify_frontend_of_update(task_id: str, status: str, result: dict):
 
 
 # --- Test Case ---
-def test_multi_stage_task_lifecycle_ui_update(page: Page, multi_stage_task_chain):
+def test_multi_stage_task_lifecycle_ui_update(page: Page, live_server, db_client, multi_stage_task_chain):
     """
     驗證前端 UI 能否正確處理一個多階段任務的完整生命週期。
     此測試根據目前前端的實際行為進行調整：
@@ -108,7 +92,7 @@ def test_multi_stage_task_lifecycle_ui_update(page: Page, multi_stage_task_chain
 
     # --- Part 1: 驗證初始狀態 ---
     print("\n--- 階段 1: 驗證初始狀態 ---")
-    page.goto(TARGET_URL)
+    page.goto(live_server)
 
     ongoing_tasks_list = page.locator("#ongoing-tasks")
     completed_tasks_list = page.locator("#completed-tasks")
@@ -122,7 +106,7 @@ def test_multi_stage_task_lifecycle_ui_update(page: Page, multi_stage_task_chain
     print("\n--- 階段 2: 模擬下載任務完成 ---")
     download_result = {"output_path": "/fake/path.mp3", "video_title": video_title}
     db_client.update_task_status(download_task_id, "completed", json.dumps(download_result))
-    notify_frontend_of_update(download_task_id, "completed", download_result)
+    notify_frontend_of_update(live_server, download_task_id, "completed", download_result)
     page.wait_for_timeout(1000)
 
     # 驗證 UI 更新：下載任務應該移動到「已完成」列表，並顯示正確的標題
@@ -139,7 +123,7 @@ def test_multi_stage_task_lifecycle_ui_update(page: Page, multi_stage_task_chain
     print("\n--- 階段 3: 模擬分析任務完成 ---")
     final_result = {"output_path": "/fake/report.html", "video_title": video_title}
     db_client.update_task_status(process_task_id, "completed", json.dumps(final_result))
-    notify_frontend_of_update(process_task_id, "completed", final_result)
+    notify_frontend_of_update(live_server, process_task_id, "completed", final_result)
     page.wait_for_timeout(1000)
 
     # 驗證 UI 更新：分析任務也應該移動到「已完成」列表
