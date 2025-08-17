@@ -125,11 +125,12 @@ def test_multi_stage_task_lifecycle_ui_update(page: Page, multi_stage_task_chain
     notify_frontend_of_update(download_task_id, "completed", download_result)
     page.wait_for_timeout(1000)
 
-    # 驗證 UI 更新：下載任務應該移動到「已完成」列表
+    # 驗證 UI 更新：下載任務應該移動到「已完成」列表，並顯示正確的標題
     expect(ongoing_tasks_list.locator(".task-item", has_text=download_task_id)).not_to_be_visible()
-    expect(completed_tasks_list.locator(".task-item", has_text=download_task_id)).to_be_visible()
-    print("✅ 下載任務已成功從「進行中」移至「已完成」列表")
-    # 分析任務應該還在「進行中」
+    # [JULES'S FIX 2025-08-17] Bug修復後，完成的任務應顯示其 video_title
+    expect(completed_tasks_list.locator(".task-item", has_text=video_title)).to_be_visible()
+    print("✅ 下載任務已成功從「進行中」移至「已完成」列表，並顯示正確標題")
+    # 分析任務應該還在「進行中」，且因為還沒有 result，所以繼續顯示 task_id
     expect(ongoing_tasks_list.locator(".task-item", has_text=process_task_id)).to_be_visible()
     print("✅ 分析任務仍保留在「進行中」列表")
 
@@ -143,13 +144,17 @@ def test_multi_stage_task_lifecycle_ui_update(page: Page, multi_stage_task_chain
 
     # 驗證 UI 更新：分析任務也應該移動到「已完成」列表
     expect(ongoing_tasks_list.locator(".task-item", has_text=process_task_id)).not_to_be_visible()
-    final_task_item = completed_tasks_list.locator(".task-item", has_text=process_task_id)
+    # [JULES'S FIX 2025-08-17] 現在兩個任務都完成了，它們都應該顯示 video_title
+    final_task_items = completed_tasks_list.locator(".task-item", has_text=video_title)
+
+    # [JULES'S FIX 2025-08-17] 驗證現在應該有兩個同名的已完成任務
+    expect(final_task_items).to_have_count(2)
+    print("✅ 「已完成」列表中成功顯示了兩個同名的任務項目")
+
+    # 從多個項目中選取最後一個（即分析任務）來驗證按鈕
+    final_task_item = final_task_items.last
     expect(final_task_item).to_be_visible()
     print("✅ 分析任務已成功從「進行中」移至「已完成」列表")
-
-    # 確保只有一個這樣的項目
-    expect(final_task_item).to_have_count(1)
-    print("✅ 「已完成」列表中只有一個該任務的項目")
 
     # 驗證最終按鈕是否出現
     expect(final_task_item.locator("a.btn-preview")).to_be_visible()

@@ -56,8 +56,32 @@ class TestRunner:
             log.error(f"❌ 依賴安裝失敗: {e}")
             return False
 
+    def _build_frontend(self):
+        """根據 AGENTS.md 的要求，建置 Vue.js 前端應用程式。"""
+        log.info("🏗️ 步驟 2/6: 建置 Vue.js 前端應用程式...")
+        vue_app_dir = ROOT_DIR / "vue-app"
+        if not vue_app_dir.is_dir():
+            log.warning(f"Vue 應用程式目錄不存在於 {vue_app_dir}，跳過建置。")
+            return True
+        try:
+            log.info(f"  - 在 {vue_app_dir} 中執行 `bun install`...")
+            subprocess.run(["bun", "install"], cwd=vue_app_dir, check=True, capture_output=True, text=True, timeout=120)
+            log.info(f"  - 在 {vue_app_dir} 中執行 `bun run build`...")
+            subprocess.run(["bun", "run", "build"], cwd=vue_app_dir, check=True, capture_output=True, text=True, timeout=120)
+            log.info("✅ Vue.js 前端應用程式建置完成。")
+            return True
+        except FileNotFoundError:
+            log.error("❌ 'bun' command not found. Please ensure Bun is installed and in your PATH.")
+            return False
+        except subprocess.CalledProcessError as e:
+            log.error(f"❌ 前端建置失敗。返回碼: {e.returncode}\n--- STDOUT ---\n{e.stdout}\n--- STDERR ---\n{e.stderr}")
+            return False
+        except subprocess.TimeoutExpired as e:
+            log.error(f"❌ 前端建置超時: {e}")
+            return False
+
     def _initialize_db(self):
-        log.info("🛠️ 步驟 2/6: 初始化資料庫...")
+        log.info("🛠️ 步驟 3/6: 初始化資料庫...")
         try:
             initialize_database()
             log.info("✅ 資料庫初始化成功。")
@@ -73,7 +97,7 @@ class TestRunner:
 
     def _start_services(self):
         """啟動 DB 管理器和 API 伺服器。"""
-        log.info("🚀 步驟 3/6: 啟動後端服務 (強制模擬模式)...")
+        log.info("🚀 步驟 4/6: 啟動後端服務 (強制模擬模式)...")
         env = os.environ.copy()
         env["PYTHONPATH"] = str(ROOT_DIR / "src") + os.pathsep + env.get("PYTHONPATH", "")
         env["API_MODE"] = "mock"
@@ -111,7 +135,7 @@ class TestRunner:
         return True
 
     def _run_health_check(self) -> bool:
-        log.info(f"🩺 步驟 4/6: 執行後端健康檢查 (目標: {self.api_url}/api/health)...")
+        log.info(f"🩺 步驟 5/6: 執行後端健康檢查 (目標: {self.api_url}/api/health)...")
         start_time = time.time()
         health_check_timeout = 30
 
@@ -135,7 +159,7 @@ class TestRunner:
         return False
 
     def _run_tests(self):
-        log.info("🧪 步驟 5/6: 執行 Playwright E2E 測試...")
+        log.info("🧪 步驟 6/6: 執行 Playwright E2E 測試...")
         env = os.environ.copy()
         env["API_URL"] = self.api_url
 
@@ -171,7 +195,7 @@ class TestRunner:
             return s.getsockname()[1]
 
     def _shutdown(self):
-        log.info("🛑 步驟 6/6: 正在關閉所有服務...")
+        log.info("🛑 正在關閉所有服務...")
         for name, proc in reversed(self.processes):
             if proc.poll() is None:
                 try:
@@ -193,6 +217,7 @@ class TestRunner:
         start_time = time.time()
         try:
             if not self._install_dependencies(): self.exit_code = 1; return
+            if not self._build_frontend(): self.exit_code = 1; return
             if not self._initialize_db(): self.exit_code = 1; return
             if not self._start_services(): self.exit_code = 1; return
             if not self._run_health_check(): self.exit_code = 1; return

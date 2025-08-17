@@ -49,7 +49,20 @@ const textContent = ref('')
 
 const previewUrl = computed(() => {
   if (!props.task || !props.task.result || !props.task.result.output_path) return null
-  return props.task.result.output_path
+
+  const path = props.task.result.output_path;
+
+  // [JULES'S FIX] 根據 `DOC/bug.md` 的分析，修復特殊字元檔名預覽失敗的問題。
+  // 後端回傳的路徑格式為 `/media/filename_with_special_chars.html`。
+  // 我們必須對 `filename_with_special_chars.html` 這部分進行 URI 編碼，
+  // 否則瀏覽器會錯誤地解析 `#`、`?` 等字元。
+  if (path.startsWith('/media/')) {
+    const filePath = path.substring('/media/'.length);
+    return `/media/${encodeURIComponent(filePath)}`;
+  }
+
+  // 對於非預期格式的路徑，直接回傳
+  return path;
 })
 
 const downloadUrl = computed(() => {

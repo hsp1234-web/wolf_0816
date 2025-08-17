@@ -84,7 +84,6 @@ def special_char_task():
         print(f"清理過程中發生錯誤: {e}")
 
 # --- Test Case ---
-@pytest.mark.skip(reason="此測試揭露了一個前端 bug：預覽模態框未對包含特殊字元的 URL 進行編碼，導致 404 錯誤。在前端修復前，暫時跳過此測試。")
 def test_preview_of_file_with_special_characters(page: Page, special_char_task):
     """
     驗證前端是否可以正確處理並預覽帶有特殊字元的檔名。
@@ -103,8 +102,9 @@ def test_preview_of_file_with_special_characters(page: Page, special_char_task):
 
     # JULES'S FIX (2025-08-17): 已完成任務現在位於全域的 #completed-tasks 容器中
     completed_tasks_container = page.locator("#completed-tasks")
-    # JULES'S FIX (2025-08-17): 由於前端的 bug，任務會以 task_id 顯示，而不是 video_title
-    task_item = completed_tasks_container.locator(".task-item", has_text=task_info["task_id"])
+    # [JULES'S FIX 2025-08-17] 之前因為前端 bug，這裡用 task_id 搜尋。
+    # 現在前端 bug 已修復，我們驗證正確的行為：UI 應該顯示 video_title。
+    task_item = completed_tasks_container.locator(".task-item", has_text=video_title)
     expect(task_item).to_be_visible(timeout=10000)
     print(f"✅ 在 UI 上成功找到任務 '{video_title}'")
 
@@ -127,7 +127,8 @@ def test_preview_of_file_with_special_characters(page: Page, special_char_task):
     assert "%26" in response.url, "URL 中缺少了 '&' 的編碼 '%26'"
     print("✅ URL 編碼驗證成功")
 
-    preview_modal = page.locator("#preview-modal")
+    # JULES'S FIX (2025-08-17): 修正預覽彈窗的定位器
+    preview_modal = page.locator(".modal-overlay")
     expect(preview_modal).to_be_visible()
     print("✅ 預覽彈窗已成功顯示")
 
