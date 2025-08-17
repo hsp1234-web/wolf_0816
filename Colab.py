@@ -55,8 +55,133 @@ import threading
 from collections import deque
 import re
 import json
+import queue
 from IPython.display import clear_output, display, HTML
 from google.colab import output as colab_output, userdata
+
+# ==============================================================================
+# SECTION 0.5: 狀態顯示頁面資源
+# ==============================================================================
+
+BOOT_SCREEN_HTML = """
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <title>善狼啟動器 - 正在初始化...</title>
+    <script src="https://cdn.jsdelivr.net/npm/ansi_up@5.1.0/ansi_up.min.js"></script>
+    <style>
+        body { background-color: #1a1a1a; color: #e0e0e0; font-family: 'SF Mono', 'Consolas', 'Menlo', monospace; font-size: 14px; margin: 0; padding: 20px; overflow-y: scroll; }
+        #log-container { white-space: pre; font-size: 13px; line-height: 1.5; }
+        #title-container { display: flex; align-items: center; border-bottom: 1px solid #444; padding-bottom: 10px; }
+        #spinner { margin-left: 12px; font-size: 16px; }
+        .line { display: block; }
+    </style>
+</head>
+<body>
+    <div id="title-container">
+        <h1 style="margin: 0; font-size: 18px;">🐺 善狼啟動器 - 正在準備環境...</h1>
+        <div id="spinner">|</div>
+    </div>
+    <pre id="log-container"></pre>
+    <script>
+        const logContainer = document.getElementById('log-container');
+        const spinner = document.getElementById('spinner');
+        const ansi_up = new AnsiUp();
+        const spinnerChars = ['|', '/', '-', '\\\\'];
+        let spinnerIndex = 0;
+
+        const spinnerInterval = setInterval(() => {
+            spinner.textContent = spinnerChars[spinnerIndex];
+            spinnerIndex = (spinnerIndex + 1) % spinnerChars.length;
+        }, 200);
+
+        const evtSource = new EventSource('/events');
+        evtSource.onmessage = function(event) {
+            try {
+                const data = JSON.parse(event.data);
+                if (data.log) {
+                    const div = document.createElement('div');
+                    div.className = 'line';
+                    // 使用 ansi_to_html 處理日誌中的 ANSI Escape Code
+                    div.innerHTML = ansi_up.ansi_to_html(data.log);
+                    logContainer.appendChild(div);
+                    // 自動滾動到頁面底部
+                    window.scrollTo(0, document.body.scrollHeight);
+                }
+            } catch (e) {
+                console.error("處理日誌時發生錯誤:", e);
+            }
+        };
+
+        evtSource.onerror = function(err) {
+            evtSource.close();
+            clearInterval(spinnerInterval);
+            spinner.textContent = '🚀';
+            const div = document.createElement('div');
+            div.innerHTML = ansi_up.ansi_to_html('\\n\\n\\033[32m[INFO] 後端伺服器已關閉，準備交接... 3秒後將嘗試載入主應用程式...\\033[0m');
+            logContainer.appendChild(div);
+            window.scrollTo(0, document.body.scrollHeight);
+            // 等待3秒，讓主應用程式有時間接管埠號
+            setTimeout(() => {
+                window.location.reload();
+            }, 3000);
+        };
+    </script>
+</body>
+</html>
+"""
+
+class StatusServerRequestHandler(http.server.BaseHTTPRequestHandler):
+    """一個自訂的 HTTP 請求處理器，用於提供狀態頁面和日誌串流。"""
+    log_queue = None
+
+    def do_GET(self):
+        if self.path == '/':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(BOOT_SCREEN_HTML.encode('utf-8'))
+        elif self.path == '/events':
+            self._handle_sse_request()
+        else:
+            self.send_error(404, "File Not Found")
+
+    def _handle_sse_request(self):
+        """處理 Server-Sent Events (SSE) 連線。"""
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/event-stream')
+        self.send_header('Cache-Control', 'no-cache')
+        self.send_header('Connection', 'keep-alive')
+        self.end_headers()
+
+        # 發送一條初始訊息，確認連線成功
+        initial_message = {"log": "\\033[33m[SYSTEM] 成功連接至日誌串流...\\033[0m"}
+        self.wfile.write(f"data: {json.dumps(initial_message)}\\n\\n".encode('utf-8'))
+        self.wfile.flush()
+
+        while True:
+            try:
+                log_line = self.log_queue.get(timeout=30)
+                if log_line is None:  # 結束信號
+                    break
+                self.wfile.write(f"data: {json.dumps(log_line)}\\n\\n".encode('utf-8'))
+                self.wfile.flush()
+            except queue.Empty:
+                # 發送註解以保持連線，防止超時
+                self.wfile.write(b': heartbeat\\n\\n')
+                self.wfile.flush()
+            except BrokenPipeError:
+                # 客戶端已斷開連線
+                break
+            except Exception as e:
+                # 記錄伺服器端錯誤，並中斷連線
+                print(f"SSE 串流發生錯誤: {e}")
+                break
+
+    def log_message(self, format, *args):
+        """抑制 BaseHTTPRequestHandler 的預設日誌輸出，避免干擾。"""
+        return
 
 # ==============================================================================
 # SECTION 1: 管理器類別定義 (Managers)
@@ -203,28 +328,31 @@ class ReusableTCPServer(socketserver.TCPServer):
 
 class TempServerManager:
     """臨時伺服器管理器：負責啟動一個臨時的 HTTP 伺服器以佔用埠號並顯示狀態。"""
-    def __init__(self, port, log_manager):
+    def __init__(self, port, log_manager, log_queue):
         self.port = port
         self._log_manager = log_manager
+        self.log_queue = log_queue
         self.server = None
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._stop_event = threading.Event()
 
     def _run(self):
-        handler = http.server.SimpleHTTPRequestHandler
-        # Python 3.7+
+        # 將佇列傳遞給處理器類別的類別變數
+        StatusServerRequestHandler.log_queue = self.log_queue
+        handler = StatusServerRequestHandler
+
         with ReusableTCPServer(("", self.port), handler) as httpd:
-            self._log_manager.log("DEBUG", f"臨時伺服器已在埠號 {self.port} 上啟動。")
+            self._log_manager.log("DEBUG", f"狀態伺服器已在埠號 {self.port} 上啟動。")
             self.server = httpd
             # 等待停止信號
             self._stop_event.wait()
-            self._log_manager.log("DEBUG", "臨時伺服器收到停止信號。")
+            self._log_manager.log("DEBUG", "狀態伺服器收到停止信號。")
 
     def start(self):
         self._thread.start()
 
     def stop(self):
-        self._log_manager.log("INFO", "正在關閉臨時狀態伺服器...")
+        self._log_manager.log("INFO", "正在關閉狀態顯示伺服器...")
         self._stop_event.set()
         # 寄送一個假請求給自己來解除 httpd.serve_forever() 的阻塞
         try:
@@ -232,22 +360,39 @@ class TempServerManager:
                 pass
         except (socket.timeout, ConnectionRefusedError):
             pass # 這是預期行為
+
+        # 在關閉伺服器前，向佇列發送一個 None 作為結束信號
+        if self.log_queue:
+            self.log_queue.put(None)
+
         if self.server:
             self.server.server_close()
         self._thread.join(timeout=2)
-        self._log_manager.log("SUCCESS", "臨時狀態伺服器已關閉。")
+        self._log_manager.log("SUCCESS", "狀態顯示伺服器已關閉。")
 
 class BackgroundWorker:
     """背景工作者：在獨立執行緒中執行所有耗時的安裝與啟動任務。"""
-    def __init__(self, log_manager, stats_dict, project_path_str, port, temp_server_manager):
+    def __init__(self, log_manager, stats_dict, project_path_str, port, temp_server_manager, log_queue):
         self._log_manager = log_manager
         self._stats = stats_dict
         self.project_path = Path(project_path_str)
         self.port = port
         self.temp_server_manager = temp_server_manager
+        self.log_queue = log_queue
         self.server_process = None
         self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _stream_process_output(self, process):
+        """即時讀取並透過佇列串流子程序的輸出。"""
+        for line in iter(process.stdout.readline, ''):
+            clean_line = line.strip()
+            # 將日誌同時發送到網頁前端和 Colab 主控台
+            self.log_queue.put({"log": clean_line})
+            self._log_manager.log("DEBUG", clean_line)
+        process.stdout.close()
+        return_code = process.wait()
+        return return_code
 
     def _install_dependencies(self, requirements_file: str, installer: str = "uv"):
         req_path = self.project_path / requirements_file
@@ -256,21 +401,40 @@ class BackgroundWorker:
             return True
 
         self._log_manager.log("INFO", f"正在使用 {installer} 安裝 `{requirements_file}`...")
+        self.log_queue.put({"log": f"\\033[1;36m> 開始安裝 {requirements_file}...\\033[0m"})
         self._stats['status'] = f"安裝依賴 ({requirements_file})..."
 
         try:
             # 確保 uv 已安裝
             subprocess.run([sys.executable, "-m", "pip", "install", "-q", "uv"], check=True)
-            # 使用 uv 安裝
-            command = [sys.executable, "-m", "uv", "pip", "install", "-q", "-r", str(req_path)]
-            result = subprocess.run(command, check=False, capture_output=True, text=True, encoding='utf-8')
-            if result.returncode != 0:
-                self._log_manager.log("CRITICAL", f"依賴安裝失敗 ({requirements_file}):\n{result.stderr}")
+            # 使用 uv 安裝，移除 -q 以便擷取日誌
+            command = [sys.executable, "-m", "uv", "pip", "install", "-r", str(req_path)]
+
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding='utf-8',
+                bufsize=1  # Line-buffered
+            )
+
+            return_code = self._stream_process_output(process)
+
+            if return_code != 0:
+                error_msg = f"依賴安裝失敗 ({requirements_file})，返回碼: {return_code}"
+                self._log_manager.log("CRITICAL", error_msg)
+                self.log_queue.put({"log": f"\\033[31m[ERROR] {error_msg}\\033[0m"})
                 return False
-            self._log_manager.log("SUCCESS", f"✅ 成功安裝 {requirements_file}")
+
+            success_msg = f"✅ 成功安裝 {requirements_file}"
+            self._log_manager.log("SUCCESS", success_msg)
+            self.log_queue.put({"log": f"\\033[32m{success_msg}\\033[0m"})
             return True
         except Exception as e:
-            self._log_manager.log("CRITICAL", f"安裝 {requirements_file} 時發生嚴重錯誤: {e}")
+            error_msg = f"安裝 {requirements_file} 時發生嚴重錯誤: {e}"
+            self._log_manager.log("CRITICAL", error_msg)
+            self.log_queue.put({"log": f"\\033[31m[CRITICAL] {error_msg}\\033[0m"})
             return False
 
     def _run(self):
@@ -409,6 +573,9 @@ def main(project_path_str: str):
     start_time = datetime.now(pytz.timezone(TIMEZONE))
 
     try:
+        # 步驟 0: 建立通訊佇列
+        log_queue = queue.Queue()
+
         # 步驟 1: 初始化日誌和顯示管理器
         db_path = Path(project_path_str) / "launcher_logs.db"
         log_levels = {name: globals()[name] for name in globals() if name.startswith("SHOW_LOG_LEVEL_")}
@@ -422,16 +589,16 @@ def main(project_path_str: str):
         display_manager.start()
         log_manager.log("INFO", "顯示管理器已啟動。")
 
-        # 步驟 2: 尋找空閒埠號並啟動臨時伺服器
+        # 步驟 2: 尋找空閒埠號並啟動狀態伺服器
         shared_stats['status'] = "尋找可用埠號..."
         port = find_free_port()
         log_manager.log("INFO", f"找到空閒埠號: {port}")
-        temp_server_manager = TempServerManager(port=port, log_manager=log_manager)
+        temp_server_manager = TempServerManager(port=port, log_manager=log_manager, log_queue=log_queue)
         temp_server_manager.start()
-        shared_stats['status'] = "建立臨時伺服器..."
+        shared_stats['status'] = "建立狀態伺服器..."
 
         # 步驟 3: (關鍵) 立即取得代理連結
-        time.sleep(1) # 等待臨時伺服器线程完全啟動
+        time.sleep(1) # 等待狀態伺服器线程完全啟動
         max_retries, retry_delay = 20, 1
 
         js_get_url_script = f'''
@@ -476,7 +643,8 @@ def main(project_path_str: str):
             stats_dict=shared_stats,
             project_path_str=project_path_str,
             port=port,
-            temp_server_manager=temp_server_manager
+            temp_server_manager=temp_server_manager,
+            log_queue=log_queue
         )
         background_worker.start()
 
