@@ -3,8 +3,8 @@ import re
 import os
 from playwright.sync_api import Page, expect
 
-# 從環境變數讀取目標 URL
-TARGET_URL = os.environ.get("TARGET_URL", "http://127.0.0.1:8000")
+# 從環境變數讀取由測試運行器提供的目標 URL
+TARGET_URL = os.environ.get("API_URL", "http://127.0.0.1:8001")
 
 def test_final_e2e_flow(page: Page):
     """
@@ -44,6 +44,8 @@ def test_final_e2e_flow(page: Page):
 
     except Exception as e:
         print(f"❌ 測試過程中發生錯誤: {e}")
-        page.screenshot(path="e2e_tests/final_error.png")
-        print("📸 已儲存錯誤截圖至 e2e_tests/final_error.png")
+        # 使用絕對路徑以確保截圖能被儲存
+        screenshot_path = "/app/e2e_tests/final_error.png"
+        page.screenshot(path=screenshot_path)
+        print(f"📸 已儲存錯誤截圖至 {screenshot_path}")
         raise e

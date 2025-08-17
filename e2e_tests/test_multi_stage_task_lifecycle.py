@@ -9,10 +9,9 @@ from playwright.sync_api import Page, expect
 
 # --- Test Setup ---
 ROOT_DIR = Path(__file__).resolve().parent.parent
-# JULES'S FIX (2025-08-16): 確保從環境變數讀取正確的 API URL
-# localrun.py 會將隨機指派的埠號透過 TARGET_URL 傳遞進來
-TARGET_URL = os.environ.get("TARGET_URL", "http://127.0.0.1:8000")
-API_URL = TARGET_URL # 使用同一個 URL，因為測試和 API 跑在同一個位址
+# 從環境變數讀取由測試運行器提供的目標 URL
+TARGET_URL = os.environ.get("API_URL", "http://127.0.0.1:8001")
+API_URL = TARGET_URL
 
 # --- Database Client ---
 import sys
