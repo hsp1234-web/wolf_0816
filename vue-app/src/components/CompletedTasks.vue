@@ -5,14 +5,29 @@
       <!-- 如果沒有已完成的任務，顯示提示訊息 -->
       <p v-if="completedTasks.length === 0" id="no-completed-task-msg">尚無完成的任務</p>
       <!-- 使用 v-for 渲染任務列表 -->
-      <div v-else v-for="task in completedTasks" :key="task.task_id" class="task-item">
-        <span class="task-filename" :title="task.payload.original_filename">
-          {{ task.payload.original_filename || task.task_id }}
-        </span>
-        <div class="task-actions">
-          <a href="#" @click.prevent="previewTask(task)" class="btn-preview">預覽</a>
-          <a href="#" @click.prevent="renameTask(task)" class="btn-rename">修改名稱</a>
-          <a :href="`/api/download/${task.task_id}`" class="btn-download" download>下載</a>
+      <div v-else v-for="task in completedTasks" :key="task.task_id">
+        <!-- 成功完成的任務 -->
+        <div v-if="task.status === 'completed'" class="task-item">
+          <span class="task-filename" :title="task.payload.original_filename">
+            {{ task.payload.original_filename || task.task_id }}
+          </span>
+          <div class="task-actions">
+            <a href="#" @click.prevent="previewTask(task)" class="btn-preview">預覽</a>
+            <a href="#" @click.prevent="renameTask(task)" class="btn-rename">修改名稱</a>
+            <a :href="`/api/download/${task.task_id}`" class="btn-download" download>下載</a>
+          </div>
+        </div>
+        <!-- 失敗的任務 -->
+        <div v-else-if="task.status === 'failed'" class="task-item task-item-failed">
+          <span class="task-filename" :title="task.payload.original_filename">
+            {{ task.payload.original_filename || task.task_id }}
+          </span>
+          <div class="task-error-message">
+            <span class="error-label">失敗</span>
+            <span class="error-text" :title="task.result && task.result.error ? task.result.error : '未知錯誤'">
+              {{ task.result && task.result.error ? task.result.error : '未知錯誤' }}
+            </span>
+          </div>
         </div>
       </div>
     </div>

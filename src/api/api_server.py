@@ -232,10 +232,10 @@ def check_model_exists(model_size: str) -> bool:
     """
     檢查指定的 Whisper 模型是否已經被下載到本地快取。
     """
-    # JULES'S FIX: 增加一個環境變數來強制使用模擬轉錄器，以支援混合模式測試
-    force_mock = os.environ.get("FORCE_MOCK_TRANSCRIBER") == "true"
-    tool_script_path = ROOT_DIR / "src" / "tools" / ("mock_transcriber.py" if IS_MOCK_MODE or force_mock else "transcriber.py")
-    log.info(f"使用 '{tool_script_path}' 檢查模型 '{model_size}' 是否存在...")
+    # [JULES'S FIX] 根據 AGENTS.md，嚴格遵守模擬模式
+    tool_name = "mock_transcriber.py" if IS_MOCK_MODE else "transcriber.py"
+    tool_script_path = ROOT_DIR / "src" / "tools" / tool_name
+    log.info(f"使用 '{tool_script_path}' 檢查模型 '{model_size}' 是否存在 (模式: {'模擬' if IS_MOCK_MODE else '真實'})...")
 
     # 我們透過呼叫一個輕量級的工具腳本來檢查。
     check_command = [sys.executable, str(tool_script_path), "--command=check", f"--model_size={model_size}"]
@@ -650,6 +650,9 @@ async def validate_api_key(request: Request):
 
         if result.returncode == 0:
             log.info(f"API 金鑰驗證成功。")
+            # [JULES'S FIX] 將驗證成功的金鑰設定為環境變數，供後續請求使用
+            os.environ["GOOGLE_API_KEY"] = api_key
+            log.info("GOOGLE_API_KEY 環境變數已設定。")
             return {"valid": True}
         else:
             log.warning(f"API 金鑰驗證失敗。Stderr: {result.stderr.strip()}")
@@ -775,7 +778,10 @@ def trigger_model_download(model_size: str, loop: asyncio.AbstractEventLoop):
     def _download_in_thread():
         log.info(f"🧵 [執行緒] 開始下載模型: {model_size}")
         try:
-            tool_script_path = ROOT_DIR / "src" / "tools" / ("mock_transcriber.py" if IS_MOCK_MODE else "transcriber.py")
+            # [JULES'S FIX] 根據 AGENTS.md，嚴格遵守模擬模式
+            tool_name = "mock_transcriber.py" if IS_MOCK_MODE else "transcriber.py"
+            tool_script_path = ROOT_DIR / "src" / "tools" / tool_name
+            log.info(f"使用 '{tool_script_path}' 下載模型 (模式: {'模擬' if IS_MOCK_MODE else '真實'})")
             cmd = [sys.executable, str(tool_script_path), "--command=download", f"--model_size={model_size}"]
 
             process = subprocess.Popen(
@@ -854,8 +860,10 @@ def trigger_transcription(task_id: str, file_path: str, model_size: str, languag
         output_file_path = output_dir / f"{task_id}.txt"
 
         try:
-            force_mock = os.environ.get("FORCE_MOCK_TRANSCRIBER") == "true"
-            tool_script_path = ROOT_DIR / "src" / "tools" / ("mock_transcriber.py" if IS_MOCK_MODE or force_mock else "transcriber.py")
+            # [JULES'S FIX] 根據 AGENTS.md，嚴格遵守模擬模式
+            tool_name = "mock_transcriber.py" if IS_MOCK_MODE else "transcriber.py"
+            tool_script_path = ROOT_DIR / "src" / "tools" / tool_name
+            log.info(f"使用 '{tool_script_path}' 執行轉錄 (模式: {'模擬' if IS_MOCK_MODE else '真實'})")
             cmd = [
                 sys.executable,
                 str(tool_script_path),
@@ -967,7 +975,10 @@ def trigger_youtube_processing(task_id: str, loop: asyncio.AbstractEventLoop):
                 "payload": {"task_id": task_id, "status": "downloading", "message": f"正在下載 ({download_type}): {url}", "task_type": task_type}
             }), loop)
 
-            downloader_script_path = ROOT_DIR / "src" / "tools" / ("mock_youtube_downloader.py" if IS_MOCK_MODE else "youtube_downloader.py")
+            # [JULES'S FIX] 根據 AGENTS.md，嚴格遵守模擬模式
+            downloader_tool_name = "mock_youtube_downloader.py" if IS_MOCK_MODE else "youtube_downloader.py"
+            downloader_script_path = ROOT_DIR / "src" / "tools" / downloader_tool_name
+            log.info(f"使用 '{downloader_script_path}' 執行下載 (模式: {'模擬' if IS_MOCK_MODE else '真實'})")
             cmd_dl = [sys.executable, str(downloader_script_path), "--url", url, "--output-dir", str(UPLOADS_DIR), "--download-type", download_type]
             if custom_filename:
                 cmd_dl.extend(["--custom-filename", custom_filename])
@@ -1034,18 +1045,22 @@ def trigger_youtube_processing(task_id: str, loop: asyncio.AbstractEventLoop):
                 "payload": {"task_id": dependent_task_id, "status": "processing", "message": f"使用 {model} 進行 AI 分析...", "task_type": "gemini_process"}
             }), loop)
 
-            processor_script_path = ROOT_DIR / "src" / "tools" / ("mock_gemini_processor.py" if IS_MOCK_MODE else "gemini_processor.py")
+            # [JULES'S FIX] 根據 AGENTS.md，嚴格遵守模擬模式
+            processor_tool_name = "mock_gemini_processor.py" if IS_MOCK_MODE else "gemini_processor.py"
+            processor_script_path = ROOT_DIR / "src" / "tools" / processor_tool_name
+            log.info(f"使用 '{processor_script_path}' 執行 Gemini 分析 (模式: {'模擬' if IS_MOCK_MODE else '真實'})")
             # 問題二：將報告也輸出到 uploads 目錄下
             report_output_dir = UPLOADS_DIR / "reports"
             report_output_dir.mkdir(parents=True, exist_ok=True)
 
+            # [JULES'S ARCHITECTURE FIX] 傳遞任務ID，而不是原始檔案路徑，以避免特殊字元問題。
+            # Gemini Processor 工具將從資料庫中自行查詢所需的檔案路徑。
             cmd_process = [
                 sys.executable, str(processor_script_path),
                 "--command=process",
-                "--audio-file", media_file_path,
+                "--task-id", dependent_task_id, # 傳遞子任務的ID
                 "--model", model,
                 "--output-dir", str(report_output_dir),
-                "--video-title", video_title,
                 "--tasks", tasks_to_run,
                 "--output-format", output_format
             ]

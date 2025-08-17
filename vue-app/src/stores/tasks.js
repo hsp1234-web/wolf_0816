@@ -309,9 +309,10 @@ export const useTasksStore = defineStore('tasks', {
      * @param {string} apiKey - 用於驗證的 Google API 金鑰。
      * @returns {Promise<Array>} - 回傳模型列表。
      */
-    async fetchGeminiModels(apiKey) {
+    async fetchGeminiModels() {
       try {
-        const response = await axios.post(`${API_BASE_URL}/youtube/models`, { api_key: apiKey });
+        // [JULES'S FIX] 後端使用 GET，且依賴已設定的環境變數，不需傳遞金鑰
+        const response = await axios.get(`${API_BASE_URL}/youtube/models`);
         return response.data.models || [];
       } catch (error) {
         console.error('獲取 Gemini 模型列表時發生錯誤:', error);

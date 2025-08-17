@@ -425,18 +425,49 @@ def main():
     if args.command == "process":
         process_parser = argparse.ArgumentParser()
         process_parser.add_argument("--command", type=str, help=argparse.SUPPRESS) # 忽略已解析的 command
-        process_parser.add_argument("--audio-file", type=str, required=True, help="要處理的音訊檔案路徑。")
+        # [JULES'S ARCHITECTURE FIX] 改為接收 task-id
+        process_parser.add_argument("--task-id", type=str, required=True, help="要處理的 gemini_process 任務 ID。")
         process_parser.add_argument("--model", type=str, required=True, help="要使用的 Gemini 模型 API 名稱。")
-        process_parser.add_argument("--video-title", type=str, required=True, help="原始影片標題，用於提示詞。")
         process_parser.add_argument("--output-dir", type=str, required=True, help="儲存生成報告的目錄。")
-        # --- 新增的彈性參數 ---
-        process_parser.add_argument("--tasks", type=str, default="summary,transcript", help="要執行的任務列表，以逗號分隔。例如：'summary,transcript,translate'")
+        process_parser.add_argument("--tasks", type=str, default="summary,transcript", help="要執行的任務列表，以逗號分隔。")
         process_parser.add_argument("--output-format", type=str, default="html", choices=["html", "txt"], help="最終輸出的檔案格式。")
-
 
         process_args = process_parser.parse_args(remaining_argv)
 
-        audio_path = Path(process_args.audio_file)
+        # [JULES'S ARCHITECTURE FIX] 從資料庫獲取檔案路徑和標題
+        try:
+            from db.client import get_client
+            db = get_client()
+            log.info(f"正在從資料庫查詢任務 {process_args.task_id} 的詳細資訊...")
+
+            task_info = db.get_task_status(process_args.task_id)
+            if not task_info:
+                raise ValueError(f"在資料庫中找不到任務 {process_args.task_id}")
+
+            parent_task_id = task_info.get('depends_on')
+            if not parent_task_id:
+                raise ValueError(f"任務 {process_args.task_id} 沒有依賴的父任務")
+
+            parent_task_info = db.get_task_status(parent_task_id)
+            if not parent_task_info:
+                raise ValueError(f"在資料庫中找不到父任務 {parent_task_id}")
+
+            parent_result = json.loads(parent_task_info.get('result', '{}'))
+            audio_file_str = parent_result.get('output_path')
+            video_title = parent_result.get('video_title', '無標題')
+
+            if not audio_file_str:
+                raise ValueError(f"父任務 {parent_task_id} 的結果中不包含 'output_path'")
+
+            log.info(f"成功獲取到音訊檔案路徑: {audio_file_str}")
+            audio_path = Path(audio_file_str)
+
+        except Exception as e:
+            log.critical(f"🔴 從資料庫獲取任務資訊時發生嚴重錯誤: {e}", exc_info=True)
+            print(json.dumps({"type": "result", "status": "failed", "error": f"資料庫查詢失敗: {e}"}), flush=True)
+            sys.exit(1)
+
+
         output_path = Path(process_args.output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
@@ -450,7 +481,7 @@ def main():
             process_audio_file(
                 audio_path=audio_path,
                 model=process_args.model,
-                video_title=process_args.video_title,
+                video_title=video_title, # 從資料庫取得
                 output_dir=output_path,
                 tasks=process_args.tasks,
                 output_format=process_args.output_format
