@@ -6,11 +6,24 @@
       <p v-if="pendingTasks.length === 0" id="no-ongoing-task-msg">暫無執行中任務</p>
       <!-- 使用 v-for 渲染任務列表 -->
       <div v-else v-for="task in pendingTasks" :key="task.task_id" class="task-item">
-        <span class="task-filename" :title="task.payload.original_filename">
-          {{ task.payload.original_filename || task.task_id }}
-        </span>
+        <div style="flex-grow: 1; overflow: hidden; margin-right: 10px; min-width: 0;">
+          <span class="task-filename" :title="task.payload.original_filename || task.task_id">
+            {{ task.payload.original_filename || task.task_id }}
+          </span>
+          <!-- 動態進度條 -->
+          <div
+            v-if="task.progress !== undefined"
+            class="progress-container"
+            style="margin-top: 5px; height: 8px;"
+          >
+            <div
+              class="progress-bar"
+              :style="{ width: task.progress + '%' }"
+            ></div>
+          </div>
+        </div>
         <span class="task-status" :class="`status-${task.status}`">
-          {{ task.status }}
+          {{ task.message || task.status }}
         </span>
       </div>
     </div>

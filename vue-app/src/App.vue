@@ -5,29 +5,87 @@
       <h1>音訊轉錄儀 (Vue)</h1>
     </header>
 
-    <!-- 主要內容區域 -->
-    <main>
-      <!-- 檔案上傳和設定元件 -->
-      <TaskUploader />
+    <!-- 全域儀表板 -->
+    <Dashboard />
 
-      <!-- 任務列表 -->
+    <!-- 功能分頁導覽 -->
+    <div class="card">
+      <div class="tab-container">
+        <button
+          class="tab-button"
+          :class="{ active: activeTab === 'transcribe' }"
+          @click="setActiveTab('transcribe')"
+        >
+          📁 本機檔案轉錄
+        </button>
+        <button
+          class="tab-button"
+          :class="{ active: activeTab === 'downloader' }"
+          @click="setActiveTab('downloader')"
+        >
+          📥 媒體下載器
+        </button>
+        <button
+          class="tab-button"
+          :class="{ active: activeTab === 'youtube' }"
+          @click="setActiveTab('youtube')"
+        >
+          ▶️ YouTube 轉報告
+        </button>
+      </div>
+    </div>
+
+    <!-- 分頁內容 -->
+    <main>
+      <!-- 本機檔案轉錄分頁 -->
+      <div v-show="activeTab === 'transcribe'">
+        <TaskUploader />
+      </div>
+
+      <!-- 媒體下載器分頁 -->
+      <div v-show="activeTab === 'downloader'">
+        <Downloader />
+      </div>
+
+      <!-- YouTube 轉報告分頁 -->
+      <div v-show="activeTab === 'youtube'">
+        <YouTubeReporter />
+      </div>
+
+      <!-- 任務列表 (所有分頁共用) -->
       <div class="grid-2-col" style="margin-top: 24px;">
         <PendingTasks />
         <CompletedTasks />
       </div>
+
+      <!-- 即時轉錄輸出 -->
+      <TranscriptOutput v-if="activeTab === 'transcribe'" />
     </main>
   </div>
 </template>
 
 <script setup>
-import { onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useTasksStore } from './stores/tasks'
+import { logAction } from './utils/logging'
+import Dashboard from './components/Dashboard.vue'
 import TaskUploader from './components/TaskUploader.vue'
+import Downloader from './components/Downloader.vue'
+import YouTubeReporter from './components/YouTubeReporter.vue'
 import PendingTasks from './components/PendingTasks.vue'
 import CompletedTasks from './components/CompletedTasks.vue'
+import TranscriptOutput from './components/TranscriptOutput.vue'
 
 // 獲取 Pinia store 的實例
 const tasksStore = useTasksStore()
+
+// 控制當前作用中分頁的狀態
+const activeTab = ref('transcribe')
+
+const setActiveTab = (tabName) => {
+  activeTab.value = tabName
+  logAction('click-tab', tabName)
+}
 
 // 當元件掛載完成後，執行初始化操作
 onMounted(() => {

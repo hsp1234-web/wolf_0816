@@ -12,6 +12,10 @@ export const useTasksStore = defineStore('tasks', {
     completedTasks: [],
     // WebSocket 實例
     socket: null,
+    // WebSocket 連線狀態
+    socketConnected: false,
+    // 系統狀態
+    systemStats: {},
   }),
   actions: {
     /**
@@ -92,6 +96,7 @@ export const useTasksStore = defineStore('tasks', {
 
       this.socket.onopen = () => {
         console.log('WebSocket 連線成功。');
+        this.socketConnected = true;
       };
 
       this.socket.onmessage = (event) => {
@@ -106,6 +111,7 @@ export const useTasksStore = defineStore('tasks', {
       this.socket.onclose = () => {
         console.log('WebSocket 連線已關閉。');
         this.socket = null;
+        this.socketConnected = false;
         // 可以加入自動重連的邏輯
       };
 
@@ -120,10 +126,46 @@ export const useTasksStore = defineStore('tasks', {
      */
     handleSocketMessage(message) {
       console.log('收到 WebSocket 訊息:', message);
-      const { type, payload } = message;
+      const { payload } = message;
 
-      // TODO: 在這裡根據訊息類型 (type) 更新 state
-      // 例如：找到對應的 task，更新其狀態或進度
+      if (!payload || !payload.task_id) {
+        // 處理沒有 task_id 的訊息，例如模型下載進度
+        // TODO: 實作模型下載狀態的處理
+        return;
+      }
+
+      // 尋找任務在 pendingTasks 列表中的索引
+      const taskIndex = this.pendingTasks.findIndex(t => t.task_id === payload.task_id);
+
+      if (taskIndex !== -1) {
+        // 如果找到任務
+        const task = this.pendingTasks[taskIndex];
+
+        // 將 payload 的內容更新到任務物件上
+        // 這樣可以更新 status, progress, message, result 等等
+        Object.assign(task, payload);
+        // 確保 payload 中的 status 會覆蓋舊的 status
+        if (payload.status) {
+            task.status = payload.status;
+        }
+
+
+        // 檢查任務是否完成或失敗
+        if (task.status === 'completed' || task.status === 'failed') {
+          // 從 pendingTasks 列表中移除
+          const [completedTask] = this.pendingTasks.splice(taskIndex, 1);
+          // 加入到 completedTasks 列表
+          this.completedTasks.push(completedTask);
+        } else {
+          // 如果任務仍在進行中，則直接更新
+          // Pinia 的響應式系統會自動偵測到陣列中物件的屬性變更
+           this.pendingTasks[taskIndex] = { ...task };
+        }
+      } else {
+        // 如果在 pendingTasks 中找不到，可能它是一個全新的任務，或者是一個已經完成的任務的更新
+        // 為避免重複，我們在這裡先不做任何事，依賴 fetchTasks 來獲取最新列表
+        console.warn(`在 pendingTasks 中找不到任務 ID: ${payload.task_id}，可能任務已完成或尚未同步。`);
+      }
     },
 
     /**
@@ -147,6 +189,127 @@ export const useTasksStore = defineStore('tasks', {
         type: 'DOWNLOAD_MODEL',
         payload: { model: modelName }
       });
+    },
+
+    /**
+     * 重新命名一個已完成的任務。
+     * @param {string} taskId - 要重新命名的任務 ID。
+     * @param {string} newFilename - 新的檔案名稱 (不含副檔名)。
+     */
+    async renameTask(taskId, newFilename) {
+      try {
+        const response = await axios.post(`${API_BASE_URL}/rename/${taskId}`, { new_filename: newFilename });
+        const result = response.data;
+
+        // 在 completedTasks 列表中尋找並更新任務
+        const taskIndex = this.completedTasks.findIndex(t => t.task_id === taskId);
+        if (taskIndex !== -1) {
+          // 更新檔案名稱
+          // 注意：後端回傳的 new_filename 可能不包含副檔名，我們需要從原始檔名中保留副檔名
+          const oldFilename = this.completedTasks[taskIndex].payload.original_filename || '';
+          const extension = oldFilename.slice(oldFilename.lastIndexOf('.'));
+          this.completedTasks[taskIndex].payload.original_filename = result.new_filename + extension;
+        }
+      } catch (error) {
+        console.error('重新命名任務時發生錯誤:', error);
+        throw new Error(error.response?.data?.detail || '重新命名失敗');
+      }
+    },
+
+    /**
+     * 獲取後端系統狀態。
+     */
+    async fetchSystemStats() {
+      try {
+        const response = await axios.get(`${API_BASE_URL}/system_stats`);
+        this.systemStats = response.data;
+      } catch (error) {
+        // 不在控制台顯示錯誤，因為這會頻繁發生在開發伺服器重啟時
+        // console.error('獲取系統狀態時發生錯誤:', error);
+      }
+    },
+
+    /**
+     * 開始一個或多個媒體下載任務。
+     * @param {object} options - 包含下載所需資訊的物件。
+     * @param {string[]} options.urls - 要下載的 URL 列表。
+     * @param {string} options.downloadType - 'audio' 或 'video'。
+     */
+    async startDownload(options) {
+      const { urls, downloadType } = options;
+      const requests = urls.map(url => ({ url: url, filename: '' }));
+      const payload = {
+          requests: requests,
+          download_only: true,
+          model: null,
+          download_type: downloadType
+      };
+
+      try {
+        const response = await axios.post(`${API_BASE_URL}/youtube/process`, payload);
+        const result = response.data;
+
+        // 觸發 WebSocket 開始監控並刷新任務列表
+        result.tasks.forEach(task => {
+            this.sendSocketMessage({ type: 'START_YOUTUBE_PROCESSING', payload: { task_id: task.task_id }});
+        });
+        await this.fetchTasks();
+
+      } catch (error) {
+        console.error('建立下載任務時發生錯誤:', error);
+        throw new Error(error.response?.data?.detail || '建立下載任務失敗');
+      }
+    },
+
+    /**
+     * 驗證 Google API 金鑰。
+     * @param {string} apiKey - 要驗證的金鑰。
+     * @returns {Promise<object>} - 回傳包含 { valid: boolean, detail: string } 的物件。
+     */
+    async validateApiKey(apiKey) {
+      try {
+        const response = await axios.post(`${API_BASE_URL}/youtube/validate_api_key`, { api_key: apiKey });
+        return response.data;
+      } catch (error) {
+        return {
+          valid: false,
+          detail: error.response?.data?.detail || '無法連線至後端進行驗證'
+        };
+      }
+    },
+
+    /**
+     * 獲取可用的 Gemini 模型列表。
+     * @param {string} apiKey - 用於驗證的 Google API 金鑰。
+     * @returns {Promise<Array>} - 回傳模型列表。
+     */
+    async fetchGeminiModels(apiKey) {
+      try {
+        const response = await axios.post(`${API_BASE_URL}/youtube/models`, { api_key: apiKey });
+        return response.data.models || [];
+      } catch (error) {
+        console.error('獲取 Gemini 模型列表時發生錯誤:', error);
+        throw new Error(error.response?.data?.detail || '無法載入模型列表');
+      }
+    },
+
+    /**
+     * 處理 YouTube 報告生成請求。
+     * @param {object} options - 包含請求所需資訊的物件。
+     */
+    async processYoutubeRequest(options) {
+        try {
+            const response = await axios.post(`${API_BASE_URL}/youtube/process`, options);
+            const result = response.data;
+
+            result.tasks.forEach(task => {
+                this.sendSocketMessage({ type: 'START_YOUTUBE_PROCESSING', payload: { task_id: task.task_id }});
+            });
+            await this.fetchTasks();
+        } catch (error) {
+            console.error('處理 YouTube 請求時發生錯誤:', error);
+            throw new Error(error.response?.data?.detail || '建立 YouTube 分析任務失敗');
+        }
     }
   }
 })

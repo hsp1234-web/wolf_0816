@@ -72,6 +72,7 @@
 <script setup>
 import { ref } from 'vue'
 import { useTasksStore } from '@/stores/tasks'
+import { logAction } from '@/utils/logging'
 
 const tasksStore = useTasksStore()
 
@@ -115,11 +116,13 @@ const onDrop = (event) => {
 
 // --- 按鈕事件處理 ---
 const confirmSettings = () => {
+  logAction('click-confirm-settings', model.value)
   tasksStore.downloadModel(model.value)
 }
 
 const startProcessing = async () => {
   if (uploadedFiles.value.length === 0) return
+  logAction('click-start-processing', `files_count: ${uploadedFiles.value.length}`)
 
   for (const file of uploadedFiles.value) {
     const formData = new FormData()
