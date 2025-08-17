@@ -102,6 +102,51 @@ def get_db_manager_port_from_file(port_file_path: Path, timeout: int = 10) -> in
     log.error(f"❌ 等待埠號檔案 '{port_file_path}' 超時 ({timeout}秒)。")
     return None
 
+def build_frontend(vue_app_dir: Path):
+    """
+    在指定的目錄下建置 Vue.js 前端應用。
+    """
+    log.info("--- [前端建置開始] ---")
+    if not vue_app_dir.is_dir():
+        log.error(f"❌ 前端應用程式目錄不存在: {vue_app_dir}")
+        raise FileNotFoundError(f"Vue app directory not found: {vue_app_dir}")
+
+    try:
+        # 檢查 Node.js 和 npm 是否存在
+        log.info("步驟 1/3: 正在檢查 Node.js 與 npm 環境...")
+        subprocess.run(["node", "--version"], check=True, capture_output=True, text=True)
+        subprocess.run(["npm", "--version"], check=True, capture_output=True, text=True)
+        log.info("✅ Node.js 與 npm 環境已確認。")
+
+        # 安裝前端依賴
+        log.info("步驟 2/3: 正在安裝前端依賴 (npm install)...")
+        is_windows = sys.platform == "win32"
+        npm_install_cmd = ["npm", "install"]
+        install_result = subprocess.run(npm_install_cmd, cwd=vue_app_dir, check=True, capture_output=True, text=True, shell=is_windows)
+        log.info("✅ 前端依賴安裝完成。")
+        log.debug(f"npm install output:\n{install_result.stdout}")
+
+        # 建置前端應用
+        log.info("步驟 3/3: 正在建置前端應用 (npm run build)...")
+        npm_build_cmd = ["npm", "run", "build"]
+        build_result = subprocess.run(npm_build_cmd, cwd=vue_app_dir, check=True, capture_output=True, text=True, shell=is_windows)
+        log.info("✅ 前端應用建置成功！")
+        log.debug(f"npm run build output:\n{build_result.stdout}")
+
+    except FileNotFoundError as e:
+        log.critical(f"❌ 建置失敗：找不到指令 (node/npm)。請確保 Node.js 已安裝並在系統 PATH 中。 {e}")
+        raise
+    except subprocess.CalledProcessError as e:
+        log.critical(f"❌ 前端建置過程中發生錯誤 (返回碼: {e.returncode})。")
+        log.critical(f"   stdout: {e.stdout}")
+        log.critical(f"   stderr: {e.stderr}")
+        raise
+    except Exception as e:
+        log.critical(f"❌ 前端建置時發生未預期的錯誤: {e}")
+        raise
+
+    log.info("--- [前端建置完成] ---")
+
 def main():
     """
     系統的「大腦」，負責啟動、監控所有服務，並發送心跳。
@@ -194,6 +239,9 @@ def main():
         # 2. 獲取資料庫客戶端
         # 此時，我們已確認服務就緒，get_client() 應能立即成功
         db_client = get_client()
+
+        # 2a. 建置前端應用
+        build_frontend(ROOT_DIR / "vue-app")
 
         # 3. 根據參數決定埠號並啟動 API 伺服器
         if args.port:
