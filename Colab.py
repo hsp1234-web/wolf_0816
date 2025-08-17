@@ -40,6 +40,12 @@ import http.server
 import socketserver
 import sqlite3
 try:
+    import requests
+except ImportError:
+    print("正在安裝 requests...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "requests"])
+    import requests
+try:
     import pytz
 except ImportError:
     print("正在安裝 pytz...")
@@ -612,22 +618,54 @@ def main(project_path_str: str):
         }})()
         '''
 
+        # -- 開始具備超時保護的代理連結獲取迴圈 --
         for attempt in range(max_retries):
             log_manager.log("INFO", f"正在嘗試取得代理連結... (第 {attempt + 1}/{max_retries} 次)")
-            try:
-                result = colab_output.eval_js(js_get_url_script)
 
+            # 在獨立執行緒中執行耗時的 JS，以防主執行緒被卡死
+            result_queue = queue.Queue()
+            def _eval_js_in_thread(q, script):
+                try:
+                    # 這個函式在獨立執行緒中運行
+                    q.put({'result': colab_output.eval_js(script), 'error': None})
+                except Exception as e:
+                    q.put({'result': None, 'error': e})
+
+            eval_thread = threading.Thread(target=_eval_js_in_thread, args=(result_queue, js_get_url_script))
+            eval_thread.daemon = True
+            eval_thread.start()
+
+            try:
+                # 等待 JS 執行結果，最多 15 秒
+                output = result_queue.get(timeout=15)
+                if output['error']:
+                    raise output['error']
+                result = output['result']
+
+                # -- JS 成功返回，開始執行探測邏輯 --
                 if result and result.get('error'):
                     log_manager.log("WARN", f"獲取代理連結時發生 JS 錯誤: {result['error']}")
                 elif result and result.get('url') and result['url'].strip().startswith('http'):
-                    shared_stats['proxy_url'] = result['url'].strip()
-                    log_manager.log("SUCCESS", f"✅✅✅ 成功取得永久代理連結！")
-                    break
+                    candidate_url = result['url'].strip()
+                    log_manager.log("DEBUG", f"取得候選 URL: {candidate_url}，正在進行主動探測...")
+                    try:
+                        response = requests.head(candidate_url, timeout=5)
+                        if response.status_code == 200:
+                            log_manager.log("SUCCESS", "✅ 主動探測成功，確認連結可用！")
+                            shared_stats['proxy_url'] = candidate_url
+                            log_manager.log("SUCCESS", f"✅✅✅ 成功取得並驗證代理連結！")
+                            break # 成功，跳出迴圈
+                        else:
+                            log_manager.log("WARN", f"探測失敗，狀態碼: {response.status_code}。將重試。")
+                    except requests.exceptions.RequestException as probe_e:
+                        log_manager.log("WARN", f"探測失敗，網路錯誤: {str(probe_e)[:100]}...。將重試。")
                 else:
                     log_manager.log("WARN", f"收到無效的代理回傳值: '{str(result)[:100]}...'")
 
+            except queue.Empty:
+                log_manager.log("WARN", "操作超時 (15秒)，`eval_js` 可能已卡住。正在強制繼續，進行下一次重試...")
             except Exception as e:
-                log_manager.log("WARN", f"獲取代理連結時發生 Python 錯誤: {e}")
+                log_manager.log("ERROR", f"獲取代理連結時發生未預期錯誤: {e}")
 
             time.sleep(retry_delay)
 
