@@ -1,16 +1,40 @@
 # Colab 啟動器更新說明
 
-本文檔旨在說明對 Colab 啟動器 (`Colab.py`) 進行的重大更新。舊版啟動器在效率和穩定性上存在一些根本性問題，新版採用了「兩階段代理啟動器」架構，旨在提供更快速、更可靠的啟動體驗。
+本文檔旨在說明對 Colab 啟動器 (`Colab.py`) 進行的重大更新與功能增強。
 
-## 問題分析：舊版啟動器的挑戰
+## 本次更新亮點
 
-### 1. 啟動時的阻塞
+基於使用者的寶貴回饋，我們對啟動器進行了以下三項核心改進，以提升其穩定性與使用體驗：
+
+### 1. **強韌的日誌系統 (Robust Logging)**
+- **問題**：原生日誌僅儲存在記憶體中，若 Colab Cell 被手動中斷或意外崩潰，所有日誌都會遺失，導致難以追蹤問題。
+- **解決方案**：我們引入了基於 Python 內建 `sqlite3` 的輕量級資料庫 `launcher_logs.db`。現在，每一條日誌在產生的瞬間都會被即時寫入這個檔案。這確保了即使啟動失敗，絕大部分的日誌依然會被完整保留，為除錯提供堅實的基礎。
+
+### 2. **全新的結束日誌介面**
+- **問題**：舊版的結束畫面僅提供複製完整日誌的按鈕，資訊不夠直觀。
+- **解決方案**：我們重新設計了啟動器結束時的輸出介面：
+    - **完整日誌歸檔**：保留了原有的功能，會將本次運行的所有日誌儲存到 `paper/` 資料夾下的一個 `.md` 檔案中，並在輸出中顯示其準確路徑。
+    - **可收合的最新日誌**：新增了一個預設為收合的 HTML 區塊，裡面清晰地展示了最新的 N 條日誌（預設為 500 條，可自行設定），並提供一個專門的按鈕讓您一鍵複製這部分日誌。這讓您在任務結束後能快速預覽關鍵日誌，同時保持輸出介面的整潔。
+
+### 3. **增強的連線重試機制**
+- **問題**：在網路不穩定的情況下，獲取 Colab 代理連結偶爾會失敗。
+- **解決方案**：我們將代理連結的獲取重試次數從 5 次大幅增加至 **20 次**，每次間隔 1 秒。這大大提高了在不穩定環境下成功啟動的機率。
+
+---
+
+## 舊版問題分析與架構說明
+
+舊版啟動器在效率和穩定性上存在一些根本性問題，新版採用了「兩階段代理啟動器」架構，旨在提供更快速、更可靠的啟動體驗。
+
+### 問題分析：舊版啟動器的挑戰
+
+#### 1. 啟動時的阻塞
 舊的腳本在執行任何操作前，會先用 `pip` 安裝 `requirements-server.txt`。如果這個檔案包含的依賴較多，整個啟動流程就會被卡在第一步，使用者需要長時間等待才能看到任何進展。
 
-### 2. 未能完全利用 `uv`
+#### 2. 未能完全利用 `uv`
 腳本雖然在背景安裝 worker 依賴時使用了高速的 `uv`，但在最開始安裝核心依賴時，用的仍然是傳統的 `pip`，未能最大化安裝效率。
 
-### 3. 代理網址不穩定的根源：競態條件 (Race Condition)
+#### 3. 代理網址不穩定的根源：競態條件 (Race Condition)
 舊機制是先啟動後端的 Uvicorn 伺服器，然後在主控台日誌中「等待」一個就緒訊號，再用 `google.colab.kernel.proxyPort` 這個 JavaScript 指令去「抓取」Colab 分配的代理網址。這個過程非常脆弱，因為 Uvicorn 雖然啟動了，但 Colab 的代理服務可能還沒完全準備好，導致 JavaScript 指令抓取失敗或返回無效值。這是啟動有時會失敗的根本原因。
 
 ---
@@ -60,6 +84,8 @@
 UI_REFRESH_SECONDS = 0.5 #@param {type:"number"}
 #@markdown **日誌顯示行數**
 LOG_DISPLAY_LINES = 10 #@param {type:"integer"}
+#@markdown **最大日誌複製數量**
+LOG_COPY_MAX_LINES = 500 #@param {type:"integer"}
 #@markdown **時區設定**
 TIMEZONE = "Asia/Taipei" #@param {type:"string"}
 #@markdown ---
@@ -88,6 +114,7 @@ import subprocess
 import socket
 import http.server
 import socketserver
+import sqlite3
 try:
     import pytz
 except ImportError:
@@ -112,28 +139,88 @@ from google.colab import output as colab_output, userdata
 # ==============================================================================
 
 class LogManager:
-    """日誌管理器：負責記錄、過濾和儲存所有日誌訊息。"""
-    def __init__(self, max_lines, timezone_str, log_levels_to_show):
+    """日誌管理器：負責記錄、過濾和儲存所有日誌訊息，並將其持久化到 SQLite 資料庫。"""
+    def __init__(self, max_lines, timezone_str, log_levels_to_show, db_path):
+        # 舊的記憶體部分，用於即時儀表板顯示，保持不變
         self._log_deque = deque(maxlen=max_lines)
-        self._full_history = []
-        self._lock = threading.Lock()
-        self.timezone = pytz.timezone(timezone_str)
         self.log_levels_to_show = log_levels_to_show
 
-    def log(self, level: str, message: str):
+        # 新的資料庫部分
+        self.timezone = pytz.timezone(timezone_str)
+        self._db_path = db_path
+        self._db_conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        self._lock = threading.Lock() # 鎖定資料庫和 deque 的寫入操作
+
+        self._initialize_db()
+
+    def _initialize_db(self):
+        """初始化資料庫，清除舊表並建立新表。"""
         with self._lock:
-            log_entry = {"timestamp": datetime.now(self.timezone), "level": level.upper(), "message": str(message)}
-            self._log_deque.append(log_entry)
-            self._full_history.append(log_entry)
+            cursor = self._db_conn.cursor()
+            cursor.execute("DROP TABLE IF EXISTS logs")
+            cursor.execute("""
+                CREATE TABLE logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    level TEXT NOT NULL,
+                    message TEXT NOT NULL
+                )
+            """)
+            self._db_conn.commit()
+
+    def log(self, level: str, message: str):
+        """記錄一條日誌到記憶體和資料庫。"""
+        with self._lock:
+            now = datetime.now(self.timezone)
+            log_entry_for_display = {"timestamp": now, "level": level.upper(), "message": str(message)}
+            self._log_deque.append(log_entry_for_display)
+
+            # 寫入資料庫
+            cursor = self._db_conn.cursor()
+            cursor.execute(
+                "INSERT INTO logs (timestamp, level, message) VALUES (?, ?, ?)",
+                (now.isoformat(), level.upper(), str(message))
+            )
+            self._db_conn.commit()
 
     def get_display_logs(self) -> list:
+        """從記憶體中獲取用於動態顯示的日誌。"""
         with self._lock:
             all_logs = list(self._log_deque)
             return [log for log in all_logs if self.log_levels_to_show.get(f"SHOW_LOG_LEVEL_{log['level']}", False)]
 
+    def _db_rows_to_dict_list(self, rows) -> list:
+        """將資料庫查詢結果轉換為字典列表，並處理時間戳。"""
+        log_list = []
+        for row in rows:
+            try:
+                timestamp = datetime.fromisoformat(row[1])
+            except ValueError:
+                timestamp = datetime.now(self.timezone) # Fallback
+            log_list.append({"timestamp": timestamp, "level": row[2], "message": row[3]})
+        return log_list
+
     def get_full_history(self) -> list:
+        """從資料庫獲取完整的日誌歷史。"""
         with self._lock:
-            return self._full_history
+            cursor = self._db_conn.cursor()
+            cursor.execute("SELECT * FROM logs ORDER BY id ASC")
+            rows = cursor.fetchall()
+            return self._db_rows_to_dict_list(rows)
+
+    def get_latest_logs(self, limit: int) -> list:
+        """從資料庫獲取最新的 N 條日誌。"""
+        with self._lock:
+            cursor = self._db_conn.cursor()
+            cursor.execute("SELECT * FROM logs ORDER BY id DESC LIMIT ?", (limit,))
+            rows = cursor.fetchall()
+            # 因為是 DESC 拿出來的，要反轉回來才是時間正序
+            return self._db_rows_to_dict_list(reversed(rows))
+
+    def close(self):
+        """關閉資料庫連線。"""
+        if self._db_conn:
+            self._db_conn.close()
 
 ANSI_COLORS = {
     "SUCCESS": "\033[32m", "WARN": "\033[33m", "ERROR": "\033[31m",
@@ -152,12 +239,6 @@ class DisplayManager:
 
     def _build_output_buffer(self) -> list[str]:
         output_buffer = ["🐺善狼下載啟動器🐺", ""]
-        if self._stats.get('proxy_url'):
-            output_buffer.append(f"✅ 代理連結 (點擊開啟): {self._stats['proxy_url']}")
-            output_buffer.append("")
-        else:
-            output_buffer.append("⏳ 正在生成代理連結...")
-            output_buffer.append("")
 
         logs_to_display = self._log_manager.get_display_logs()
         for log in logs_to_display:
@@ -172,6 +253,14 @@ class DisplayManager:
         mins, secs = divmod(elapsed, 60)
         output_buffer.append("")
         output_buffer.append(f"⏱️ {int(mins):02d}分{int(secs):02d}秒 | 💻 CPU: {cpu} | 🧠 RAM: {ram} | 🔥 狀態: {self._stats.get('status', '初始化...')}")
+
+        # 將代理連結移至此處
+        output_buffer.append("")
+        if self._stats.get('proxy_url'):
+            output_buffer.append(f"✅ 代理連結 (點擊開啟): {self._stats['proxy_url']}")
+        else:
+            output_buffer.append("⏳ 正在生成代理連結...")
+
         return output_buffer
 
     def _run(self):
@@ -397,8 +486,14 @@ def main(project_path_str: str):
 
     try:
         # 步驟 1: 初始化日誌和顯示管理器
+        db_path = Path(project_path_str) / "launcher_logs.db"
         log_levels = {name: globals()[name] for name in globals() if name.startswith("SHOW_LOG_LEVEL_")}
-        log_manager = LogManager(max_lines=LOG_DISPLAY_LINES, timezone_str=TIMEZONE, log_levels_to_show=log_levels)
+        log_manager = LogManager(
+            max_lines=LOG_DISPLAY_LINES,
+            timezone_str=TIMEZONE,
+            log_levels_to_show=log_levels,
+            db_path=str(db_path)
+        )
         display_manager = DisplayManager(log_manager=log_manager, stats_dict=shared_stats, refresh_rate=UI_REFRESH_SECONDS)
         display_manager.start()
         log_manager.log("INFO", "顯示管理器已啟動。")
@@ -413,7 +508,7 @@ def main(project_path_str: str):
 
         # 步驟 3: (關鍵) 立即取得代理連結
         time.sleep(1) # 等待臨時伺服器线程完全啟動
-        max_retries, retry_delay = 5, 2
+        max_retries, retry_delay = 20, 1
         for attempt in range(max_retries):
             try:
                 log_manager.log("INFO", f"正在嘗試取得代理連結... (第 {attempt + 1}/{max_retries} 次)")
@@ -458,18 +553,70 @@ def main(project_path_str: str):
         if background_worker: background_worker.stop()
         if temp_server_manager and temp_server_manager._thread.is_alive(): temp_server_manager.stop()
         if display_manager and display_manager._thread.is_alive(): display_manager.stop()
+
         end_time = datetime.now(pytz.timezone(TIMEZONE))
         if log_manager and display_manager:
             clear_output(); print("\n".join(display_manager._build_output_buffer()))
             print("\n--- ✅ 所有任務完成，系統已安全關閉 ---")
-            # 顯示複製按鈕等收尾工作
-            full_log_history = log_manager.get_full_history()
-            js_screen = json.dumps("\n".join(display_manager._build_output_buffer()))
-            js_logs = json.dumps("\n".join([f"[{log['timestamp'].isoformat()}] [{log['level']}] {log['message']}" for log in full_log_history]))
-            display(HTML(f"""<script>function copyToClipboard(text) {{navigator.clipboard.writeText(text);}}</script>
-                <button onclick='copyToClipboard({js_screen})'>📋 複製上方儲存格輸出</button>
-                <button onclick='copyToClipboard({js_logs})'>📄 複製完整詳細日誌</button>"""))
+
+            # 步驟 A: 歸檔完整日誌並顯示路徑
             archive_reports(log_manager, start_time, end_time, shared_stats.get('status', '未知'))
+
+            # 步驟 B: 準備並顯示可收合的最新日誌
+            try:
+                latest_logs = log_manager.get_latest_logs(LOG_COPY_MAX_LINES)
+
+                # 準備日誌內容以供複製和顯示
+                log_strings_for_copy = []
+                log_strings_for_html = []
+                for log in latest_logs:
+                    log_line = f"[{log['timestamp'].isoformat()}] [{log['level']}] {log['message']}"
+                    log_strings_for_copy.append(log_line)
+                    # 為了 HTML 顯示，逸出特殊字元
+                    log_strings_for_html.append(
+                        log_line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                    )
+
+                logs_for_copy_js = json.dumps("\n".join(log_strings_for_copy))
+                logs_for_html_display = "\n".join(log_strings_for_html)
+
+                num_logs = len(latest_logs)
+
+                # 產生包含獨立 JS 函式的 HTML
+                collapsible_html = f'''
+                <script>
+                    function copyLogsToClipboard(button, text) {{
+                        navigator.clipboard.writeText(text).then(
+                            () => {{ button.innerText = '✅ 已複製!'; }},
+                            () => {{ button.innerText = '❌ 複製失敗'; }}
+                        );
+                        setTimeout(() => {{
+                            button.innerText = `📋 複製這 {num_logs} 條日誌`;
+                        }}, 2000);
+                    }}
+                </script>
+                <details style="margin-top: 15px; border: 1px solid #e0e0e0; padding: 12px; border-radius: 8px; background-color: #f9f9f9;">
+                    <summary style="cursor: pointer; font-weight: bold; color: #333;">
+                        點此展開/收合最近 {num_logs} 條詳細日誌
+                    </summary>
+                    <div style="margin-top: 12px;">
+                        <button
+                            onclick="copyLogsToClipboard(this, {logs_for_copy_js})"
+                            style="padding: 6px 12px; margin-bottom: 12px; cursor: pointer; border: 1px solid #ccc; border-radius: 5px; background-color: #fff;">
+                            📋 複製這 {num_logs} 條日誌
+                        </button>
+                        <pre style="background-color: #fff; padding: 12px; border: 1px solid #e0e0e0; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; font-family: monospace; font-size: 13px; color: #444;"><code>{logs_for_html_display}</code></pre>
+                    </div>
+                </details>
+                '''
+                display(HTML(collapsible_html))
+
+            except Exception as e:
+                print(f"❌ 顯示最終日誌報告時發生錯誤: {e}")
+
+        # 最後關閉資料庫連線
+        if log_manager:
+            log_manager.close()
 
 if __name__ == "__main__":
     if 'PROJECT_PATH_FROM_DOWNLOADER' in globals() and Path(globals()['PROJECT_PATH_FROM_DOWNLOADER']).exists():
