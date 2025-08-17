@@ -40,6 +40,12 @@ import http.server
 import socketserver
 import sqlite3
 try:
+    import requests
+except ImportError:
+    print("正在安裝 requests...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "requests"])
+    import requests
+try:
     import pytz
 except ImportError:
     print("正在安裝 pytz...")
@@ -63,85 +69,34 @@ from google.colab import output as colab_output, userdata
 # SECTION 0.5: 狀態顯示頁面資源
 # ==============================================================================
 
-BOOT_SCREEN_HTML = """
-<!DOCTYPE html>
-<html lang="zh-Hant">
-<head>
-    <meta charset="UTF-8">
-    <title>善狼啟動器 - 正在初始化...</title>
-    <script src="https://cdn.jsdelivr.net/npm/ansi_up@5.1.0/ansi_up.min.js"></script>
-    <style>
-        body { background-color: #1a1a1a; color: #e0e0e0; font-family: 'SF Mono', 'Consolas', 'Menlo', monospace; font-size: 14px; margin: 0; padding: 20px; overflow-y: scroll; }
-        #log-container { white-space: pre; font-size: 13px; line-height: 1.5; }
-        #title-container { display: flex; align-items: center; border-bottom: 1px solid #444; padding-bottom: 10px; }
-        #spinner { margin-left: 12px; font-size: 16px; }
-        .line { display: block; }
-    </style>
-</head>
-<body>
-    <div id="title-container">
-        <h1 style="margin: 0; font-size: 18px;">🐺 善狼啟動器 - 正在準備環境...</h1>
-        <div id="spinner">|</div>
-    </div>
-    <pre id="log-container"></pre>
-    <script>
-        const logContainer = document.getElementById('log-container');
-        const spinner = document.getElementById('spinner');
-        const ansi_up = new AnsiUp();
-        const spinnerChars = ['|', '/', '-', '\\\\'];
-        let spinnerIndex = 0;
-
-        const spinnerInterval = setInterval(() => {
-            spinner.textContent = spinnerChars[spinnerIndex];
-            spinnerIndex = (spinnerIndex + 1) % spinnerChars.length;
-        }, 200);
-
-        const evtSource = new EventSource('/events');
-        evtSource.onmessage = function(event) {
-            try {
-                const data = JSON.parse(event.data);
-                if (data.log) {
-                    const div = document.createElement('div');
-                    div.className = 'line';
-                    // 使用 ansi_to_html 處理日誌中的 ANSI Escape Code
-                    div.innerHTML = ansi_up.ansi_to_html(data.log);
-                    logContainer.appendChild(div);
-                    // 自動滾動到頁面底部
-                    window.scrollTo(0, document.body.scrollHeight);
-                }
-            } catch (e) {
-                console.error("處理日誌時發生錯誤:", e);
-            }
-        };
-
-        evtSource.onerror = function(err) {
-            evtSource.close();
-            clearInterval(spinnerInterval);
-            spinner.textContent = '🚀';
-            const div = document.createElement('div');
-            div.innerHTML = ansi_up.ansi_to_html('\\n\\n\\033[32m[INFO] 後端伺服器已關閉，準備交接... 3秒後將嘗試載入主應用程式...\\033[0m');
-            logContainer.appendChild(div);
-            window.scrollTo(0, document.body.scrollHeight);
-            // 等待3秒，讓主應用程式有時間接管埠號
-            setTimeout(() => {
-                window.location.reload();
-            }, 3000);
-        };
-    </script>
-</body>
-</html>
-"""
+# BOOT_SCREEN_HTML 已被移至 src/static/colab_boot.html
 
 class StatusServerRequestHandler(http.server.BaseHTTPRequestHandler):
     """一個自訂的 HTTP 請求處理器，用於提供狀態頁面和日誌串流。"""
     log_queue = None
+    project_root = Path(".") # Class attribute for project root
 
     def do_GET(self):
         if self.path == '/':
-            self.send_response(200)
-            self.send_header('Content-type', 'text/html; charset=utf-8')
-            self.end_headers()
-            self.wfile.write(BOOT_SCREEN_HTML.encode('utf-8'))
+            # 使用基於專案根目錄的絕對路徑，更穩健
+            boot_page_path = self.project_root / "src" / "static" / "colab_boot.html"
+            try:
+                if not boot_page_path.is_file():
+                    error_message = f"<h1>Error 500: Boot screen file not found.</h1><p>Expected at: {boot_page_path}</p>".encode('utf-8')
+                    self.send_response(500)
+                    self.send_header('Content-type', 'text/html; charset=utf-8')
+                    self.end_headers()
+                    self.wfile.write(error_message)
+                    return
+
+                with open(boot_page_path, 'rb') as f:
+                    self.send_response(200)
+                    self.send_header('Content-type', 'text/html; charset=utf-8')
+                    self.end_headers()
+                    self.wfile.write(f.read())
+            except Exception as e:
+                self.send_error(500, f"Error reading boot screen file: {e}")
+
         elif self.path == '/events':
             self._handle_sse_request()
         else:
@@ -328,47 +283,55 @@ class ReusableTCPServer(socketserver.TCPServer):
 
 class TempServerManager:
     """臨時伺服器管理器：負責啟動一個臨時的 HTTP 伺服器以佔用埠號並顯示狀態。"""
-    def __init__(self, port, log_manager, log_queue):
+    def __init__(self, port, log_manager, log_queue, project_root="."):
         self.port = port
         self._log_manager = log_manager
         self.log_queue = log_queue
+        self.project_root = Path(project_root)
         self.server = None
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._stop_event = threading.Event()
 
     def _run(self):
-        # 將佇列傳遞給處理器類別的類別變數
-        StatusServerRequestHandler.log_queue = self.log_queue
-        handler = StatusServerRequestHandler
+        try:
+            StatusServerRequestHandler.log_queue = self.log_queue
+            StatusServerRequestHandler.project_root = self.project_root
+            handler = StatusServerRequestHandler
 
-        with ReusableTCPServer(("", self.port), handler) as httpd:
-            self._log_manager.log("DEBUG", f"狀態伺服器已在埠號 {self.port} 上啟動。")
-            self.server = httpd
-            # 等待停止信號
-            self._stop_event.wait()
-            self._log_manager.log("DEBUG", "狀態伺服器收到停止信號。")
+            with ReusableTCPServer(("", self.port), handler) as httpd:
+                self.server = httpd
+                self._log_manager.log("DEBUG", f"狀態伺服器已在埠號 {self.port} 上綁定，準備啟動請求處理迴圈...")
+
+                # 在背景執行緒中運行 serve_forever，以避免阻塞
+                server_thread = threading.Thread(target=httpd.serve_forever)
+                server_thread.daemon = True
+                server_thread.start()
+                self._log_manager.log("DEBUG", "請求處理迴圈已在背景啟動。")
+
+                self._stop_event.wait() # 等待外部的停止信號
+                self._log_manager.log("DEBUG", "狀態伺服器收到停止信號。")
+
+        except Exception as e:
+            self._log_manager.log("CRITICAL", f"!!! 狀態伺服器主執行緒發生致命錯誤: {e}")
+        finally:
+            if self.server:
+                self._log_manager.log("DEBUG", "正在關閉伺服器...")
+                self.server.shutdown()
+                self.server.server_close()
+            self._log_manager.log("SUCCESS", "狀態顯示伺服器已徹底關閉。")
 
     def start(self):
         self._thread.start()
 
     def stop(self):
         self._log_manager.log("INFO", "正在關閉狀態顯示伺服器...")
-        self._stop_event.set()
-        # 寄送一個假請求給自己來解除 httpd.serve_forever() 的阻塞
-        try:
-            with socket.create_connection(("127.0.0.1", self.port), timeout=1):
-                pass
-        except (socket.timeout, ConnectionRefusedError):
-            pass # 這是預期行為
-
-        # 在關閉伺服器前，向佇列發送一個 None 作為結束信號
+        # 向佇列發送結束信號
         if self.log_queue:
             self.log_queue.put(None)
-
-        if self.server:
-            self.server.server_close()
-        self._thread.join(timeout=2)
-        self._log_manager.log("SUCCESS", "狀態顯示伺服器已關閉。")
+        # 觸發停止事件，讓 _run 方法中的 wait() 結束
+        self._stop_event.set()
+        # 等待 _run 執行緒完成其清理工作 (shutdown, server_close)
+        self._thread.join(timeout=5)
 
 class BackgroundWorker:
     """背景工作者：在獨立執行緒中執行所有耗時的安裝與啟動任務。"""
@@ -593,7 +556,12 @@ def main(project_path_str: str):
         shared_stats['status'] = "尋找可用埠號..."
         port = find_free_port()
         log_manager.log("INFO", f"找到空閒埠號: {port}")
-        temp_server_manager = TempServerManager(port=port, log_manager=log_manager, log_queue=log_queue)
+        temp_server_manager = TempServerManager(
+            port=port,
+            log_manager=log_manager,
+            log_queue=log_queue,
+            project_root=project_path_str
+        )
         temp_server_manager.start()
         shared_stats['status'] = "建立狀態伺服器..."
 
@@ -612,22 +580,56 @@ def main(project_path_str: str):
         }})()
         '''
 
+        # -- 開始具備超時保護的代理連結獲取迴圈 --
         for attempt in range(max_retries):
             log_manager.log("INFO", f"正在嘗試取得代理連結... (第 {attempt + 1}/{max_retries} 次)")
-            try:
-                result = colab_output.eval_js(js_get_url_script)
 
+            # 在獨立執行緒中執行耗時的 JS，以防主執行緒被卡死
+            result_queue = queue.Queue()
+            def _eval_js_in_thread(q, script):
+                try:
+                    # 這個函式在獨立執行緒中運行
+                    q.put({'result': colab_output.eval_js(script), 'error': None})
+                except Exception as e:
+                    q.put({'result': None, 'error': e})
+
+            eval_thread = threading.Thread(target=_eval_js_in_thread, args=(result_queue, js_get_url_script))
+            eval_thread.daemon = True
+            eval_thread.start()
+
+            try:
+                # 等待 JS 執行結果，最多 15 秒
+                output = result_queue.get(timeout=15)
+                if output['error']:
+                    raise output['error']
+                result = output['result']
+
+                # -- JS 成功返回，開始執行探測邏輯 --
                 if result and result.get('error'):
                     log_manager.log("WARN", f"獲取代理連結時發生 JS 錯誤: {result['error']}")
                 elif result and result.get('url') and result['url'].strip().startswith('http'):
-                    shared_stats['proxy_url'] = result['url'].strip()
-                    log_manager.log("SUCCESS", f"✅✅✅ 成功取得永久代理連結！")
-                    break
+                    candidate_url = result['url'].strip()
+                    log_manager.log("DEBUG", f"取得候選 URL: {candidate_url}，正在進行主動探測...")
+                    try:
+                        # 使用 GET(stream=True) 進行探測，這對輕量級伺服器更通用
+                        # stream=True 讓我們只獲取響應頭而不下載內容，效率高
+                        response = requests.get(candidate_url, timeout=5, stream=True)
+                        if response.status_code == 200:
+                            log_manager.log("SUCCESS", "✅ 主動探測成功，確認連結可用！")
+                            shared_stats['proxy_url'] = candidate_url
+                            log_manager.log("SUCCESS", f"✅✅✅ 成功取得並驗證代理連結！")
+                            break # 成功，跳出迴圈
+                        else:
+                            log_manager.log("WARN", f"探測失敗，狀態碼: {response.status_code}。將重試。")
+                    except requests.exceptions.RequestException as probe_e:
+                        log_manager.log("WARN", f"探測失敗，網路錯誤: {str(probe_e)[:100]}...。將重試。")
                 else:
                     log_manager.log("WARN", f"收到無效的代理回傳值: '{str(result)[:100]}...'")
 
+            except queue.Empty:
+                log_manager.log("WARN", "操作超時 (15秒)，`eval_js` 可能已卡住。正在強制繼續，進行下一次重試...")
             except Exception as e:
-                log_manager.log("WARN", f"獲取代理連結時發生 Python 錯誤: {e}")
+                log_manager.log("ERROR", f"獲取代理連結時發生未預期錯誤: {e}")
 
             time.sleep(retry_delay)
 

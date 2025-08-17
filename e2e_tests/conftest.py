@@ -112,3 +112,71 @@ def db_client_fixture(live_server):
 
     client = db_client_module.get_client()
     yield client
+
+from unittest.mock import MagicMock
+
+@pytest.fixture(scope="session")
+def colab_boot_server():
+    """
+    一個專門用於測試 Colab 開機畫面的 fixture。
+    它只會啟動 Colab.py 中的 TempServerManager。
+    """
+    # --- 模擬 Colab 環境依賴 ---
+    # 為了在非 Colab 環境中測試 Colab.py，我們需要模擬它所依賴的模組
+    mock_ipython = MagicMock()
+    mock_ipython.display.clear_output = MagicMock()
+    mock_ipython.display.display = MagicMock()
+    mock_ipython.display.HTML = MagicMock()
+    sys.modules['IPython'] = mock_ipython
+    sys.modules['IPython.display'] = mock_ipython.display
+
+    mock_google_colab = MagicMock()
+    # 我們不需要這些函式有實際行為，只需要它們存在即可
+    mock_google_colab.output.eval_js = MagicMock(return_value="")
+    mock_google_colab.userdata.get = MagicMock(return_value=None)
+    # 建立一個假的 google 模組，因為 `from google.colab` 需要它
+    mock_google = MagicMock()
+    mock_google.colab = mock_google_colab
+    sys.modules['google'] = mock_google
+    sys.modules['google.colab'] = mock_google_colab
+    # --- 模擬結束 ---
+
+    # Colab.py 位於根目錄，需要將其加入 sys.path
+    if str(ROOT_DIR) not in sys.path:
+        sys.path.insert(0, str(ROOT_DIR))
+    from Colab import TempServerManager, LogManager, find_free_port
+    import queue
+
+    log.info("--- Setting up Colab boot screen server ---")
+    temp_server = None
+    try:
+        port = find_free_port()
+        server_url = f"http://127.0.0.1:{port}"
+
+        # 為 TempServerManager 準備最小化的依賴
+        log_queue = queue.Queue()
+        # 使用一個簡化的 LogManager，避免寫入資料庫
+        log_levels = {
+            "SHOW_LOG_LEVEL_DEBUG": True, "SHOW_LOG_LEVEL_INFO": True,
+            "SHOW_LOG_LEVEL_SUCCESS": True, "SHOW_LOG_LEVEL_WARN": True,
+            "SHOW_LOG_LEVEL_ERROR": True, "SHOW_LOG_LEVEL_CRITICAL": True
+        }
+        log_manager = LogManager(max_lines=10, timezone_str="UTC", log_levels_to_show=log_levels, db_path=":memory:")
+
+        temp_server = TempServerManager(
+            port=port,
+            log_manager=log_manager,
+            log_queue=log_queue,
+            project_root=ROOT_DIR
+        )
+        temp_server.start()
+        log.info(f"✅ Colab boot server 啟動於 {server_url}")
+        time.sleep(1) # 等待伺服器執行緒啟動
+
+        yield server_url
+
+    finally:
+        log.info("--- Tearing down Colab boot screen server ---")
+        if temp_server:
+            temp_server.stop()
+        log.info("✅ Colab boot server 已關閉。")
