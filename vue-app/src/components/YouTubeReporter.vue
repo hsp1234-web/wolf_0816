@@ -8,7 +8,7 @@
       </div>
       <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px;">
         <input type="password" v-model="apiKey" placeholder="在此貼上您的 Google API 金鑰" style="flex-grow: 1; padding: 10px; border-radius: 6px; border: 1px solid #ccc;">
-        <button @click="saveAndValidateApiKey">儲存金鑰</button>
+        <button id="save-api-key-btn" @click="saveAndValidateApiKey">儲存金鑰</button>
         <button @click="clearApiKey" style="background-color: #6c757d;">清除金鑰</button>
       </div>
       <p id="api-key-status" style="margin-top: 0; font-weight: 500;">
@@ -67,8 +67,8 @@
 
     <!-- 操作按鈕 -->
     <div style="text-align: center; margin-top: 24px; display: flex; justify-content: center; gap: 15px; flex-wrap: wrap;">
-      <button @click="processRequest(true)" :disabled="!youtubeLinks[0].url">🎧 僅下載音訊</button>
-      <button @click="processRequest(false)" :disabled="!isApiKeyValid || !youtubeLinks[0].url">🚀 分析影片 (Gemini)</button>
+      <button id="download-audio-only-btn" @click="processRequest(true)" :disabled="!youtubeLinks[0].url">🎧 僅下載音訊</button>
+      <button id="analyze-video-btn" @click="processRequest(false)" :disabled="!isApiKeyValid || !youtubeLinks[0].url">🚀 分析影片 (Gemini)</button>
     </div>
 
     <!-- 報告瀏覽區 -->

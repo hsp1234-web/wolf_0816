@@ -16,7 +16,7 @@
             ></textarea>
           </div>
           <div style="text-align: center; margin-top: 16px;">
-            <button @click="startDownload" style="width: 100%; padding: 12px; font-size: 1.1em;">開始下載</button>
+            <button id="start-download-btn" @click="startDownload" style="width: 100%; padding: 12px; font-size: 1.1em;">開始下載</button>
           </div>
         </div>
         <!-- 右側：詳細選項 -->
