@@ -10,15 +10,12 @@ import json
 # --- 設定區 ---
 VENV_DIR = Path(__file__).parent / ".venv_youtube"
 REQUIRED_PACKAGES = [
-    "huey[redis]==2.5.0",
-    "redis==5.0.1",
+    "huey==2.5.0",
     "yt-dlp==2023.12.30",
     "pytz==2024.1"
 ]
 IDLE_TIMEOUT_SECONDS = 20
 LOOP_SLEEP_SECONDS = 2
-REDIS_HOST = os.environ.get("REDIS_HOST", "127.0.0.1")
-REDIS_PORT = int(os.environ.get("REDIS_PORT", 6379))
 # --- 設定區結束 ---
 
 def bootstrap_venv():
@@ -42,8 +39,8 @@ def bootstrap_venv():
 
     python_executable = VENV_DIR / "bin" / "python"
 
-    print(f"[{datetime.now().isoformat()}] 正在安裝/驗證依賴...")
-    subprocess.run([sys.executable, "-m", "uv", "pip", "install", *REQUIRED_PACKAGES, f"--python={python_executable}"], check=True)
+    print(f"[{datetime.now().isoformat()}] 正在安裝/驗證依賴 (已停用快取)...")
+    subprocess.run([sys.executable, "-m", "uv", "pip", "install", "--no-cache-dir", *REQUIRED_PACKAGES, f"--python={python_executable}"], check=True)
 
     print(f"[{datetime.now().isoformat()}] 依賴安裝完成，正在虛擬環境中重新啟動腳本...")
     os.execv(python_executable, [python_executable, *sys.argv])
@@ -56,7 +53,7 @@ bootstrap_venv()
 # --- 2. 在 venv 中延遲匯入和設定 ---
 # 只有在 venv 啟動並確認依賴存在後，才匯入這些模組
 import pytz
-from huey import Huey, signals
+from huey import MemoryHuey as Huey, signals
 import yt_dlp
 
 # --- 日誌系統設定 ---
@@ -97,7 +94,7 @@ setup_logging()
 log = logging.getLogger(__name__)
 
 # --- 3. Huey 佇列與任務定義 ---
-huey = Huey('youtube_downloader', host=REDIS_HOST, port=REDIS_PORT)
+huey = Huey('youtube_downloader')
 
 @huey.task(retries=2, retry_delay=10)
 def download_youtube_video(youtube_url: str):

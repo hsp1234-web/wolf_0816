@@ -1197,6 +1197,21 @@ async def websocket_endpoint(websocket: WebSocket):
                 msg_type = message.get("type")
                 payload = message.get("payload", {})
 
+                # --- MODIFICATION FOR DUAL WORKER ARCHITECTURE ---
+                # Check if we are in the new worker mode. If so, the standalone workers
+                # will poll the database, so we should not trigger tasks from here.
+                if os.environ.get("WORKER_MODE") == "new":
+                    log.info(f"WORKER_MODE=new, 跳過來自 WebSocket 的任務觸發: {msg_type}")
+                    # In the new mode, we do nothing and let the workers handle it.
+                    # We can send an acknowledgement back to the client if needed.
+                    await manager.broadcast_json({
+                        "type": "ACK",
+                        "payload": f"已收到 {msg_type}，將由獨立工作者處理。"
+                    })
+                    continue
+                # --- END MODIFICATION ---
+
+
                 if msg_type == "START_DOWNLOAD":
                     task_id = payload.get("task_id")
                     if task_id:

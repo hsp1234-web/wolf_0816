@@ -10,14 +10,11 @@ import json
 # --- 設定區 ---
 VENV_DIR = Path(__file__).parent / ".venv_transcription"
 REQUIRED_PACKAGES = [
-    "huey[redis]==2.5.0",
-    "redis==5.0.1",
+    "huey==2.5.0",
     "pytz==2024.1"
 ]
 IDLE_TIMEOUT_SECONDS = 30  # 增加閒置時間以應對鏈式任務
 LOOP_SLEEP_SECONDS = 2
-REDIS_HOST = os.environ.get("REDIS_HOST", "127.0.0.1")
-REDIS_PORT = int(os.environ.get("REDIS_PORT", 6379))
 # --- 設定區結束 ---
 
 def bootstrap_venv():
@@ -39,8 +36,8 @@ def bootstrap_venv():
 
     python_executable = VENV_DIR / "bin" / "python"
 
-    print(f"[{datetime.now().isoformat()}] 正在安裝/驗證依賴...")
-    subprocess.run([sys.executable, "-m", "uv", "pip", "install", *REQUIRED_PACKAGES, f"--python={python_executable}"], check=True)
+    print(f"[{datetime.now().isoformat()}] 正在安裝/驗證依賴 (已停用快取)...")
+    subprocess.run([sys.executable, "-m", "uv", "pip", "install", "--no-cache-dir", *REQUIRED_PACKAGES, f"--python={python_executable}"], check=True)
 
     print(f"[{datetime.now().isoformat()}] 依賴安裝完成，正在虛擬環境中重新啟動腳本...")
     os.execv(python_executable, [python_executable, *sys.argv])
@@ -50,7 +47,7 @@ bootstrap_venv()
 
 # --- 2. 在 venv 中延遲匯入和設定 ---
 import pytz
-from huey import Huey, signals
+from huey import MemoryHuey as Huey, signals
 
 # --- 日誌系統設定 ---
 class TaipeiTimeFormatter(logging.Formatter):
@@ -90,10 +87,10 @@ log = logging.getLogger(__name__)
 
 # --- 3. Huey 佇列與任務定義 ---
 # 主要的佇列，用於此工作者執行的任務
-transcription_huey = Huey('transcription', host=REDIS_HOST, port=REDIS_PORT)
+transcription_huey = Huey('transcription')
 
 # 代理佇列，用於將任務發送到 AI 報告工作者
-ai_report_huey = Huey('ai_report', host=REDIS_HOST, port=REDIS_PORT)
+ai_report_huey = Huey('ai_report')
 
 @ai_report_huey.task()
 def generate_ai_report(transcription: str, original_filename: str):
