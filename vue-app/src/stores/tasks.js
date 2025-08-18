@@ -74,17 +74,16 @@ export const useTasksStore = defineStore('tasks', {
           }
         });
 
-        const result = response.data;
-        // API 可能回傳單一任務或一個任務陣列
-        const tasks = Array.isArray(result.tasks) ? result.tasks : [result];
+        const task = response.data; // 後端現在只會回傳單一任務
 
-        tasks.forEach(task => {
-          // 只有轉錄任務需要透過 WebSocket 觸發
-          if (task.type === 'transcribe') {
-            this.sendSocketMessage({ type: 'START_TRANSCRIPTION', payload: { task_id: task.task_id } });
-          }
-          // 下載任務由 worker 自動處理，前端只需等待狀態更新
-        });
+        // 根據後端回傳的任務類型，觸發對應的 WebSocket 事件
+        if (task.type === 'transcribe') {
+          // 如果模型已存在，直接開始轉錄
+          this.sendSocketMessage({ type: 'START_TRANSCRIPTION', payload: { task_id: task.task_id } });
+        } else if (task.type === 'download') {
+          // 如果模型不存在，開始下載任務鏈
+          this.sendSocketMessage({ type: 'START_DOWNLOAD', payload: { task_id: task.task_id } });
+        }
 
         // 刷新任務列表以顯示新建立的任務
         await this.fetchTasks();
@@ -232,14 +231,14 @@ export const useTasksStore = defineStore('tasks', {
     },
 
     /**
-     * 發送請求以下載指定的 Whisper 模型。
+     * 發送請求以下載指定的 Whisper 模型。(此功能已棄用)
      * @param {string} modelName - 要下載的模型名稱 (例如 'medium')。
      */
     downloadModel(modelName) {
-      this.sendSocketMessage({
-        type: 'DOWNLOAD_MODEL',
-        payload: { model: modelName }
-      });
+      // 這個流程已被新的自動化依賴管理取代。
+      // 當使用者試圖轉錄一個不存在的模型時，下載會自動開始。
+      // 保留此函式以避免 UI 元件出錯，但給予警告。
+      console.warn(`[已棄用] downloadModel('${modelName}') 被呼叫，但此流程已被自動化。`);
     },
 
     /**
