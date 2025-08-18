@@ -1,53 +1,202 @@
-# run_youtube_worker.py
-import time
+import os
+import sys
+import subprocess
 import logging
-from services.huey_config import huey
-# 確保 tasks.py 被載入，讓 Huey 認識我們剛剛修改過的任務
-from services.youtube_service import tasks
+import time
+from pathlib import Path
+from datetime import datetime
+import json
 
-# --- 設定區 (可直接在此修改) ---
-IDLE_TIMEOUT_SECONDS = 20 # 沒有任務後，等待 20 秒就自動關閉
-LOOP_SLEEP_SECONDS = 2   # 每 2 秒檢查一次佇列
+# --- 設定區 ---
+VENV_DIR = Path(__file__).parent / ".venv_youtube"
+REQUIRED_PACKAGES = [
+    "huey[redis]==2.5.0",
+    "redis==5.0.1",
+    "yt-dlp==2023.12.30",
+    "pytz==2024.1"
+]
+IDLE_TIMEOUT_SECONDS = 20
+LOOP_SLEEP_SECONDS = 2
+REDIS_HOST = os.environ.get("REDIS_HOST", "127.0.0.1")
+REDIS_PORT = int(os.environ.get("REDIS_PORT", 6379))
 # --- 設定區結束 ---
 
-# 設定簡單的日誌，方便觀察
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-def main():
+def bootstrap_venv():
     """
-    工作者的主要執行迴圈。
+    檢查是否在虛擬環境中，如果不是，則建立虛擬環境、安裝依賴，並在其中重新執行。
     """
-    logging.info("YouTube 工作者已啟動，正在檢查任務...")
-    last_task_time = time.time()
+    if sys.prefix == str(VENV_DIR.resolve()):
+        # 已經在虛擬環境中，無需任何操作
+        return
 
-    while True:
-        # 檢查是否超時
-        if time.time() - last_task_time > IDLE_TIMEOUT_SECONDS:
-            logging.info(f"超過 {IDLE_TIMEOUT_SECONDS} 秒沒有新任務，工作者將自動關閉。")
-            break
+    # 檢查主系統中是否有 uv
+    try:
+        subprocess.run([sys.executable, "-m", "uv", "--version"], check=True, capture_output=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print("錯誤：`uv` 未在主環境中找到或無法執行。請先透過 `pip install uv` 安裝。")
+        sys.exit(1)
 
-        # 從佇列中嘗試取出一個任務，這是一個非阻塞操作
-        task = huey.dequeue()
+    if not VENV_DIR.exists():
+        print(f"[{datetime.now().isoformat()}] 虛擬環境不存在，正在建立於: {VENV_DIR}")
+        subprocess.run([sys.executable, "-m", "uv", "venv", str(VENV_DIR)], check=True)
 
-        if task:
-            logging.info(f"收到新任務：{task.name}，正在執行...")
-            # 執行任務
-            try:
-                # Huey 執行任務時，會自動處理我們設定的重試機制
-                huey.execute(task)
-                logging.info(f"任務 {task.name} 執行完畢。")
-            except Exception as e:
-                # 即使 Huey 有重試機制，如果最終還是失敗，我們在這裡記錄下來
-                logging.error(f"任務 {task.name} 在所有重試後最終失敗：{e}")
+    python_executable = VENV_DIR / "bin" / "python"
 
-            # 重置計時器
-            last_task_time = time.time()
+    print(f"[{datetime.now().isoformat()}] 正在安裝/驗證依賴...")
+    subprocess.run([sys.executable, "-m", "uv", "pip", "install", *REQUIRED_PACKAGES, f"--python={python_executable}"], check=True)
+
+    print(f"[{datetime.now().isoformat()}] 依賴安裝完成，正在虛擬環境中重新啟動腳本...")
+    os.execv(python_executable, [python_executable, *sys.argv])
+
+# --- 1. 執行引導程序 ---
+# 這是腳本的第一個實際操作。如果不在 venv 中，它會安裝依賴並重新啟動。
+# 如果在 venv 中，它會直接返回。
+bootstrap_venv()
+
+# --- 2. 在 venv 中延遲匯入和設定 ---
+# 只有在 venv 啟動並確認依賴存在後，才匯入這些模組
+import pytz
+from huey import Huey, signals
+import yt_dlp
+
+# --- 日誌系統設定 ---
+class TaipeiTimeFormatter(logging.Formatter):
+    def converter(self, timestamp):
+        dt = datetime.fromtimestamp(timestamp)
+        return dt.astimezone(pytz.timezone('Asia/Taipei'))
+
+    def formatTime(self, record, datefmt=None):
+        dt = self.converter(record.created)
+        if datefmt:
+            s = dt.strftime(datefmt)
         else:
-            # 佇列是空的
-            logging.info(f"目前沒有任務，等待 {LOOP_SLEEP_SECONDS} 秒... (閒置倒數中)")
+            s = dt.isoformat(timespec='milliseconds')
+        return s
+
+def setup_logging():
+    handler = logging.StreamHandler(sys.stdout)
+    formatter = TaipeiTimeFormatter(
+        '[%(asctime)s] [%(levelname)s] - %(message)s',
+        datefmt='%Y-%m-%dT%H:%M:%S.%f%z'
+    )
+    handler.setFormatter(formatter)
+
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    if logger.hasHandlers():
+        logger.handlers.clear()
+    logger.addHandler(handler)
+
+    huey_logger = logging.getLogger('huey')
+    huey_logger.setLevel(logging.INFO)
+    huey_logger.addHandler(handler)
+    huey_logger.propagate = False
+
+# 執行日誌設定
+setup_logging()
+log = logging.getLogger(__name__)
+
+# --- 3. Huey 佇列與任務定義 ---
+huey = Huey('youtube_downloader', host=REDIS_HOST, port=REDIS_PORT)
+
+@huey.task(retries=2, retry_delay=10)
+def download_youtube_video(youtube_url: str):
+    log.info(f"接收到新的 YouTube 下載任務，URL: {youtube_url}")
+
+    output_dir = Path("./youtube_downloads")
+    output_dir.mkdir(exist_ok=True)
+
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': str(output_dir / '%(title)s - %(id)s.%(ext)s'),
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }],
+        'logger': log,
+        'noplaylist': True,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info_dict = ydl.extract_info(youtube_url, download=True)
+            log.info(f"✅ 影片 '{info_dict.get('title')}' 已成功下載為 MP3。")
+            return f"下載成功: {ydl.prepare_filename(info_dict)}"
+    except yt_dlp.utils.DownloadError as e:
+        log.error(f"❌ 下載失敗，URL: {youtube_url}。錯誤訊息: {e}")
+        raise
+    except Exception as e:
+        log.error(f"❌ 處理 URL {youtube_url} 時發生未預期的錯誤: {e}")
+        raise
+
+
+# --- 4. 工作者主迴圈 ---
+def run_worker():
+    consumer = huey.create_consumer(workers=1, worker_type='thread')
+
+    last_task_time = time.time()
+    initial_tasks_exist = (huey.pending_count() + huey.scheduled_count()) > 0
+    has_pending_tasks = initial_tasks_exist
+
+    # 當有任務開始執行時，重設閒置計時器
+    @huey.signal(signals.SIGNAL_EXECUTING)
+    def reset_idle_timer(signal, task):
+        nonlocal last_task_time
+        last_task_time = time.time()
+        log.info(f"開始執行任務: {task.name} ({task.id})")
+
+    # Huey 的消費者本身會記錄任務完成或失敗，此處不再重複
+    @huey.signal(signals.SIGNAL_COMPLETE, signals.SIGNAL_ERROR)
+    def update_last_task_time_on_finish(signal, task, exc=None):
+        nonlocal last_task_time
+        last_task_time = time.time()
+        # 這裡的日誌是可選的，因為消費者已經會記錄
+        if signal == signals.SIGNAL_COMPLETE:
+            log.info(f"任務 {task.name} ({task.id}) 處理完成。")
+        elif signal == signals.SIGNAL_ERROR:
+            log.warning(f"任務 {task.name} ({task.id}) 處理失敗。")
+
+    log.info("YouTube 工作者已啟動，開始監聽任務...")
+    consumer.start()
+
+    try:
+        while True:
+            if (huey.pending_count() + huey.scheduled_count()) == 0:
+                if has_pending_tasks:
+                    log.info("所有任務已處理完畢，啟動閒置計時器。")
+                    last_task_time = time.time()
+                    has_pending_tasks = False
+
+                idle_time = time.time() - last_task_time
+                if idle_time > IDLE_TIMEOUT_SECONDS:
+                    log.info(f"工作者閒置超過 {IDLE_TIMEOUT_SECONDS} 秒，準備關閉...")
+                    break
+            else:
+                has_pending_tasks = True
+
             time.sleep(LOOP_SLEEP_SECONDS)
 
-    logging.info("YouTube 工作者已關閉。")
+    except KeyboardInterrupt:
+        log.info("收到手動中斷訊號，正在關閉...")
+    finally:
+        log.info("正在關閉消費者...")
+        consumer.stop()
+        log.info("工作者已成功關閉。")
 
+# --- 5. 主執行區塊 ---
 if __name__ == "__main__":
-    main()
+    is_test_run = len(sys.argv) > 1 and sys.argv[1] == '--test'
+
+    if is_test_run:
+        log.info("在測試模式下執行：正在將測試任務加入佇列...")
+        huey.flush()
+        log.info("舊的佇列已清空。")
+
+        # 直接呼叫任務函式即可將其加入佇列
+        download_youtube_video("https://youtube.com/shorts/KZgVxY9vFwg?si=AlA5duWlsK1IU1l6")
+        download_youtube_video("http://invalid.url/this-will-fail")
+
+        log.info("兩個測試任務已成功加入佇列。")
+
+    run_worker()
