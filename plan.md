@@ -1,0 +1,150 @@
+## 進度追蹤 (Progress Tracker)
+
+- [x] **第一階段：建立「基礎設施核心」** (已完成)
+- [x] **第二階段：建構「核心轉錄流程」** (已完成)
+- [x] **第三階段：擴充功能與完善系統** (已完成)
+    - [x] `YouTube 下載服務` (已完成)
+    - [x] `AI 報告服務` (已完成)
+    - [x] `通知服務 (Notification Service)` (已完成)
+    - [x] `媒體預覽服務 (Media Preview Service)` (已完成)
+- [ ] **第四階段：導入獨立測試** (下一步)
+
+---
+
+# 微服務架構遷移作戰計畫
+
+## 1. 總體目標
+
+本計畫旨在根據 **`research_0818.md`** 文件中的藍圖，將現有後端系統逐步遷移至一個高度解耦的微服務架構，並為其建立一套完整的獨立測試方案。
+
+核心原則如下：
+- **新舊並行**: 在不改動現有舊架構的前提下，獨立開發與測試新的微服務。
+- **安全第一**: 確保新架構經過完整測試並驗證穩定後，才會將舊有程式碼進行「封存」。
+- **獨立測試**: 每個微服務都應能被獨立測試，無需啟動其依賴的其他服務。
+
+---
+
+## 2. 參考文件
+
+所有開發工作都應嚴格遵循以下文件的指導：
+- **主要藍圖**: `research_0818.md`
+
+---
+
+## 3. 技術選型與策略
+
+根據我們深入的討論，我們將採用以下技術與策略：
+
+- **服務間通訊**:
+    - **非同步通訊 (主要)**: 使用 `huey` 任務佇列。
+    - **同步通訊 (輔助)**: 使用 `FastAPI` 的 REST API。
+
+- **設定管理**:
+    - 採用 **環境變數** 搭配 **`.env`** 檔案。
+
+- **測試策略**:
+    - **(已更新)** 我們將採用一套基於 `pytest` 的完整測試策略。詳細內容請參閱本文件新增的 **第 5 章：微服務測試策略**。
+
+- **舊程式碼處理**:
+    - 當所有新服務上線並穩定運作後，舊的相關程式碼將被移動到一個新建的 **`_archive/`** 目錄中。
+
+---
+
+## 4. 分階段實施計畫
+
+(此部分記錄已完成的開發階段，保持不變)
+
+### **第一階段：建立「基礎設施核心」** (已完成)
+...
+### **第二階段：建構「核心轉錄流程」** (已完成)
+...
+### **第三階段：擴充功能與完善系統** (已完成)
+...
+
+---
+
+## 5. 微服務測試策略
+
+根據您的要求與最新研究，我們將採納以下策略為每個微服務建立獨立、隔離的自動化測試。
+
+### 5.1 核心理念
+
+- **隔離 (Isolation)**: 測試一個服務時，不應依賴任何其他服務的實際運行。所有外部依賴（包括其他微服務、外部 API）都必須被「模擬 (Mock)」。
+- **自檢 (Self-Contained)**: 每個服務的測試套件都應是自給自足的。只需安裝該服務的 `requirements.txt` 中定義的依賴（包括測試專用依賴），即可完整地運行其所有測試。
+- **環境獨立**: 每個服務的測試都在其自身的 `uv` 虛擬環境中執行。
+
+### 5.2 技術選型
+
+- **測試框架 (Test Runner)**: **`pytest`**
+  - 理由：作為 Python 社群最主流的測試框架，`pytest` 以其簡潔的語法、強大的 `fixture` 機制和豐富的插件生態系統而成為首選。
+- **HTTP API 測試**: **`TestClient`** (來自 FastAPI)
+  - 理由：FastAPI 官方內建的測試工具，可直接在測試程式碼中對 API 端點發出請求，無需實際啟動網頁伺服器。
+- **服務間呼叫模擬**: **`requests-mock`**
+  - 理由：專門用於模擬 `requests` 函式庫發出的 HTTP 呼叫。語法直觀，非常適合模擬我們的服務對其他服務的 API 請求。
+- **背景任務測試**: **`huey` 的即時模式 (Immediate Mode)**
+  - 理由：Huey 官方推薦的測試方法。只需設定 `huey.immediate = True`，所有被呼叫的任務都會在當下同步執行，而非放入佇列。這讓我們可以直接測試任務函式的邏輯及其副作用。
+
+### 5.3 實作方法
+
+#### 1. 目錄結構與依賴
+- 在每個微服務的目錄下，建立一個 `tests/` 子目錄。
+- 將測試相關的依賴（如 `pytest`, `requests-mock`）加入到該服務的 `requirements.txt` 中。
+
+#### 2. 測試 API 端點
+- 使用 `pytest` 的 `fixture` 來建立一個可供所有測試重複使用的 `TestClient` 實例。
+- 測試函式接收此 `client` 作為參數，並使用它來呼叫 API 端點（例如 `client.post("/upload", ...)`）。
+- 斷言 (Assert) 回應的狀態碼 (Status Code) 和 JSON 內容是否符合預期。
+
+**範例 (`file_management_service/tests/test_main.py`):**
+```python
+import pytest
+from fastapi.testclient import TestClient
+from ..main import app # 匯入服務的 FastAPI app
+
+@pytest.fixture
+def client():
+    return TestClient(app)
+
+def test_health_check(client):
+    response = client.get("/")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "service": "File Management Service"}
+```
+
+#### 3. 測試服務間的互動 (使用 Mock)
+- 以 `API 閘道` 測試為例，它需要呼叫 `檔案管理服務`。
+- 在測試中，我們使用 `requests-mock` 來攔截對 `檔案管理服務` 的呼叫，並使其回傳一個預設的成功或失敗回應。
+- 這樣，我們就可以在不啟動 `檔案管理服務` 的情況下，測試 `API 閘道` 的邏輯是否能正確處理下游服務的回應。
+
+**範例 (`api_gateway/tests/test_logic.py`):**
+```python
+def test_upload_flow(client, requests_mock):
+    # 模擬檔案管理服務的 /upload 端點
+    requests_mock.post("http://localhost:8001/upload", json={"path": "/fake/path/file.mp3"})
+
+    # ... 執行對 API 閘道的上傳請求 ...
+
+    # 斷言 API 閘道的回應是成功的
+    # 也可以斷言 requests_mock 是否被正確呼叫
+```
+
+#### 4. 測試 Huey 背景任務
+- **對於任務的生產者 (Producer)** (例如 `API 閘道`):
+  - 在測試中設定 `huey.immediate = True`。
+  - 呼叫觸發任務的 API 端點。
+  - 由於任務會同步執行，我們可以直接斷言任務執行後的「副作用」。例如，斷言 `requests-mock` 模擬的 `AI 模型服務` API 是否被呼叫。
+
+- **對於任務的消費者 (Consumer)** (例如 `轉錄任務服務`):
+  - 在測試設定中，同樣設定 `huey.immediate = True`。
+  - 直接在測試函式中呼叫任務函式（例如 `create_transcription_task(...)`）。
+  - 使用 `requests-mock` 模擬該任務需要呼叫的所有外部服務（如 `AI 模型服務`、`日誌服務`）。
+  - 斷言任務函式是否正確地呼叫了這些被模擬的 API。
+
+### 5.4 執行流程總結
+1.  進入特定服務的目錄 (例如 `cd services/api_gateway`)。
+2.  使用 `uv` 建立並啟動虛擬環境 (`uv venv`)。
+3.  安裝所有依賴 (`uv pip install -r requirements.txt`)。
+4.  執行 `pytest` 指令。
+5.  `pytest` 會自動發現並執行 `tests/` 目錄下的所有測試，並回報結果。
+
+這套策略為我們提供了一個健壯、可重複且完全隔離的測試環境，將極大地保障我們未來開發的品質與效率。
