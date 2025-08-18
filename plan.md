@@ -7,7 +7,9 @@
     - [x] `AI 報告服務` (已完成)
     - [x] `通知服務 (Notification Service)` (已完成)
     - [x] `媒體預覽服務 (Media Preview Service)` (已完成)
-- [ ] **第四階段：導入獨立測試** (下一步)
+- [x] **第四階段：導入獨立測試** (進行中)
+    - [x] 為 `runner/localrun.py` 的保護機制建立單元測試 (已完成)
+    - [x] 為 `file_management_service` 新增安全機制與獨立測試 (已完成)
 
 ---
 

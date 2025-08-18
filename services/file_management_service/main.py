@@ -3,11 +3,33 @@
 
 import uvicorn
 import shutil
+import logging
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse
 
 from .config import settings
+
+# --- 新增：磁碟容量檢查功能 ---
+def check_disk_capacity(threshold_percent: int = 80):
+    """
+    檢查根目錄的磁碟使用率，如果超過閾值則拋出嚴重錯誤。
+    這是一個啟動前的保護機制。
+    """
+    try:
+        total, used, free = shutil.disk_usage('/')
+        usage_percent = (used / total) * 100
+        logging.info(f"磁碟容量檢查: 目前使用率 {usage_percent:.2f}% (閾值: {threshold_percent}%)")
+        if usage_percent >= threshold_percent:
+            error_msg = f"錯誤碼 102：磁碟空間嚴重不足！目前使用率 {usage_percent:.2f}%，已達或超過 {threshold_percent}% 的閾值。服務無法啟動。"
+            logging.critical(error_msg) # 使用 CRITICAL 級別日誌
+            raise RuntimeError(error_msg)
+    except FileNotFoundError:
+        logging.warning("無法找到根目錄 '/'，跳過磁碟容量檢查。")
+    except Exception as e:
+        error_msg = f"錯誤碼 103：無法檢查磁碟空間。錯誤: {e}"
+        logging.critical(error_msg)
+        raise RuntimeError(error_msg) from e
 
 # 建立 FastAPI 應用實例
 app = FastAPI(title="檔案管理服務", version="0.1.0")
@@ -16,13 +38,17 @@ app = FastAPI(title="檔案管理服務", version="0.1.0")
 @app.on_event("startup")
 def on_startup():
     """
-    應用程式啟動時，確保上傳目錄存在。
+    應用程式啟動時執行的初始化工作。
     """
-    # 從設定檔讀取上傳目錄路徑
+    # --- 步驟 1: 執行磁碟容量健康檢查 ---
+    logging.info("執行啟動前健康檢查...")
+    check_disk_capacity()
+    logging.info("✅ 磁碟容量檢查通過。")
+
+    # --- 步驟 2: 確保上傳目錄存在 ---
     upload_path = Path(settings.UPLOADS_DIR)
-    # 建立目錄，如果父目錄不存在也一併建立，如果目錄已存在則不做任何事
     upload_path.mkdir(parents=True, exist_ok=True)
-    print(f"確保上傳目錄 '{upload_path.resolve()}' 已建立。")
+    logging.info(f"✅ 確保上傳目錄 '{upload_path.resolve()}' 已建立。")
 
 
 @app.get("/", summary="服務健康檢查", description="回傳服務是否正常的狀態。")
