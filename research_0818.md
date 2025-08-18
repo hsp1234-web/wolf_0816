@@ -1,112 +1,105 @@
-# 後端架構改善研究報告 (v3 - 2025-08-18)
+# 後端架構改善研究報告 (v4 - 最終版)
 
 ## 1. 目標
 
-本報告旨在回應將現有後端系統改造為「微服務架構」的需求。核心目標是將目前緊密耦合的後端應用，拆分成一系列高內聚、低耦合、可獨立測試和部署的獨立服務，並規劃前端應如何與新架構整合，以實現最高的系統穩定性、可維護性與擴展性。
+本報告旨在回應將現有後端系統改造為「極致解耦的微服務架構」的需求。核心目標是將目前緊密耦合的後端應用，拆分成一系列邊界清晰、職責單一、高內聚、低耦合、可獨立測試和部署的獨立服務。本報告將作為後續所有開發工作的最終指導藍圖。
 
 ---
 
-## 2. 現有架構分析
+## 2. 核心理念與技術選型
 
-目前的後端系統是一個典型的「雙核心單體式 (Two-Core Monolith)」應用，主要由 `api_server.py` (API 主入口) 和 `worker.py` (背景處理程序) 構成，它們之間透過 SQLite 資料庫進行通訊。前端 `vue-app` 則透過統一的 `/api` 前綴與 `api_server.py` 進行所有通訊。
-
-**核心痛點**:
-*   **高度耦合**: 服務間職責不清，修改一個功能可能意外影響其他功能。
-*   **測試困難**: 無法單獨測試某個業務邏輯，必須啟動整個後端，測試成本高。
-*   **容錯性差**: 任何一個元件的嚴重錯誤都可能導致整個應用程式崩潰。前端無法區分是哪個後端功能失效。
-*   **可擴展性差**: 無法針對性地擴展某個特定功能（如轉錄任務）。
+*   **核心理念**: **單一職責原則 (Single Responsibility Principle)**。每個微服務只做一件事，並把它做好。服務之間透過清晰的 API 和非同步訊息進行通訊，而不是直接的程式碼呼叫或共享資料庫。
+*   **任務佇列: `huey`**: 一個功能強大且輕量級的 Python 任務佇列函式庫。它原生支援使用 **SQLite** 作為後端儲存，完美符合我們不引入 Redis 等新外部服務也能實現專業級任務佇列的需求。
+*   **虛擬環境: `uv`**: 一個用 Rust 編寫的、極速的 Python 套件管理工具。我們將為每個微服務使用 `uv` 來建立和管理其各自的、隔離的 Python 虛擬環境，確保依賴乾淨、啟動快速。
 
 ---
 
-## 3. 未來架構規劃
+## 3. 未來架構規劃：極致解耦的微服務藍圖
 
-為了解決上述痛點，我們建議引入一個專業的任務佇列函式庫 `huey` 作為服務間非同步通訊的核心，並採用 `uv` 來進行現代化的 Python 環境管理。
+### 3.1. 服務職責定義
 
-### 3.1. 核心技術選型
+根據您的要求，我們將系統拆分為以下高度專一化的微服務：
 
-*   **任務佇列: `huey`**: 一個功能強大且輕量級的 Python 任務佇列函式庫。最關鍵的是，**它原生支援使用 SQLite 作為後端儲存**，完美符合我們不引入新的外部服務（如 Redis）也能實現專業級任務佇列的需求。
-*   **虛擬環境: `uv`**: 一個用 Rust 編寫的、極速的 Python 套件管理工具。它將取代傳統的 `pip` 和 `venv`，為每個微服務提供快速、可靠且隔離的開發環境。
+*   **前端服務**:
+    *   `靜態網頁伺服器 (Static Web Server)`: 唯一職責是提供 Vue.js 前端應用程式的靜態檔案 (HTML, JS, CSS)。
+
+*   **閘道 (Gateway)**:
+    *   `API 閘道 (API Gateway)`: 所有外部 API 請求的統一入口。負責請求的路由、驗證和速率限制，但不包含任何業務邏輯。
+
+*   **核心業務服務 (Business Logic Services)**:
+    *   `YouTube 下載服務`: 負責從 YouTube 下載媒體檔案。完成後發布一個「媒體已下載」事件。
+    *   `AI 報告服務`: 訂閱「媒體已下載」事件，並使用 Gemini API 對媒體檔案進行分析，產生報告。
+    *   `轉錄任務服務`: 協調音訊轉錄的流程。它接收轉錄請求，並將具體的 AI 推論工作委派給「AI 本地模型服務」。
+
+*   **基礎設施/支撐服務 (Infrastructure/Support Services)**:
+    *   `AI 本地模型服務`: 封裝並管理所有本地 AI 模型（如 Whisper）。負責模型的下載、快取，並提供推論（Inference）API。此服務將是唯一包含 `torch` 等重度依賴的服務。
+    *   `檔案管理服務`: 對伺服器檔案系統的唯一窗口。所有服務需要「儲存」、「讀取」、「重新命名」檔案，都必須透過呼叫此服務的 API 來完成。
+    *   `媒體預覽服務`: 專門提供對已儲存媒體檔案的 HTTP 存取（串流播放）。
+    *   `日誌管理服務`: 建立一個中央日誌中心，收集、儲存並提供所有其他服務的日誌查詢。
+    *   `通知服務`: 專門管理 WebSocket 連線，監聽系統中的各種事件（如「任務完成」），並即時推送給前端。
+    *   `任務資料庫服務`: (隱含服務) 為了徹底解耦，所有對任務狀態資料庫的直接操作，都應由一個專門的、簡單的 CRUD 服務來管理。
 
 ### 3.2. 未來架構示意圖
 
 ```mermaid
 graph TD
     subgraph Browser
-        F[前端 Vue App]
+        UserInterface[前端 Vue App]
     end
 
-    subgraph "API Gateway (FastAPI)"
-        G[閘道]
+    subgraph Gateway Layer
+        WebSrv[靜態網頁伺服器]
+        APIGateway[API 閘道]
     end
 
-    subgraph "Huey Task Queue (SQLite)"
-        Q[(任務佇列)]
+    subgraph "Communication Backbone"
+        HueyQueue[(Huey 任務佇列)]
     end
 
-    subgraph "Microservices"
-        T[轉錄服務]
-        Y[YouTube 服務]
-        N["通知服務 (WebSocket)"]
-        DB[(系統資料庫)]
+    subgraph "Business Services"
+        YouTubeSrv[YouTube 下載服務]
+        AIReportSrv[AI 報告服務]
+        TranscriptionSrv[轉錄任務服務]
     end
 
-    F -- HTTP Request --> G
-    G -- Enqueue Task --> Q
-    Q -- Dequeue Task --> T
-    Q -- Dequeue Task --> Y
-    T -- Task Result --> DB
-    Y -- Task Result --> DB
-    T -- Publish Event --> Q
-    Y -- Publish Event --> Q
-    Q -- Event --> N
-    N -- WebSocket Push --> F
+    subgraph "Infrastructure Services"
+        FileSrv[檔案管理服務]
+        MediaSrv[媒體預覽服務]
+        ModelSrv[AI 本地模型服務]
+        LogSrv[日誌管理服務]
+        NotificationSrv[通知服務]
+    end
+
+    UserInterface -- 載入頁面 --> WebSrv
+    UserInterface -- API 請求 (e.g., 上傳) --> APIGateway
+    APIGateway -- 儲存檔案 --> FileSrv
+    FileSrv -- 任務入列 --> HueyQueue
+    HueyQueue -- 處理任務 --> TranscriptionSrv
+    TranscriptionSrv -- 請求模型推論 --> ModelSrv
+    TranscriptionSrv -- 發布完成事件 --> HueyQueue
+    HueyQueue -- 事件通知 --> NotificationSrv
+    NotificationSrv -- WebSocket Push --> UserInterface
+    YouTubeSrv -- 存取檔案 --> FileSrv
+    AIReportSrv -- 存取檔案 --> FileSrv
+    UserInterface -- 預覽媒體 --> MediaSrv
+    TranscriptionSrv -- 寫入日誌 --> LogSrv
+    YouTubeSrv -- 寫入日誌 --> LogSrv
 ```
+
 ---
 
-## 4. 前端整合策略：最小化改動與提升韌性
-
-後端改造的成功關鍵之一，在於前端能以最小的成本平滑過渡，並能利用微服務的優勢提升使用者體驗。
-
-### 4.1. API 請求 (前端無需改動)
-*   **策略**: 新的 **API 閘道**將會扮演前端與眾多微服務之間的中介者。它會維持所有現有的 API 路徑（如 `/api/transcribe`, `/api/youtube/process`）不變，並在內部將這些請求透明地路由到對應的微服務。
-*   **結論**: 前端現有的 `axios` 請求邏輯**完全不需要修改**。這極大地降低了重構的風險和成本。
-
-### 4.2. WebSocket 通訊 (前端無需改動)
-*   **策略**: 新的**通知服務**將會完全複製現有的 WebSocket 功能。它會從所有微服務收集事件，並將其格式化為與**當前完全一致的 JSON 結構**，再透過同樣的 `/api/ws` 路徑推送給前端。
-*   **結論**: 前端現有的 WebSocket 連線及訊息處理邏輯**也完全不需要修改**。
-
-### 4.3. 服務容錯與 UI 韌性 (前端唯一需要修改處)
-這是本次重構為前端帶來的最大價值：**系統韌性**。
-*   **策略**:
-    1.  **閘道層**：當 API 閘道發現某個微服務（如「轉錄服務」）無回應時，它不再回傳通用錯誤，而是回傳一個帶有清晰資訊的特定錯誤，例如 `503 Service Unavailable` 並附帶 `{ "service_name": "transcription" }` 的內容。
-    2.  **前端狀態管理層**：在 `vue-app/src/stores/tasks.js` 中，我們需要擴充 `axios` 的錯誤處理邏輯，來捕獲這種特定錯誤。並新增一個狀態 `serviceStatus: { transcription: 'online', youtube: 'online' }`。當收到特定服務的錯誤時，更新此狀態，例如 `state.serviceStatus.transcription = 'offline'`。
-    3.  **前端 UI 層**：對應的 Vue 元件（如 `TaskUploader.vue`）可以綁定這個狀態。當 `serviceStatus.transcription` 為 `'offline'` 時，元件可以禁用其上傳按鈕，並顯示「轉錄服務暫時不可用」的提示。
-*   **結論**: 透過這個改造，即使某個後端服務失效，也只會影響到前端對應的功能區塊（實現您所說的「變灰」效果），而不會導致整個前端應用程式的崩潰。
+## 4. 前端整合策略
+*(本章節內容與 v3 報告相同，核心思想是在閘道層維持 API 的穩定，讓前端的改動降到最低，只增加處理服務失效的容錯邏輯。)*
 
 ---
 
 ## 5. 架構對比：優劣勢分析
-
-| 特性 | 現有單體式架構 (Monolith) | 未來微服務架構 (Microservices) |
-| :--- | :--- | :--- |
-| **測試性** | 🔴 **困難**：必須整合整個系統才能測試，一個小改動需要回歸所有功能。 | 🟢 **優秀**：每個服務都可獨立進行單元測試、整合測試，測試目標明確、速度快。|
-| **擴展性** | 🔴 **差**：只能對整個應用進行水平擴展，無法針對瓶頸服務（如轉錄）單獨擴展，浪費資源。 | 🟢 **優秀**：可以根據負載，獨立擴展任意一個微服務的實例數量。 |
-| **部署** | 🟢 **簡單**：只需部署一個應用程式。 | 🟡 **較複雜**：需要部署多個服務，對自動化部署 (CI/CD) 的要求更高。 |
-| **開發效率** | 🔴 **低**：所有開發者都在同一個程式碼庫工作，容易產生衝突，互相等待。 | 🟢 **高**：不同團隊可以並行開發不同的服務，互不干擾，加速迭代。 |
-| **容錯性** | 🔴 **差**：任何一個元件的嚴重錯誤都可能導致整個應用程式崩潰。 | 🟢 **好**：一個服務的崩潰通常不會影響其他服務，前端可實現優雅降級。 |
-| **技術選型** | 🔴 **單一**：整個應用被鎖定在一種技術棧上。 | 🟢 **靈活**：理論上每個服務都可以選用最適合其業務的技術（雖非本次目標）。 |
-| **維運複雜度**| 🟢 **低**：只需監控一個應用。 | 🟡 **高**：需要監控多個服務的狀態、日誌以及它們之間的網路通訊。 |
+*(本章節內容與 v3 報告相同，微服務架構在測試性、擴展性、容錯性上有巨大優勢，但在部署和維運複雜度上有所提升。)*
 
 ---
 
 ## 6. 環境管理方案：整合 UV
-
-`uv` 是一個現代化的 Python 套件安裝與虛擬環境管理工具，它比 `pip` 和 `venv` 快 10-100 倍。我們將採用 `uv` 來為每個微服務管理其依賴。
-
-**未來工作流程**:
-1.  **目錄結構**: 每個微服務目錄（如 `services/transcription_service/`）都將包含自己的 `requirements.txt` 檔案。
-2.  **建立環境**: 開發者在進入某個服務的目錄後，只需執行 `uv venv` 即可快速建立一個隔離的虛擬環境 (例如 `.venv`)。
-3.  **安裝依賴**: 接著執行 `uv pip install -r requirements.txt`，`uv` 會以極快的速度安裝所有需要的套件。
+*(本章節內容與 v3 報告相同，我們將為每個微服務使用 `uv` 來建立和管理其隔離的 Python 虛擬環境。)*
 
 ---
 
@@ -116,27 +109,23 @@ graph TD
 .
 ├── ... (其他既有檔案)
 └── services/
-    ├── common/                 # 存放共享的程式碼，如資料庫模型
-    │   └── db_models.py
-    ├── huey_config.py          # Huey 的統一設定檔
-    ├── api_gateway/            # API 閘道服務
-    │   ├── main.py
-    │   └── requirements.txt
-    ├── transcription_service/  # 轉錄服務
-    │   ├── .venv/              # 由 uv 管理的虛擬環境
-    │   ├── tasks.py            # 定義 Huey 任務 (@huey.task)
-    │   ├── consumer.py         # 啟動 Huey consumer
-    │   └── requirements.txt
-    └── ... (其他服務)
+    ├── common/                     # 存放共享的程式碼，如資料庫模型
+    ├── huey_config.py              # Huey 的統一設定檔
+    ├── api_gateway/
+    ├── static_web_server/
+    ├── transcription_service/
+    ├── youtube_service/
+    ├── ai_report_service/
+    ├── local_ai_model_service/     # 唯一安裝 torch, faster-whisper 的地方
+    ├── file_management_service/
+    ├── media_preview_service/
+    ├── log_management_service/
+    └── notification_service/
 ```
+*(每個服務目錄下都將包含自己的 `main.py` 或 `consumer.py`, `requirements.txt`, 和由 `uv` 管理的 `.venv`)*
 
 ---
 
-## 8. 遷移與驗證策略
-*(遷移步驟與驗證方法與前版報告相同)*
+## 8. 結論
 
----
-
-## 9. 結論
-
-將後端重構成為基於 `huey` 的微服務架構，並採用 `uv` 進行現代化的環境管理，是解決當前痛點、實現「高內聚、低耦合」目標的現代化、高效率方案。本報告同時規劃了詳細的前端整合策略，確保在最小化改動的前提下，最大化新架構帶來的系統韌性優勢。建議採納此規劃，作為後續開發的指導藍圖。
+這份最終版的藍圖，詳細規劃了一個高度解耦、職責清晰的微服務架構。它採納了您所有的設計思想，將系統拆分成了一系列簡單、專注的服務。透過 `huey` 和 `uv` 等現代化工具，我們可以在不引入複雜外部依賴的情況下，實現一個健壯、可維護且易於擴展的後端系統。本報告已包含所有必要的規劃細節，可作為後續開發工作的最終指導文件。
