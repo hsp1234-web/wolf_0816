@@ -25,23 +25,27 @@
 
 ---
 
-### **第二階段：推廣至其他微服務 (待辦)**
+### **第二階段：推廣至其他微服務**
+
+**狀態：** ✅ **已完成**
 
 **目標：** 將成功的模式複製到其他背景服務，完成架構的全面轉型。
 
-1.  **改造 `transcription_service`**
-    *   **任務**: 建立 `run_transcription_worker.py`，將 `services/transcription_service/tasks.py` 的邏輯整合進來，並採用與 YouTube 工作者相同的自我管理和日誌架構。
-    *   **挑戰**: 轉錄服務依賴 `faster-whisper`，這是一個大型的 AI 模型。根據 `AGENTS.md` 的規定，我們**嚴格禁止**直接安裝此類大型依賴。因此，需要設計一個**可模擬的 (mock)** 轉錄方案來繞過此限制，例如讓工作者呼叫一個模擬腳本，該腳本在指定延遲後回傳一個假的轉錄結果。
-
-2.  **改造 `ai_report_service`**
-    *   **任務**: 建立 `run_ai_report_worker.py`，將 `services/ai_report_service/tasks.py` 的邏輯整合進來。
-    *   **挑戰**: AI 報告服務依賴 `google-generativeai`，同樣需要設計模擬方案。工作者應呼叫一個模擬的 AI 處理腳本，而非直接與 Google API 互動。
+**實作摘要：**
+*   成功建立了 `run_transcription_worker.py` 和 `run_ai_report_worker.py` 兩個獨立工作者。
+*   遵循 `AGENTS.md` 的嚴格規定，透過 `time.sleep` 和產生固定的假資料，成功模擬了 `faster-whisper` 和 `google-generativeai` 的行為，避免安裝大型 AI 依賴。
+*   實現了從轉錄任務到 AI 報告任務的自動化鏈式觸發。
+*   所有新工作者均採用了與 YouTube 工作者相同的自我管理 (`uv`)、日誌和閒置關閉架構。
+*   已成功清理舊的 `services/transcription_service` 和 `services/ai_report_service` 目錄。
 
 ---
 
-### **第三階段：文件與最終化 (待辦)**
+### **第三階段：文件與最終化**
+
+**狀態：** ✅ **已完成**
 
 **目標：** 確保專案的知識得以傳承，方便未來維護。
 
-*   **撰寫架構說明文件**: 在專案根目錄建立或更新 `README.md`，詳細說明「獨立工作者」的設計理念、如何啟動每個工作者，以及未來如何新增一個工作者的簡易指南。所有文件內容均使用繁體中文。
-*   **提交最終程式碼**: 當所有工作者都改造並測試完畢，且文件也撰寫完成後，提交所有變更。
+**實作摘要：**
+*   已更新專案根目錄的 `README.md`，詳細說明了「獨立工作者」的設計理念，並提供了啟動每個新工作者的操作指南。
+*   所有相關變更已提交至版本控制。
