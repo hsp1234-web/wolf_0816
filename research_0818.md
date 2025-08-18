@@ -46,7 +46,7 @@ graph TD
     subgraph "Microservices"
         T[轉錄服務]
         Y[YouTube 服務]
-        N[通知服務 (WebSocket)]
+        N["通知服務 (WebSocket)"]
         DB[(系統資料庫)]
     end
 
