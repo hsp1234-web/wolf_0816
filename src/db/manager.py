@@ -42,6 +42,7 @@ log = logging.getLogger('DBManagerServer')
 # --- 伺服器設定 ---
 HOST = "127.0.0.1"
 PORT_FILE = Path(__file__).parent / "db_manager.port"
+READY_FILE = Path(__file__).parent / "db_manager.ready" # JULES'S FIX: 新增一個「就緒」信號檔案
 
 # --- 指令分派 ---
 ACTION_MAP = {
@@ -112,10 +113,16 @@ def run_server():
     """
     try:
         log.info("資料庫管理者伺服器啟動前，正在進行資料庫初始化...")
+        # JULES'S FIX: 清理上一次可能遺留的 ready 檔案
+        if READY_FILE.exists():
+            READY_FILE.unlink()
         database.initialize_database()
         log.info("✅ 資料庫初始化成功。")
-    except sqlite3.Error as e:
-        log.critical(f"❌ 資料庫初始化失敗，伺服器無法啟動: {e}")
+        # JULES'S FIX: 建立「就緒」檔案作為明確信號
+        READY_FILE.touch()
+        log.info(f"✅ 已建立就緒信號檔案: {READY_FILE}")
+    except (sqlite3.Error, IOError) as e:
+        log.critical(f"❌ 資料庫初始化或建立就緒檔案時失敗，伺服器無法啟動: {e}")
         sys.exit(1)
 
     socketserver.TCPServer.allow_reuse_address = True
@@ -134,8 +141,12 @@ def run_server():
                 server.serve_forever()
             finally:
                 log.info("伺服器正在關閉...")
-                if PORT_FILE.exists():
-                    PORT_FILE.unlink()
+                for f in [PORT_FILE, READY_FILE]:
+                    try:
+                        if f.exists():
+                            f.unlink()
+                    except IOError as e:
+                        log.warning(f"清理信號檔案 {f} 時發生錯誤: {e}")
     except Exception as e:
         log.critical(f"🔥 啟動 DB Manager 伺服器時發生嚴重錯誤: {e}", exc_info=True)
         sys.exit(1)

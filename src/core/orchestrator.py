@@ -102,6 +102,21 @@ def get_db_manager_port_from_file(port_file_path: Path, timeout: int = 10) -> in
     log.error(f"❌ 等待埠號檔案 '{port_file_path}' 超時 ({timeout}秒)。")
     return None
 
+def wait_for_ready_file(ready_file_path: Path, timeout: int = 15) -> bool:
+    """
+    等待由 db_manager 建立的「就緒」信號檔案。
+    這確保在繼續之前，資料庫已完全初始化。
+    """
+    log.info(f"正在等待資料庫就緒信號檔案 '{ready_file_path}' ({timeout}秒)...")
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        if ready_file_path.exists():
+            log.info(f"✅ 偵測到就緒信號檔案。資料庫已準備就緒。")
+            return True
+        time.sleep(0.2)
+    log.error(f"❌ 等待資料庫就緒信號檔案 '{ready_file_path}' 超時 ({timeout}秒)。")
+    return False
+
 def build_frontend(vue_app_dir: Path):
     """
     在指定的目錄下建置 Vue.js 前端應用。
@@ -151,6 +166,18 @@ def main():
     """
     系統的「大腦」，負責啟動、監控所有服務，並發送心跳。
     """
+    # JULES'S FIX (2025-08-17): 確保依賴在啟動前都已安裝
+    # 模仿 localtest.py 的行為，使 orchestrator 成為一個更可靠的獨立啟動器。
+    try:
+        log.info("正在檢查並安裝伺服器依賴 (uv)...")
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "uv"], check=True, capture_output=True)
+        req_file = ROOT_DIR / "requirements-server.txt"
+        subprocess.run([sys.executable, "-m", "uv", "pip", "install", "-q", "-r", str(req_file)], check=True, capture_output=True, text=True)
+        log.info("✅ 伺服器依賴已是最新狀態。")
+    except Exception as e:
+        log.critical(f"❌ 安裝依賴時發生錯誤，啟動中止: {e}", exc_info=True)
+        sys.exit(1)
+
     parser = argparse.ArgumentParser(description="系統協調器。")
     parser.add_argument(
         "--mock",
@@ -208,38 +235,32 @@ def main():
         # --- JULES' FIX END ---
 
         db_manager_cmd = [sys.executable, "src/db/manager.py"]
-        db_manager_proc = subprocess.Popen(db_manager_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
+        # JULES'S FIX (2025-08-17): 將 db_manager 的輸出重定向到 DEVNULL
+        # 與 localtest.py 的工作方式保持一致，以排除潛在的 stdout/stderr 管道阻塞問題。
+        db_manager_proc = subprocess.Popen(db_manager_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         processes.append(db_manager_proc)
         log.info(f"✅ 資料庫管理者子程序已建立，PID: {db_manager_proc.pid}")
-        # 將 DB Manager 的日誌也流式輸出
-        db_manager_log_thread = threading.Thread(target=stream_reader, args=(db_manager_proc.stdout, 'db_manager'))
-        db_manager_log_thread.daemon = True
-        db_manager_log_thread.start()
-        threads.append(db_manager_log_thread)
+        # 日誌流式輸出執行緒不再需要
 
         # 1a. 從檔案動態讀取 DB Manager 的埠號
         # Note: We re-use the 'port_file_path' variable from the cleanup step above.
         db_manager_port = get_db_manager_port_from_file(port_file_path)
-
         if db_manager_port is None:
             raise RuntimeError(f"無法從檔案 {port_file_path} 獲取 DB Manager 的埠號，啟動中止。")
 
         # 1b. 確認 DB Manager 服務已在監聽埠號
         if not wait_for_service(db_manager_port):
             raise RuntimeError(f"DB Manager 服務在埠號 {db_manager_port} 上未能及時就緒，啟動中止。")
+        log.info("✅ TCP 服務已在埠號 {db_manager_port} 上就緒。")
 
-        log.info("✅ 資料庫管理者服務已完全就緒。")
-
-        # 根據 2025-08-17 的使用者回報，此處存在競爭條件 (race condition)。
-        # 即使 wait_for_service 確認埠號已開啟，DB Manager 的內部程序
-        # (例如，資料庫 schema 的建立) 可能尚未完全完成。
-        # 加入一個短暫的延遲作為緩衝，確保在設定日誌處理器之前，
-        # `system_logs` 資料表已確實可用。
-        log.info("正在等待 2 秒作為緩衝，以確保資料庫 schema 完全就緒...")
-        time.sleep(2)
+        # 1c. JULES'S FIX: 等待由 db_manager 產生的「就緒」信號檔案
+        ready_file_path = ROOT_DIR / "src" / "db" / "db_manager.ready"
+        if not wait_for_ready_file(ready_file_path):
+             raise RuntimeError("DB Manager 服務未能發送就緒信號，啟動中止。")
 
         # --- JULES' FIX START ---
         # 修復：在 DB Manager 就緒後，再設定資料庫日誌，以避免 race condition
+        # (現在由 wait_for_ready_file 保證)
         setup_database_logging()
         log.info("Orchestrator's database logging is now configured.")
         # --- JULES' FIX END ---
@@ -262,8 +283,20 @@ def main():
         api_server_cmd = [sys.executable, "src/api/api_server.py", "--port", str(api_port)]
         if args.mock:
             api_server_cmd.append("--mock")
+
+        # JULES'S FIX (2025-08-17): 修正 API Server 的啟動環境
+        # 錯誤根源：Orchestrator 未將自身的 PYTHONPATH 傳遞給 api_server 子程序，
+        # 導致 api_server 因找不到 'fastapi' 等模組而啟動失敗。
+        # 解決方案：為子程序建立一個包含正確 PYTHONPATH 的環境變數。
+        api_env = os.environ.copy()
+        # 確保 src 目錄在 PYTHONPATH 中
+        api_env["PYTHONPATH"] = str(ROOT_DIR / "src") + os.pathsep + api_env.get("PYTHONPATH", "")
+        # 將模擬模式也透過環境變數傳遞，與 api_server 的讀取方式保持一致
+        if args.mock:
+            api_env["API_MODE"] = "mock"
+
         log.info(f"🔧 正在啟動 API 伺服器: {' '.join(api_server_cmd)}")
-        api_proc = subprocess.Popen(api_server_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
+        api_proc = subprocess.Popen(api_server_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', env=api_env)
         processes.append(api_proc)
         log.info(f"✅ API 伺服器已啟動，PID: {api_proc.pid}，埠號: {api_port}")
         # --- JULES' FIX for BATTLE Environment ---

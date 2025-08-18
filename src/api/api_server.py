@@ -1017,7 +1017,31 @@ def trigger_youtube_processing(task_id: str, loop: asyncio.AbstractEventLoop):
                 }), loop)
                 return
 
-            db_client.update_task_status(task_id, 'completed', json.dumps(download_result))
+            # JULES'S FIX (2025-08-17): 為鏈式任務的下載步驟更新資料庫時，也必須轉換路徑
+            # 這樣前端在輪詢此下載任務的狀態時，才能獲得可預覽的 URL。
+            # 我們建立一個副本，這樣原始的絕對路徑 media_file_path 仍可用於後續步驟。
+            db_update_payload = download_result.copy()
+            db_update_payload['output_path'] = convert_to_media_url(db_update_payload['output_path'])
+            db_client.update_task_status(task_id, 'completed', json.dumps(db_update_payload))
+
+            # JULES'S FIX (2025-08-17): 解決競爭條件 (Race Condition)
+            # 在啟動子任務前，增加一個輪詢迴圈來確認父任務的狀態已在資料庫中確實更新為 'completed'。
+            # 這避免了因資料庫寫入延遲，導致子任務啟動時找不到已完成的父任務而失敗的問題。
+            max_retries = 10
+            retry_delay_seconds = 0.5
+            parent_task_confirmed = False
+            for i in range(max_retries):
+                log.info(f"正在驗證父任務 {task_id} 的狀態... (嘗試 {i+1}/{max_retries})")
+                parent_status_info = db_client.get_task_status(task_id)
+                if parent_status_info and parent_status_info.get('status') == 'completed':
+                    parent_task_confirmed = True
+                    log.info(f"✅ 父任務 {task_id} 狀態已在資料庫中確認為 'completed'。")
+                    break
+                time.sleep(retry_delay_seconds)
+
+            if not parent_task_confirmed:
+                raise RuntimeError(f"在更新父任務 {task_id} 狀態後，未能及時從資料庫確認，啟動中止。")
+
             dependent_task_id = db_client.find_dependent_task(task_id)
             if not dependent_task_id:
                 raise ValueError(f"找不到依賴於下載任務 {task_id} 的 gemini_process 任務")

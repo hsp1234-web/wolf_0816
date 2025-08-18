@@ -16,7 +16,11 @@ if not handler_log.handlers:
     console_handler.setFormatter(formatter)
     handler_log.addHandler(console_handler)
 
-DB_FILE = Path(__file__).parent / "queue.db"
+# JULES'S FIX (2025-08-17): 修正資料庫路徑
+# 錯誤根源：日誌處理器之前指向了一個錯誤的資料庫檔案 (queue.db)，
+# 而非由 database.py 初始化的主資料庫檔案 (tasks.db)。
+# 這導致日誌處理器永遠找不到 `system_logs` 表格。
+DB_FILE = Path(__file__).parent / "tasks.db"
 
 class DatabaseLogHandler(logging.Handler):
     """
