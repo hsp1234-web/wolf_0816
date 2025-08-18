@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-#@title 📥🐺 善狼一鍵啟動器 (Git 下載與執行)
+#@title 🚀 全自動化 E2E 測試器
 #@markdown ---
 #@markdown ### **(1) 專案來源設定**
 #@markdown > **請提供 Git 倉庫的網址、要下載的分支或標籤，以及本地資料夾名稱。**
@@ -14,14 +14,7 @@ PROJECT_FOLDER_NAME = "WEB1" #@param {type:"string"}
 #@markdown > **如果勾選，每次執行都會先刪除舊的專案資料夾，再重新下載。**
 FORCE_REPO_REFRESH = True #@param {type:"boolean"}
 #@markdown ---
-#@markdown ### **(2) 執行模式設定**
-#@markdown > **選擇要執行的任務。**
-#@markdown ---
-#@markdown **執行輕量級模擬測試 (RUN_MOCK_TESTS)**
-#@markdown > **如果勾選，將會執行快速的內部 E2E 模擬測試，而非啟動完整服務。**
-RUN_MOCK_TESTS = False #@param {type:"boolean"}
-#@markdown ---
-#@markdown ### **(3) 通用設定**
+#@markdown ### **(2) 通用設定**
 #@markdown > **此處為儀表板顯示相關的常用設定。**
 #@markdown ---
 #@markdown **儀表板更新頻率 (秒)**
@@ -304,7 +297,7 @@ class DisplayManager:
         self._thread = threading.Thread(target=self._run, daemon=True)
 
     def _build_output_buffer(self) -> list[str]:
-        output_buffer = ["🐺 善狼一鍵啟動器 🐺", ""]
+        output_buffer = ["🚀 全自動化 E2E 測試器 🚀", ""]
         logs_to_display = self._log_manager.get_display_logs()
         for log in logs_to_display:
             ts, level = log['timestamp'].strftime('%H:%M:%S'), log['level']
@@ -316,12 +309,8 @@ class DisplayManager:
         elapsed = time.monotonic() - self._stats.get("start_time_monotonic", time.monotonic())
         mins, secs = divmod(elapsed, 60)
         output_buffer.append("")
-        output_buffer.append(f"⏱️ {int(mins):02d}分{int(secs):02d}秒 | 💻 CPU: {cpu} | 🧠 RAM: {ram} | 🔥 狀態: {self._stats.get('status', '初始化...')}")
-        output_buffer.append("")
-        if self._stats.get('proxy_url'):
-            output_buffer.append(f"✅ 代理連結 (點擊開啟): {self._stats['proxy_url']}")
-        else:
-            output_buffer.append("⏳ 正在生成代理連結...")
+        output_buffer.append(f"⏱️ 執行時間: {int(mins):02d}分{int(secs):02d}秒 | 💻 CPU: {cpu} | 🧠 RAM: {ram}")
+        output_buffer.append(f"🔥 測試狀態: {self._stats.get('status', '初始化...')}")
         return output_buffer
 
     def _run(self):
@@ -375,7 +364,7 @@ class BackgroundWorker:
         self.port = port
         self.temp_server_manager = temp_server_manager
         self.log_queue = log_queue
-        self.server_process = None
+        self.main_process = None
         self.sub_processes = []
         self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -404,26 +393,24 @@ class BackgroundWorker:
         return_code = self._stream_process_output(process, log_level)
         return return_code == 0
 
-    def _install_dependencies(self, requirements_file: str, extra_packages: list = None):
-        """安裝依賴。"""
-        # First, install uv if not present
+    def _install_dependencies(self, requirements_files: list, extra_packages: list = None):
+        """安裝所有指定的依賴。"""
         try:
             subprocess.run([sys.executable, "-m", "pip", "install", "-q", "uv"], check=True)
         except Exception as e:
             self._log_manager.log("CRITICAL", f"安裝 'uv' 失敗: {e}")
             return False
 
-        # Install packages from requirements file
-        req_path = self.project_path / requirements_file
-        if req_path.is_file():
-            self._log_manager.log("INFO", f"正在使用 uv 安裝 `{requirements_file}`...")
-            self._stats['status'] = f"安裝依賴 ({requirements_file})..."
-            if not self._run_command([sys.executable, "-m", "uv", "pip", "install", "-r", str(req_path)]):
-                self._log_manager.log("CRITICAL", f"安裝 {requirements_file} 失敗。")
-                return False
-            self._log_manager.log("SUCCESS", f"✅ 成功安裝 {requirements_file}")
+        for file in requirements_files:
+            req_path = self.project_path / file
+            if req_path.is_file():
+                self._log_manager.log("INFO", f"正在使用 uv 安裝 `{file}`...")
+                self._stats['status'] = f"安裝依賴 ({file})..."
+                if not self._run_command([sys.executable, "-m", "uv", "pip", "install", "-r", str(req_path)]):
+                    self._log_manager.log("CRITICAL", f"安裝 {file} 失敗。")
+                    return False
+                self._log_manager.log("SUCCESS", f"✅ 成功安裝 {file}")
 
-        # Install any extra packages
         if extra_packages:
             self._log_manager.log("INFO", f"正在使用 uv 安裝額外套件: {', '.join(extra_packages)}...")
             self._stats['status'] = f"安裝額外套件..."
@@ -431,7 +418,6 @@ class BackgroundWorker:
                 self._log_manager.log("CRITICAL", f"安裝額外套件失敗。")
                 return False
             self._log_manager.log("SUCCESS", f"✅ 成功安裝額外套件。")
-
         return True
 
     def _stream_pytest_report(self, report_path: Path):
@@ -439,211 +425,128 @@ class BackgroundWorker:
         self._log_manager.log("INFO", f"實時測試日誌監控已啟動，等待 {report_path}...")
         while not report_path.exists() and not self._stop_event.is_set():
             time.sleep(0.5)
-
         if self._stop_event.is_set(): return
-
         with open(report_path, 'r', encoding='utf-8') as f:
             while not self._stop_event.is_set():
                 line = f.readline()
                 if not line:
                     time.sleep(0.2)
-                    # Check if the main pytest process is still running
-                    if self.server_process and self.server_process.poll() is not None:
-                        break # Exit if pytest process is finished
+                    if self.main_process and self.main_process.poll() is not None:
+                        break
                     continue
-
                 try:
                     report = json.loads(line)
-                    if report.get("when") == "call": # We only care about the test execution phase
+                    if report.get("when") == "call":
                         nodeid = report.get("nodeid", "Unknown Test")
                         outcome = report.get("outcome", "Unknown")
                         if outcome == "passed":
                             self._log_manager.log("SUCCESS", f"[測試通過] {nodeid}")
                         elif outcome == "failed":
                             self._log_manager.log("ERROR", f"[測試失敗] {nodeid}")
-                            # Optionally log the full error
                             long_repr = report.get('longrepr', {}).get('reprcrash', {}).get('message', '')
-                            if long_repr:
-                                self._log_manager.log("DEBUG", f"錯誤詳情: {long_repr}")
+                            if long_repr: self._log_manager.log("DEBUG", f"錯誤詳情: {long_repr}")
                         elif outcome == "skipped":
                             self._log_manager.log("WARN", f"[測試跳過] {nodeid}")
                 except (json.JSONDecodeError, KeyError) as e:
                     self._log_manager.log("WARN", f"解析測試報告行時出錯: {e} - 行內容: {line[:100]}...")
-
         self._log_manager.log("INFO", "實時測試日誌監控已結束。")
-
-
-    def _run_full_app(self):
-        """執行完整的應用程式啟動流程。"""
-        if not self._install_dependencies("requirements-server.txt"): return
-        if not self._install_dependencies("requirements-worker.txt"): return
-
-        self.temp_server_manager.stop()
-        time.sleep(1)
-        self._log_manager.log("INFO", "🚀 所有依賴已備妥，正在啟動核心協調器...")
-        self._stats['status'] = "啟動主程式..."
-        orchestrator_script_path = self.project_path / "src" / "core" / "orchestrator.py"
-        if not orchestrator_script_path.is_file():
-            self._log_manager.log("CRITICAL", f"核心協調器未找到: {orchestrator_script_path}")
-            return
-
-        port_file_path = self.project_path / "src" / "db" / "db_manager.port"
-        if port_file_path.exists():
-            try: port_file_path.unlink()
-            except Exception as e: self._log_manager.log("ERROR", f"清理舊埠號檔案失敗: {e}")
-        launch_command = [sys.executable, str(orchestrator_script_path), "--no-mock", "--port", str(self.port)]
-        process_env = os.environ.copy()
-        try:
-            key_from_secret = userdata.get('GOOGLE_API_KEY')
-            if key_from_secret:
-                process_env['GOOGLE_API_KEY'] = key_from_secret
-                self._log_manager.log("SUCCESS", "✅ 成功從 Colab Secret 讀取 GOOGLE_API_KEY。")
-        except Exception:
-            self._log_manager.log("WARN", "⚠️ 無法從 Colab Secret 讀取金鑰，將嘗試從 config.json 讀取。")
-
-        src_path_str = str((self.project_path / "src").resolve())
-        process_env['PYTHONPATH'] = f"{src_path_str}{os.pathsep}{process_env.get('PYTHONPATH', '')}"
-        self.server_process = subprocess.Popen(launch_command, cwd=str(self.project_path), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', preexec_fn=os.setsid, env=process_env)
-        self._log_manager.log("INFO", f"協調器子進程已啟動 (PID: {self.server_process.pid})，監聽日誌...")
-        uvicorn_ready_pattern = re.compile(r"Uvicorn running on")
-        for line in iter(self.server_process.stdout.readline, ''):
-            if self._stop_event.is_set(): break
-            self._log_manager.log("DEBUG", line.strip())
-            if uvicorn_ready_pattern.search(line):
-                self._stats['status'] = "✅ 伺服器運行中"
-                self._log_manager.log("SUCCESS", "✅ 主應用程式已成功接管埠號並運行！")
-                self.log_queue.put({"status": "ready"})
-        self.server_process.wait()
-        if self._stats['status'] != "✅ 伺服器運行中":
-            self._stats['status'] = "❌ 伺服器啟動失敗"
-            self._log_manager.log("CRITICAL", "協調器進程在就緒前已終止。")
-
-
-    def _run_mock_tests(self):
-        """執行輕量級的 E2E 模擬測試。"""
-        # 步驟 1: 安裝輕量級依賴與測試工具
-        self._log_manager.log("INFO", "步驟 1/6: 安裝輕量級依賴...")
-        if not self._install_dependencies("requirements-server.txt", extra_packages=["pytest", "pytest-reportlog"]):
-            self._stats['status'] = "❌ 依賴安裝失敗"
-            return
-        self._log_manager.log("SUCCESS", "✅ 輕量級依賴安裝完成。")
-
-        # 步驟 2: 建置前端
-        self._log_manager.log("INFO", "步驟 2/6: 建置前端...")
-        self._stats['status'] = "建置前端 (bun)..."
-        self._log_manager.log("INFO", "--> 正在安裝前端依賴 (bun install)...")
-        if not self._run_command(["bun", "install"], cwd=self.project_path / "vue-app"):
-             self._stats['status'] = "❌ 前端依賴安裝失敗"
-             return
-        self._log_manager.log("INFO", "--> 正在建置前端 (bun run build)...")
-        if not self._run_command(["bun", "run", "build"], cwd=self.project_path / "vue-app"):
-             self._stats['status'] = "❌ 前端建置失敗"
-             return
-        self._log_manager.log("SUCCESS", "✅ 前端建置完成。")
-
-        # 步驟 3: 初始化資料庫
-        self._log_manager.log("INFO", "步驟 3/6: 初始化資料庫...")
-        self._stats['status'] = "初始化資料庫..."
-        try:
-            from db.database import initialize_database
-            initialize_database(self.project_path / "src" / "db" / "database.db")
-            self._log_manager.log("SUCCESS", "✅ 資料庫初始化完成。")
-        except Exception as e:
-            self._log_manager.log("CRITICAL", f"資料庫初始化失敗: {e}")
-            self._stats['status'] = "❌ 資料庫初始化失敗"
-            return
-
-        # 步驟 4: 啟動所有模擬服務 (資料庫管理器 + API 伺服器)
-        self._log_manager.log("INFO", "步驟 4/6: 啟動模擬服務...")
-        self._stats['status'] = "啟動模擬服務..."
-        env = os.environ.copy()
-        env["PYTHONPATH"] = str(self.project_path / "src") + os.pathsep + env.get("PYTHONPATH", "")
-        env["API_MODE"] = "mock" # 關鍵：確保 API 伺服器以模擬模式啟動
-
-        self._log_manager.log("INFO", "--> 正在啟動資料庫管理器...")
-        db_manager_cmd = [sys.executable, str(self.project_path / "src" / "db" / "manager.py")]
-        db_proc = subprocess.Popen(db_manager_cmd, cwd=self.project_path, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, preexec_fn=os.setsid, env=env)
-        self.sub_processes.append(db_proc)
-        time.sleep(2) # 等待服務啟動
-
-        self._log_manager.log("INFO", f"--> 正在埠號 {self.port} 上啟動模擬 API 伺服器...")
-        api_server_cmd = [sys.executable, str(self.project_path / "src" / "api" / "api_server.py"), "--port", str(self.port)]
-        api_proc = subprocess.Popen(api_server_cmd, cwd=self.project_path, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, preexec_fn=os.setsid, env=env)
-        self.sub_processes.append(api_proc)
-        self._log_manager.log("SUCCESS", "✅ 所有模擬服務已在背景啟動。")
-
-        # 步驟 5: 執行 Pytest
-        self._log_manager.log("INFO", "步驟 5/6: 執行 E2E 測試...")
-        self.temp_server_manager.stop() # 停止臨時狀態伺服器，因為 API 伺服器即將接管埠號
-        time.sleep(1)
-        self._stats['status'] = "▶️ 執行 E2E 測試..."
-        self._log_manager.log("INFO", "🚀 開始執行 Pytest...")
-
-        report_path = self.project_path / "report.jsonl"
-        if report_path.exists(): report_path.unlink()
-
-        # 在單獨的執行緒中監控測試報告
-        report_thread = threading.Thread(target=self._stream_pytest_report, args=(report_path,), daemon=True)
-        report_thread.start()
-
-        pytest_cmd = [sys.executable, "-m", "pytest", str(self.project_path / "e2e_tests"), f"--report-log={report_path}"]
-        self.server_process = subprocess.Popen(pytest_cmd, cwd=self.project_path, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', env=env)
-
-        # 串流 pytest 的主要輸出 (通常是進度條和最終摘要)
-        self._stream_process_output(self.server_process, log_level="INFO")
-
-        # 步驟 6: 處理測試結果
-        self._log_manager.log("INFO", "步驟 6/6: 處理測試結果...")
-        self._stop_event.set() # 發送信號，停止報告監控執行緒
-        report_thread.join(timeout=2)
-
-        if self.server_process.returncode == 0:
-            self._stats['status'] = "✅ 測試通過"
-            self._log_manager.log("SUCCESS", "🎉 所有 E2E 測試已通過！")
-        else:
-            self._stats['status'] = "❌ 測試失敗"
-            self._log_manager.log("ERROR", f"Pytest 測試運行失敗，退出碼: {self.server_process.returncode}")
-
 
     def _run(self):
         try:
-            # Add src to path for all modes
             sys.path.insert(0, str(self.project_path / "src"))
-            if RUN_MOCK_TESTS:
-                self._run_mock_tests()
+
+            # 步驟 1: 安裝所有依賴
+            self._log_manager.log("INFO", "步驟 1/5: 安裝所有依賴...")
+            all_reqs = ["requirements-server.txt", "requirements-worker.txt"]
+            test_pkgs = ["pytest", "pytest-reportlog"]
+            if not self._install_dependencies(all_reqs, extra_packages=test_pkgs):
+                self._stats['status'] = "❌ 依賴安裝失敗"
+                return
+            self._log_manager.log("SUCCESS", "✅ 所有依賴安裝完成。")
+
+            # 步驟 2: 建置前端
+            self._log_manager.log("INFO", "步驟 2/5: 建置前端...")
+            self._stats['status'] = "建置前端 (bun)..."
+            if not self._run_command(["bun", "install"], cwd=self.project_path / "vue-app", log_level="INFO"):
+                 self._stats['status'] = "❌ 前端依賴安裝失敗"
+                 return
+            if not self._run_command(["bun", "run", "build"], cwd=self.project_path / "vue-app", log_level="INFO"):
+                 self._stats['status'] = "❌ 前端建置失敗"
+                 return
+            self._log_manager.log("SUCCESS", "✅ 前端建置完成。")
+
+            # 步驟 3: 啟動完整服務 (非模擬)
+            self._log_manager.log("INFO", "步驟 3/5: 啟動完整應用程式服務...")
+            self._stats['status'] = "啟動應用程式服務..."
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(self.project_path / "src") + os.pathsep + env.get("PYTHONPATH", "")
+
+            # 啟動 Orchestrator 來管理所有服務
+            orchestrator_cmd = [sys.executable, str(self.project_path / "src" / "core" / "orchestrator.py"), "--no-mock", "--port", str(self.port)]
+            self.main_process = subprocess.Popen(orchestrator_cmd, cwd=str(self.project_path), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', preexec_fn=os.setsid, env=env)
+
+            # 等待服務就緒
+            uvicorn_ready_pattern = re.compile(r"Uvicorn running on")
+            service_ready = False
+            for line in iter(self.main_process.stdout.readline, ''):
+                self._log_manager.log("DEBUG", line.strip())
+                if uvicorn_ready_pattern.search(line):
+                    self._stats['status'] = "✅ 服務運行中"
+                    self._log_manager.log("SUCCESS", "✅ 主應用程式已成功啟動！")
+                    service_ready = True
+                    break
+
+            if not service_ready:
+                self._log_manager.log("CRITICAL", "主應用程式啟動失敗，未偵測到 Uvicorn 運行信號。")
+                self._stats['status'] = "❌ 服務啟動失敗"
+                return
+
+            # 步驟 4: 執行 Pytest
+            self._log_manager.log("INFO", "步驟 4/5: 執行 E2E 測試...")
+            self._stats['status'] = "▶️ 執行 E2E 測試..."
+            report_path = self.project_path / "report.jsonl"
+            if report_path.exists(): report_path.unlink()
+            report_thread = threading.Thread(target=self._stream_pytest_report, args=(report_path,), daemon=True)
+            report_thread.start()
+
+            pytest_env = os.environ.copy()
+            pytest_env["API_URL"] = f"http://127.0.0.1:{self.port}"
+            pytest_cmd = [sys.executable, "-m", "pytest", str(self.project_path / "e2e_tests"), f"--report-log={report_path}"]
+            pytest_proc = subprocess.Popen(pytest_cmd, cwd=self.project_path, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', env=pytest_env)
+            self._stream_process_output(pytest_proc, log_level="INFO")
+
+            # 步驟 5: 處理測試結果
+            self._log_manager.log("INFO", "步驟 5/5: 處理測試結果...")
+            self._stop_event.set()
+            report_thread.join(timeout=2)
+
+            if pytest_proc.returncode == 0:
+                self._stats['status'] = "✅ 測試通過"
+                self._log_manager.log("SUCCESS", "🎉 所有 E2E 測試已通過！")
             else:
-                self._run_full_app()
+                self._stats['status'] = "❌ 測試失敗"
+                self._log_manager.log("ERROR", f"Pytest 測試運行失敗，退出碼: {pytest_proc.returncode}")
+
         except Exception as e:
             self._stats['status'] = "❌ 發生致命錯誤"
             self._log_manager.log("CRITICAL", f"背景工作者執行緒出錯: {e}")
         finally:
-            if self._stats['status'] not in ["✅ 伺服器運行中", "✅ 測試通過", "❌ 測試失敗"]:
+            if self._stats['status'] not in ["✅ 測試通過", "❌ 測試失敗"]:
                  self._stats['status'] = "⏹️ 已停止"
 
     def start(self): self._thread.start()
 
     def stop(self):
         self._stop_event.set()
-        # Stop the main process (pytest or orchestrator)
-        if self.server_process and self.server_process.poll() is None:
+        if self.main_process and self.main_process.poll() is None:
             self._log_manager.log("INFO", "正在終止主進程...")
             try:
-                # Use os.killpg to kill the whole process group
-                os.killpg(os.getpgid(self.server_process.pid), subprocess.signal.SIGTERM)
-                self.server_process.wait(timeout=5)
+                os.killpg(os.getpgid(self.main_process.pid), subprocess.signal.SIGTERM)
+                self.main_process.wait(timeout=5)
             except (ProcessLookupError, subprocess.TimeoutExpired, AttributeError):
                 try:
-                    os.killpg(os.getpgid(self.server_process.pid), subprocess.signal.SIGKILL)
+                    os.killpg(os.getpgid(self.main_process.pid), subprocess.signal.SIGKILL)
                 except Exception: pass
-
-        # Stop any other subprocesses
-        for proc in reversed(self.sub_processes):
-            if proc.poll() is None:
-                self._log_manager.log("INFO", f"正在終止子進程 PID: {proc.pid}...")
-                try:
-                    os.killpg(os.getpgid(proc.pid), subprocess.signal.SIGKILL)
-                except Exception: pass
-
         self._thread.join(timeout=2)
 
 # SECTION 2: 核心功能函式
@@ -667,18 +570,61 @@ def archive_reports(log_manager, start_time, end_time, status):
         print(f"✅ 報告已成功歸檔至: {report_dir}")
     except Exception as e: print(f"❌ 歸檔報告時發生錯誤: {e}")
 
-def install_system_deps():
-    print("檢查並安裝系統級依賴 FFmpeg...")
+def _run_quiet_command(name, command):
+    """執行一個系統指令並只在失敗時顯示輸出。"""
     try:
-        if subprocess.run(["which", "ffmpeg"], capture_output=True).returncode != 0:
-            print("未偵測到 FFmpeg，開始安裝...")
-            subprocess.run(["apt-get", "update", "-qq"], check=True)
-            subprocess.run(["apt-get", "install", "-y", "-qq", "ffmpeg"], check=True)
-            print("✅ FFmpeg 安裝完成。")
-        else:
-            print("✅ FFmpeg 已安裝。")
+        print(f"正在檢查並安裝 {name}...")
+        result = subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding='utf-8'
+        )
+        print(f"✅ {name} 已就緒。")
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"❌ 安裝 {name} 時發生錯誤。")
+        print(f"返回碼: {e.returncode}")
+        print("--- STDOUT ---\n" + e.stdout)
+        print("--- STDERR ---\n" + e.stderr)
+        return False
+    except FileNotFoundError:
+        print(f"❌ 錯誤：指令 '{command[0]}' 未找到。請確保您的 Colab 環境已安裝 npm。")
+        return False
     except Exception as e:
-        print(f"❌ 安裝 FFmpeg 時發生錯誤: {e}")
+        print(f"❌ 安裝 {name} 時發生未預期的錯誤: {e}")
+        return False
+
+def install_system_deps():
+    """安裝所有必要的系統級和前端依賴。"""
+    print("="*60)
+    print("🚀 開始準備核心測試環境...")
+    print("="*60)
+
+    # 1. 安裝 FFmpeg
+    if subprocess.run(["which", "ffmpeg"], capture_output=True).returncode != 0:
+        _run_quiet_command("FFmpeg", ["apt-get", "update", "-qq"])
+        _run_quiet_command("FFmpeg", ["apt-get", "install", "-y", "-qq", "ffmpeg"])
+    else:
+        print("✅ FFmpeg 已安裝。")
+
+    # 2. 安裝 Bun
+    if subprocess.run(["which", "bun"], capture_output=True).returncode != 0:
+        if not _run_quiet_command("Bun", ["npm", "install", "-g", "bun"]):
+            # 如果失敗，記錄一個更嚴重的錯誤
+            print("‼️ Bun 安裝失敗，後續的前端建置步驟可能會失敗。")
+    else:
+        print("✅ Bun 已安裝。")
+
+    # 3. 安裝 Playwright 瀏覽器
+    print("正在安裝 Playwright 所需的瀏覽器核心...")
+    if not _run_quiet_command("Playwright Browsers", [sys.executable, "-m", "playwright", "install"]):
+         print("‼️ Playwright 瀏覽器安裝失敗，E2E 測試將無法運行。")
+
+    print("-" * 60)
+    print("✅ 核心測試環境準備完畢。")
+    print("-" * 60)
 
 def create_log_viewer_html(log_manager):
     """產生一個包含頂部和底部複製按鈕的可收合日誌檢視器 HTML。"""
@@ -733,7 +679,7 @@ def create_log_viewer_html(log_manager):
 # SECTION 3: 主程式執行入口
 def launch_application(project_path_str: str):
     """主執行函式，採用兩階段啟動。"""
-    shared_stats = {"start_time_monotonic": time.monotonic(), "status": "初始化...", "proxy_url": None}
+    shared_stats = {"start_time_monotonic": time.monotonic(), "status": "初始化..."}
     log_manager, display_manager, temp_server_manager, background_worker = None, None, None, None
     start_time = datetime.now(pytz.timezone(TIMEZONE))
 
@@ -743,64 +689,21 @@ def launch_application(project_path_str: str):
         log_levels = {name: globals()[name] for name in globals() if name.startswith("SHOW_LOG_LEVEL_")}
         log_manager = LogManager(max_lines=LOG_DISPLAY_LINES, timezone_str=TIMEZONE, log_levels_to_show=log_levels, db_path=str(db_path))
         display_manager = DisplayManager(log_manager=log_manager, stats_dict=shared_stats, refresh_rate=UI_REFRESH_SECONDS)
+
         display_manager.start()
         log_manager.log("INFO", "顯示管理器已啟動。")
 
-        shared_stats['status'] = "尋找可用埠號..."
         port = find_free_port()
-        log_manager.log("INFO", f"找到空閒埠號: {port}")
+        log_manager.log("INFO", f"為測試伺服器保留埠號: {port}")
+
+        # TempServer is not strictly needed anymore as we don't need a placeholder page,
+        # but we can keep it for future use or simple status display during setup.
         temp_server_manager = TempServerManager(port=port, log_manager=log_manager, log_queue=log_queue, project_root=project_path_str)
         temp_server_manager.start()
-        shared_stats['status'] = "建立狀態伺服器..."
 
-        time.sleep(1)
-        max_retries, retry_delay, js_timeout_ms, py_timeout_sec = 20, 1, 7000, 10
-        js_get_url_script = f'''
-        (async () => {{
-            const proxyPromise = google.colab.kernel.proxyPort({port}, {{'cache': false}});
-            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error(`proxyPort call timed out after {js_timeout_ms}ms`)), {js_timeout_ms}));
-            try {{ const url = await Promise.race([proxyPromise, timeoutPromise]); return {{'url': url, 'error': null}}; }}
-            catch (e) {{ return {{'url': null, 'error': e.toString()}}; }}
-        }})()
-        '''
-
-        log_manager.log("INFO", "啟動背景工作者，開始並行安裝依賴...")
+        log_manager.log("INFO", "啟動背景工作者，開始全自動化測試流程...")
         background_worker = BackgroundWorker(log_manager=log_manager, stats_dict=shared_stats, project_path_str=project_path_str, port=port, temp_server_manager=temp_server_manager, log_queue=log_queue)
         background_worker.start()
-
-        for attempt in range(max_retries):
-            shared_stats['status'] = f"正在嘗試取得代理連結... (第 {attempt + 1}/{max_retries} 次)"
-            result_queue = queue.Queue()
-            def _eval_js_in_thread(q, script):
-                try: q.put({'result': colab_output.eval_js(script), 'error': None})
-                except Exception as e: q.put({'result': None, 'error': e})
-            eval_thread = threading.Thread(target=_eval_js_in_thread, args=(result_queue, js_get_url_script)); eval_thread.daemon = True; eval_thread.start()
-            try:
-                output = result_queue.get(timeout=py_timeout_sec)
-                if output.get('error'):
-                    error_msg = str(output['error']); shared_stats['status'] = f"嘗試失敗 ({error_msg[:50]}...)，1秒後重試。"
-                    log_manager.log("WARN", f"獲取代理連結的背景執行緒發生錯誤: {error_msg}")
-                else:
-                    result = output.get('result')
-                    if result and result.get('error'):
-                        error_msg = str(result['error']); shared_stats['status'] = f"JS錯誤 ({error_msg[:50]}...)，1秒後重試。"
-                        log_manager.log("WARN", f"獲取代理連結時發生 JS 錯誤: {error_msg}")
-                    elif result and result.get('url') and result['url'].strip().startswith('http'):
-                        candidate_url = result['url'].strip()
-                        shared_stats['proxy_url'] = candidate_url; shared_stats['status'] = "✅ 成功取得代理連結！"
-                        log_manager.log("SUCCESS", f"成功取得並驗證代理連結: {candidate_url}")
-                        break
-                    else:
-                        shared_stats['status'] = "收到無效的回傳值，1秒後重試。"; log_manager.log("WARN", f"收到無效的代理回傳值: '{str(result)[:100]}...'")
-            except queue.Empty:
-                shared_stats['status'] = f"操作超時 ({py_timeout_sec}秒)，1秒後重試。"; log_manager.log("WARN", f"獲取代理連結操作超時 ({py_timeout_sec}秒)。")
-            except Exception as e:
-                error_msg = str(e); shared_stats['status'] = f"發生未預期錯誤 ({error_msg[:50]}...)，1秒後重試。"
-                log_manager.log("ERROR", f"獲取代理連結迴圈發生未預期錯誤: {e}")
-            time.sleep(retry_delay)
-
-        if not shared_stats.get('proxy_url'):
-            shared_stats['status'] = "❌ 取得代理連結失敗"; log_manager.log("CRITICAL", "無法取得代理連結，但背景安裝任務仍在繼續。")
 
         background_worker._thread.join()
         log_manager.log("INFO", "背景工作者執行緒已結束。")
