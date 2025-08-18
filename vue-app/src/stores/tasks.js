@@ -85,8 +85,8 @@ export const useTasksStore = defineStore('tasks', {
           this.sendSocketMessage({ type: 'START_DOWNLOAD', payload: { task_id: task.task_id } });
         }
 
-        // 刷新任務列表以顯示新建立的任務
-        await this.fetchTasks();
+        // JULES'S FIX (2025-08-18): 移除 fetchTasks() 呼叫以避免競爭條件。
+        // 新建立的任務將由後續的 WebSocket 訊息處理，以確保狀態同步的唯一來源。
 
       } catch (error) {
         console.error('開始轉錄時發生錯誤:', error);
@@ -299,11 +299,12 @@ export const useTasksStore = defineStore('tasks', {
         const response = await axios.post(`${API_BASE_URL}/youtube/process`, payload);
         const result = response.data;
 
-        // 觸發 WebSocket 開始監控並刷新任務列表
+        // 觸發 WebSocket 開始監控
         result.tasks.forEach(task => {
             this.sendSocketMessage({ type: 'START_YOUTUBE_PROCESSING', payload: { task_id: task.task_id }});
         });
-        await this.fetchTasks();
+        // JULES'S FIX (2025-08-18): 移除 fetchTasks() 呼叫以避免競爭條件。
+        // 新任務的狀態將透過 WebSocket 更新。
 
       } catch (error) {
         console.error('建立下載任務時發生錯誤:', error);
@@ -355,7 +356,7 @@ export const useTasksStore = defineStore('tasks', {
             result.tasks.forEach(task => {
                 this.sendSocketMessage({ type: 'START_YOUTUBE_PROCESSING', payload: { task_id: task.task_id }});
             });
-            await this.fetchTasks();
+            // JULES'S FIX (2025-08-18): 移除 fetchTasks() 呼叫以避免競爭條件。
         } catch (error) {
             console.error('處理 YouTube 請求時發生錯誤:', error);
             throw new Error(error.response?.data?.detail || '建立 YouTube 分析任務失敗');

@@ -293,24 +293,20 @@ async def create_transcription_task(
         db_client.add_task(transcribe_task_id, json.dumps(transcription_payload), task_type='transcribe')
         return {"task_id": transcribe_task_id, "type": "transcribe", "message": "任務已建立，將透過 WebSocket 觸發執行。"}
     else:
-        # 模型不存在，建立一個下載任務，並將轉錄任務的資訊作為其一部分
+        # 模型不存在，建立下載任務和依賴的轉錄任務
         download_task_id = str(uuid.uuid4())
-        log.warning(f"⚠️ 模型 '{model_size}' 不存在。建立下載任務 '{download_task_id}'，並將轉錄任務 '{transcribe_task_id}' 作為其後續任務。")
+        log.warning(f"⚠️ 模型 '{model_size}' 不存在。建立下載任務 '{download_task_id}' 和依賴的轉錄任務 '{transcribe_task_id}'")
 
-        # 將轉錄任務的 ID 和 payload 儲存在下載任務中
-        download_payload = {
-            "model_size": model_size,
-            "dependent_task_id": transcribe_task_id,
-            "dependent_task_payload": transcription_payload
-        }
+        download_payload = {"model_size": model_size}
         db_client.add_task(download_task_id, json.dumps(download_payload), task_type='download')
 
-        # 只返回下載任務的 ID，因為它現在是整個流程的起點
-        return JSONResponse(content={
-            "task_id": download_task_id,
-            "type": "download",
-            "message": "模型不存在，已建立下載任務，完成後將自動開始轉錄。"
-        })
+        db_client.add_task(transcribe_task_id, json.dumps(transcription_payload), task_type='transcribe', depends_on=download_task_id)
+
+        # 我們回傳兩個任務的 ID，讓前端可以追蹤整個鏈
+        return JSONResponse(content={"tasks": [
+            {"task_id": download_task_id, "type": "download"},
+            {"task_id": transcribe_task_id, "type": "transcribe"}
+        ]})
 
 
 @app.get("/api/status/{task_id}")
@@ -798,8 +794,6 @@ def trigger_model_download(task_id: str, loop: asyncio.AbstractEventLoop):
         try:
             payload = json.loads(task_info['payload'])
             model_size = payload['model_size']
-            dependent_task_id = payload.get('dependent_task_id')
-            dependent_task_payload = payload.get('dependent_task_payload')
         except (json.JSONDecodeError, KeyError) as e:
             log.error(f"❌ [執行緒] 下載任務 {task_id} 的 payload 格式錯誤: {e}", exc_info=True)
             db_client.update_task_status(task_id, 'failed', json.dumps({"error": "無效的任務 payload"}))
@@ -823,17 +817,34 @@ def trigger_model_download(task_id: str, loop: asyncio.AbstractEventLoop):
                 log.info(f"✅ [執行緒] 模型 '{model_size}' 下載成功。")
                 db_client.update_task_status(task_id, 'completed', json.dumps({"model_size": model_size}))
 
-                # 如果有關聯的轉錄任務，現在建立並觸發它
-                if dependent_task_id and dependent_task_payload:
-                    log.info(f"✅ 下載完成，正在建立並觸發後續的轉錄任務: {dependent_task_id}")
-                    db_client.add_task(dependent_task_id, json.dumps(dependent_task_payload), 'transcribe', depends_on=task_id)
+                # JULES'S FIX: 採用與 YouTube 處理鏈相同的穩健模式來觸發依賴任務
+                # 1. 確認父任務狀態更新
+                max_retries = 10
+                retry_delay_seconds = 0.5
+                parent_task_confirmed = False
+                for i in range(max_retries):
+                    parent_status_info = db_client.get_task_status(task_id)
+                    if parent_status_info and parent_status_info.get('status') == 'completed':
+                        parent_task_confirmed = True
+                        log.info(f"✅ 父任務(下載) {task_id} 狀態已在資料庫中確認為 'completed'。")
+                        break
+                    time.sleep(retry_delay_seconds)
 
-                    # 透過 WebSocket 觸發轉錄任務
+                if not parent_task_confirmed:
+                    log.error(f"❌ 無法在資料庫中確認父任務 {task_id} 的完成狀態。後續任務可能無法啟動。")
+                    return
+
+                # 2. 尋找並觸發依賴任務
+                dependent_task_id = db_client.find_dependent_task(task_id)
+                if dependent_task_id:
+                    log.info(f"✅ 發現依賴的轉錄任務 {dependent_task_id}，正在透過 WebSocket 觸發。")
                     start_message = {
                         "type": "START_TRANSCRIPTION",
                         "payload": {"task_id": dependent_task_id}
                     }
                     asyncio.run_coroutine_threadsafe(manager.broadcast_json(start_message), loop)
+                else:
+                    log.info(f"ℹ️ 模型下載任務 {task_id} 完成，沒有發現依賴任務。")
             else:
                 stderr_output = process.stderr.read() if process.stderr else "N/A"
                 log.error(f"❌ [執行緒] 模型 '{model_size}' 下載失敗。 Stderr: {stderr_output}")
@@ -1186,7 +1197,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 msg_type = message.get("type")
                 payload = message.get("payload", {})
 
-                if msg_type == "START_DOWNLOAD": # 前端現在應發送這個類型來啟動下載
+                if msg_type == "START_DOWNLOAD":
                     task_id = payload.get("task_id")
                     if task_id:
                         log.info(f"收到開始下載任務 '{task_id}' 的請求。")
