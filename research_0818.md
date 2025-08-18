@@ -1,131 +1,65 @@
-# 後端架構改善研究報告 (v4 - 最終版)
+好的，遵照您的指示。我們將完全按照您的決策來執行。以下是整合我們所有討論後，得到的一份清晰、統一的最終計畫。這將是我們接下來所有工作的指導方針。
 
-## 1. 目標
-
-本報告旨在回應將現有後端系統改造為「極致解耦的微服務架構」的需求。核心目標是將目前緊密耦合的後端應用，拆分成一系列邊界清晰、職責單一、高內聚、低耦合、可獨立測試和部署的獨立服務。本報告將作為後續所有開發工作的最終指導藍圖。
-
----
-
-## 2. 核心理念與技術選型
-
-*   **核心理念**: **單一職責原則 (Single Responsibility Principle)**。每個微服務只做一件事，並把它做好。服務之間透過清晰的 API 和非同步訊息進行通訊，而不是直接的程式碼呼叫或共享資料庫。
-*   **任務佇列: `huey`**: 一個功能強大且輕量級的 Python 任務佇列函式庫。它原生支援使用 **SQLite** 作為後端儲存，完美符合我們不引入 Redis 等新外部服務也能實現專業級任務佇列的需求。
-*   **虛擬環境: `uv`**: 一個用 Rust 編寫的、極速的 Python 套件管理工具。我們將為每個微服務使用 `uv` 來建立和管理其各自的、隔離的 Python 虛擬環境，確保依賴乾淨、啟動快速。
+**核心設計原則：**
+*   **單一檔案，易於管理**：每個工作者都是一個獨立的 `.py` 檔案，所有設定（如超時、重試次數）都以註解形式寫在檔案頂部，方便直接修改。
+*   **穩定性優先**：採用單線程處理模型，確保任務一個接一個執行，不出錯。首先追求整個流程跑通。
+*   **邊界清晰**：每個工作者只負責一種類型的任務（例如 `youtube_worker` 只處理 YouTube 任務），保持架構的簡潔與單一職責。
+*   **暫不實作進階功能**：心跳機制、系統級排程 (`cron`) 等功能，將保留給未來在 Colab 環境中實作，目前階段不予開發。
 
 ---
 
-## 3. 未來架構規劃：極致解耦的微服務藍圖
+### **第一階段：概念驗證 (Proof of Concept) - 改造 YouTube 服務**
 
-### 3.1. 服務職責定義
+**目標：** 建立第一個符合我們新規範的「臨時工作者」，並驗證其可行性。
 
-根據您的要求，我們將系統拆分為以下高度專一化的微服務：
+1.  **修改 `youtube_service` 的任務定義 (`tasks.py`)**
+    *   **位置**: `services/youtube_service/tasks.py`
+    *   **任務**: 為檔案中 `@huey.task()` 裝飾的函數增加錯誤處理機制。
+    *   **修改內容**: 加入 `retries=3` 和 `retry_delay=30` 參數。這將使任何失敗的任務，在放棄前會每隔 30 秒重試一次，總共嘗試 3 次。
 
-*   **前端服務**:
-    *   `靜態網頁伺服器 (Static Web Server)`: 唯一職責是提供 Vue.js 前端應用程式的靜態檔案 (HTML, JS, CSS)。
+2.  **建立 `run_youtube_worker.py`**
+    *   **位置**: 在專案的根目錄下建立此新檔案。
+    *   **任務**: 編寫臨時工作者的主要執行邏輯。
+    *   **程式碼結構**:
+        *   在檔案頂部，使用註解區塊來放置設定檔。
+            ```python
+            # --- 設定區 (可直接在此修改) ---
+            IDLE_TIMEOUT_SECONDS = 20 # 沒有任務後，等待 20 秒就自動關閉
+            LOOP_SLEEP_SECONDS = 2   # 每 2 秒檢查一次佇列
+            # --- 設定區結束 ---
+            ```
+        *   實現主迴圈邏輯：啟動、檢查任務、執行、閒置倒數、自動關閉。
+        *   所有日誌和輸出訊息都使用繁體中文。
 
-*   **閘道 (Gateway)**:
-    *   `API 閘道 (API Gateway)`: 所有外部 API 請求的統一入口。負責請求的路由、驗證和速率限制，但不包含任何業務邏輯。
+3.  **手動測試與驗證**
+    *   **任務**: 執行 `python run_youtube_worker.py`。
+    *   **驗證**:
+        *   **正常流程**: 觸發一個 YouTube 任務，觀察日誌確認工作者是否成功接收、執行，並在閒置 20 秒後自動退出。
+        *   **錯誤流程**: 模擬一個會失敗的任務，觀察日誌確認工作者是否確實執行了 3 次重試，每次間隔 30 秒。
 
-*   **核心業務服務 (Business Logic Services)**:
-    *   `YouTube 下載服務`: 負責從 YouTube 下載媒體檔案。完成後發布一個「媒體已下載」事件。
-    *   `AI 報告服務`: 訂閱「媒體已下載」事件，並使用 Gemini API 對媒體檔案進行分析，產生報告。
-    *   `轉錄任務服務`: 協調音訊轉錄的流程。它接收轉錄請求，並將具體的 AI 推論工作委派給「AI 本地模型服務」。
+### **第二階段：推廣至其他微服務**
 
-*   **基礎設施/支撐服務 (Infrastructure/Support Services)**:
-    *   `AI 本地模型服務`: 封裝並管理所有本地 AI 模型（如 Whisper）。負責模型的下載、快取，並提供推論（Inference）API。此服務將是唯一包含 `torch` 等重度依賴的服務。
-    *   `檔案管理服務`: 對伺服器檔案系統的唯一窗口。所有服務需要「儲存」、「讀取」、「重新命名」檔案，都必須透過呼叫此服務的 API 來完成。
-    *   `媒體預覽服務`: 專門提供對已儲存媒體檔案的 HTTP 存取（串流播放）。
-    *   `日誌管理服務`: 建立一個中央日誌中心，收集、儲存並提供所有其他服務的日誌查詢。
-    *   `通知服務`: 專門管理 WebSocket 連線，監聽系統中的各種事件（如「任務完成」），並即時推送給前端。
-    *   `任務資料庫服務`: (隱含服務) 為了徹底解耦，所有對任務狀態資料庫的直接操作，都應由一個專門的、簡單的 CRUD 服務來管理。
+**目標：** 將成功的模式複製到其他背景服務，完成架構的全面轉型。
 
-### 3.2. 未來架構示意圖
+4.  **改造 `transcription_service`**
+    *   **修改任務定義**: 同步驟 1，在 `services/transcription_service/tasks.py` 中為任務加入重試機制。
+    *   **建立工作者**: 複製 `run_youtube_worker.py` 為 `run_transcription_worker.py`，並修改其日誌訊息和引用的任務模組，使其專門處理轉錄任務。
 
-```mermaid
-graph TD
-    subgraph Browser
-        UserInterface[前端 Vue App]
-    end
+5.  **改造 `ai_report_service`**
+    *   **修改任務定義**: 同步驟 1，在 `services/ai_report_service/tasks.py` 中為任務加入重試機制。
+    *   **建立工作者**: 複製 `run_youtube_worker.py` 為 `run_ai_report_worker.py`，並修改其日誌訊息和引用的任務模組，使其專門處理 AI 報告任務。
 
-    subgraph Gateway Layer
-        WebSrv[靜態網頁伺服器]
-        APIGateway[API 閘道]
-    end
+### **第三階段：文件與最終化**
 
-    subgraph "Communication Backbone"
-        HueyQueue[(Huey 任務佇列)]
-    end
+**目標：** 確保專案的知識得以傳承，方便未來維護。
 
-    subgraph "Business Services"
-        YouTubeSrv[YouTube 下載服務]
-        AIReportSrv[AI 報告服務]
-        TranscriptionSrv[轉錄任務服務]
-    end
+6.  **撰寫架構說明文件**
+    *   **任務**: 在專案根目錄建立一份新的 `README.md` (如果已存在，則進行大幅更新)。
+    *   **內容**:
+        *   詳細說明「臨時工作者」的設計理念與運作方式。
+        *   清楚列出如何啟動每一個工作者 (e.g., `python run_youtube_worker.py`)。
+        *   提供一份簡易指南，說明未來若要新增一個新的工作者（例如 `image_processing_worker`），需要遵循哪些步驟。
+        *   所有文件內容均使用繁體中文。
 
-    subgraph "Infrastructure Services"
-        FileSrv[檔案管理服務]
-        MediaSrv[媒體預覽服務]
-        ModelSrv[AI 本地模型服務]
-        LogSrv[日誌管理服務]
-        NotificationSrv[通知服務]
-    end
-
-    UserInterface -- 載入頁面 --> WebSrv
-    UserInterface -- API 請求 (e.g., 上傳) --> APIGateway
-    APIGateway -- 儲存檔案 --> FileSrv
-    FileSrv -- 任務入列 --> HueyQueue
-    HueyQueue -- 處理任務 --> TranscriptionSrv
-    TranscriptionSrv -- 請求模型推論 --> ModelSrv
-    TranscriptionSrv -- 發布完成事件 --> HueyQueue
-    HueyQueue -- 事件通知 --> NotificationSrv
-    NotificationSrv -- WebSocket Push --> UserInterface
-    YouTubeSrv -- 存取檔案 --> FileSrv
-    AIReportSrv -- 存取檔案 --> FileSrv
-    UserInterface -- 預覽媒體 --> MediaSrv
-    TranscriptionSrv -- 寫入日誌 --> LogSrv
-    YouTubeSrv -- 寫入日誌 --> LogSrv
-```
-
----
-
-## 4. 前端整合策略
-*(本章節內容與 v3 報告相同，核心思想是在閘道層維持 API 的穩定，讓前端的改動降到最低，只增加處理服務失效的容錯邏輯。)*
-
----
-
-## 5. 架構對比：優劣勢分析
-*(本章節內容與 v3 報告相同，微服務架構在測試性、擴展性、容錯性上有巨大優勢，但在部署和維運複雜度上有所提升。)*
-
----
-
-## 6. 環境管理方案：整合 UV
-*(本章節內容與 v3 報告相同，我們將為每個微服務使用 `uv` 來建立和管理其隔離的 Python 虛擬環境。)*
-
----
-
-## 7. 未來檔案結構規劃
-
-```
-.
-├── ... (其他既有檔案)
-└── services/
-    ├── common/                     # 存放共享的程式碼，如資料庫模型
-    ├── huey_config.py              # Huey 的統一設定檔
-    ├── api_gateway/
-    ├── static_web_server/
-    ├── transcription_service/
-    ├── youtube_service/
-    ├── ai_report_service/
-    ├── local_ai_model_service/     # 唯一安裝 torch, faster-whisper 的地方
-    ├── file_management_service/
-    ├── media_preview_service/
-    ├── log_management_service/
-    └── notification_service/
-```
-*(每個服務目錄下都將包含自己的 `main.py` 或 `consumer.py`, `requirements.txt`, 和由 `uv` 管理的 `.venv`)*
-
----
-
-## 8. 結論
-
-這份最終版的藍圖，詳細規劃了一個高度解耦、職責清晰的微服務架構。它採納了您所有的設計思想，將系統拆分成了一系列簡單、專注的服務。透過 `huey` 和 `uv` 等現代化工具，我們可以在不引入複雜外部依賴的情況下，實現一個健壯、可維護且易於擴展的後端系統。本報告已包含所有必要的規劃細節，可作為後續開發工作的最終指導文件。
+7.  **提交最終程式碼**
+    *   **任務**: 當所有工作者都改造並測試完畢，且文件也撰寫完成後，我將提交所有變更。

@@ -21,7 +21,7 @@ def log_message(level: str, message: str):
     except requests.exceptions.RequestException as e:
         print(f"嚴重錯誤：無法將日誌寫入日誌服務: {e}")
 
-@huey.task()
+@huey.task(retries=3, retry_delay=30)
 def download_youtube_video(youtube_url: str):
     """
     從 YouTube 下載音訊，存到檔案服務，然後觸發轉錄任務。
@@ -58,7 +58,7 @@ def download_youtube_video(youtube_url: str):
 
         except Exception as e:
             log_message("ERROR", f"使用 yt-dlp 下載時發生錯誤: {e}")
-            return # 下載失敗，終止任務
+            raise  # 下載失敗，重新引發異常以觸發 Huey 重試
 
         # --- 2. 將下載的檔案上傳到檔案管理服務 ---
         try:
@@ -76,7 +76,7 @@ def download_youtube_video(youtube_url: str):
 
         except Exception as e:
             log_message("ERROR", f"上傳檔案至檔案服務時發生錯誤: {e}")
-            return # 上傳失敗，終止任務
+            raise  # 上傳失敗，重新引發異常以觸發 Huey 重試
 
         # --- 3. 觸發轉錄任務 ---
         try:
@@ -85,5 +85,6 @@ def download_youtube_video(youtube_url: str):
             log_message("INFO", "轉錄任務已成功放入佇列。")
         except Exception as e:
             log_message("ERROR", f"觸發轉錄任務時發生錯誤: {e}")
+            raise  # 觸發失敗，重新引發異常以觸發 Huey 重試
 
     return "YouTube 下載與轉錄觸發流程完成。"
