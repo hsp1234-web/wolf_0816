@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+pydantic-settings
+
+# AI/ML 相關的重量級依賴
+# faster-whisper 用於高效的語音轉錄
+faster-whisper
+# torch 是 faster-whisper 的底層依賴
+torch
