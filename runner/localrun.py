@@ -10,6 +10,7 @@ import os
 import argparse
 import urllib.request
 import json
+import shutil
 from pathlib import Path
 
 # --- 全域設定 ---
@@ -20,8 +21,8 @@ sys.path.insert(0, str(ROOT_DIR / "src"))
 from db.database import initialize_database
 
 
-GLOBAL_TIMEOUT = 300  # 全局超時增加至 300 秒，以應對冷快取時較長的依賴安裝時間
-LOG_WATCHDOG_TIMEOUT = 10  # 使用者要求的 10 秒看門狗
+GLOBAL_TIMEOUT = 100  # 全局超時設定為 100 秒
+LOG_WATCHDOG_TIMEOUT = 20  # 日誌看門狗超時設定為 20 秒
 
 # --- 日誌設定 ---
 logging.basicConfig(
@@ -158,13 +159,17 @@ class StagedLauncher:
     def _background_setup(self):
         """在背景執行所有耗時的準備工作。"""
         try:
-            self.status = "步驟 1/3: 安裝依賴 (使用 uv)..."
+            # 步驟 1/4: 檢查磁碟容量
+            self.status = "步驟 1/4: 檢查磁碟容量..."
+            if not self._check_disk_capacity(): raise RuntimeError("磁碟容量檢查失敗")
+
+            self.status = "步驟 2/4: 安裝依賴 (使用 uv)..."
             if not self._install_dependencies_uv(): raise RuntimeError("依賴安裝失敗")
 
-            self.status = "步驟 2/3: 建置前端應用..."
+            self.status = "步驟 3/4: 建置前端應用..."
             if not self._build_frontend(): raise RuntimeError("前端建置失敗")
 
-            self.status = "步驟 3/3: 初始化資料庫..."
+            self.status = "步驟 4/4: 初始化資料庫..."
             if not self._initialize_db(): raise RuntimeError("資料庫初始化失敗")
 
             # 發出信號，通知主執行緒準備工作已完成
@@ -203,6 +208,28 @@ class StagedLauncher:
                 raise RuntimeError(f"日誌看門狗超時！超過 {LOG_WATCHDOG_TIMEOUT} 秒無任何日誌輸出。")
 
             time.sleep(0.5)
+
+    def _check_disk_capacity(self, threshold_percent: int = 80):
+        """檢查磁碟容量是否超過閾值。"""
+        log.info(f"檢查磁碟容量，閾值設定為 {threshold_percent}%...")
+        try:
+            total, used, free = shutil.disk_usage('/')
+            usage_percent = (used / total) * 100
+            log.info(f"  - 目前磁碟使用率: {usage_percent:.2f}% ({used // 1024**3}GB / {total // 1024**3}GB)")
+            if usage_percent >= threshold_percent:
+                error_msg = f"錯誤碼 102：磁碟空間嚴重不足！目前使用率 {usage_percent:.2f}%，已達或超過 {threshold_percent}% 的閾值。"
+                log.error(error_msg)
+                raise RuntimeError(error_msg)
+            log.info("✅ 磁碟容量檢查通過。")
+            return True
+        except RuntimeError:
+            raise # 直接重新拋出我們自己定義的 RuntimeError
+        except FileNotFoundError:
+            log.warning("⚠️ 無法找到根目錄 '/'，跳過磁碟容量檢查。")
+            return True # 在某些特殊環境下可能發生，選擇寬容處理
+        except Exception as e:
+            log.error(f"❌ 進行磁碟容量檢查時發生未知錯誤: {e}", exc_info=True)
+            raise RuntimeError(f"錯誤碼 103：無法檢查磁碟空間。") from e
 
     def _shutdown_main_services(self):
         """使用 os.killpg 優雅地關閉所有主服務的子程序組。"""
