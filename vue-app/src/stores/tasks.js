@@ -16,6 +16,13 @@ export const useTasksStore = defineStore('tasks', {
     socketConnected: false,
     // 系統狀態
     systemStats: {},
+    // JULES'S FIX: 新增模型下載狀態
+    modelDownloadStatus: {
+      model: null,
+      status: 'idle', // 'idle', 'starting', 'downloading', 'completed', 'failed'
+      progress: 0,
+      message: ''
+    },
   }),
   actions: {
     /**
@@ -136,11 +143,29 @@ export const useTasksStore = defineStore('tasks', {
      */
     handleSocketMessage(message) {
       console.log('收到 WebSocket 訊息:', message);
-      const { payload } = message;
+      const { type, payload } = message;
+
+      // JULES'S FIX: 處理模型下載狀態更新
+      if (type === 'DOWNLOAD_STATUS') {
+        this.modelDownloadStatus.model = payload.model;
+        this.modelDownloadStatus.status = payload.status;
+        // JULES'S FIX: 從多個可能的鍵名中安全地獲取進度值
+        this.modelDownloadStatus.progress = payload.percent || payload.progress || 0;
+        this.modelDownloadStatus.message = payload.description || payload.error || payload.status;
+        // 如果下載完成或失敗，設定一個計時器來重置狀態，以便下次下載
+        if (payload.status === 'completed' || payload.status === 'failed') {
+          setTimeout(() => {
+            this.modelDownloadStatus.status = 'idle';
+            this.modelDownloadStatus.message = '';
+          }, 5000);
+        }
+        return; // 訊息已處理
+      }
+
 
       if (!payload || !payload.task_id) {
         // 處理沒有 task_id 的訊息，例如模型下載進度
-        // TODO: 實作模型下載狀態的處理
+        // 已由上面的 DOWNLOAD_STATUS 處理，這裡可以保持原樣或移除 TODO
         return;
       }
 

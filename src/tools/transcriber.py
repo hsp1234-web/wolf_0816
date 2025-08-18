@@ -139,19 +139,40 @@ class Transcriber:
             raise e
 
 def check_model(model_size: str):
-    """檢查模型是否已下載"""
+    """
+    使用 huggingface_hub 的 API，以更可靠的方式檢查模型是否已在本地快取中。
+    這避免了依賴 faster-whisper 內部可能變動的路徑結構。
+    """
+    log.info(f"正在使用 huggingface_hub API 檢查模型 '{model_size}'...")
     try:
-        # 這是 faster-whisper 內部用來找模型路徑的方法
-        model_path = get_assets_path(f"ctranslate2-4-avx2/whisper-{model_size}-ct2")
-        if (Path(model_path) / "config.json").is_file():
-            print("exists")
-            log.info(f"✅ 模型 '{model_size}' 已存在於: {model_path}")
-        else:
-            print("not_exists")
-            log.info(f"❓ 模型 '{model_size}' 不存在。")
-    except Exception as e:
+        # JULES'S FIX: 匯入 huggingface_hub 的必要工具
+        # huggingface_hub 是 faster-whisper 的一個依賴，所以它應該總是可用的。
+        from huggingface_hub import snapshot_download, HfFolder
+        from huggingface_hub.utils import EntryNotFoundError
+
+        # faster-whisper 模型在 Hugging Face Hub 上的 repo ID 格式
+        repo_id = f"guillaumekln/faster-whisper-{model_size}"
+
+        # 嘗試僅從本地檔案下載模型。
+        # 如果模型已完整快取，此操作會成功並回傳路徑。
+        # 如果缺少任何檔案，它會引發一個錯誤。
+        snapshot_download(
+            repo_id=repo_id,
+            local_files_only=True,
+            token=HfFolder.get_token(), # 確保使用已登入的 token（如果有的話）
+            user_agent=f"phoenix-transcriber/1.0; command/check; model/{model_size}" # JULES: 增加 User-Agent
+        )
+        print("exists")
+        log.info(f"✅ huggingface_hub 確認模型 '{model_size}' 已完整存在於快取中。")
+
+    except (FileNotFoundError, EntryNotFoundError):
+        # 這是預期中的錯誤，當模型不在快取中時會發生
         print("not_exists")
-        log.error(f"檢查模型 '{model_size}' 時出錯: {e}")
+        log.warning(f"❓ 模型 '{model_size}' 不在 huggingface_hub 的本地快取中。")
+    except Exception as e:
+        # 處理其他可能的錯誤，例如網路問題或權限問題
+        print("not_exists")
+        log.error(f"檢查模型 '{model_size}' 時發生未預期的錯誤: {e}", exc_info=True)
 
 def download_model(model_size: str):
     """下載模型並回報進度"""

@@ -26,8 +26,21 @@
           <input type="number" id="beam-size-input" v-model.number="beamSize" min="1" max="10" style="width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #ccc; box-sizing: border-box;">
           <small style="font-size: 0.8em; color: #666;">建議值為 5。較大的值可能更準確但較慢。</small>
         </div>
-        <button id="confirm-settings-btn" @click="confirmSettings">✓ 確認設定</button>
-        <!-- TODO: 模型下載進度條邏輯 -->
+        <button
+          id="confirm-settings-btn"
+          @click="confirmSettings"
+          :disabled="modelDownloadStatus.status === 'downloading' || modelDownloadStatus.status === 'starting'"
+        >
+          {{ (modelDownloadStatus.status === 'downloading' || modelDownloadStatus.status === 'starting') ? '下載中...' : '✓ 確認設定' }}
+        </button>
+        <!-- JULES'S FIX: 模型下載進度條邏輯 -->
+        <div v-if="modelDownloadStatus.status !== 'idle'" class="progress-container" style="margin-top: 10px;">
+          <div
+            class="progress-bar"
+            :style="{ width: modelDownloadStatus.progress + '%', backgroundColor: modelDownloadStatus.status === 'failed' ? '#dc3545' : '' }"
+          ></div>
+          <span class="progress-text">{{ modelDownloadStatus.message }}</span>
+        </div>
       </div>
       <div class="card flex-col">
         <h2>📤 步驟 2: 上傳檔案</h2>
@@ -70,11 +83,14 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { useTasksStore } from '@/stores/tasks'
 import { logAction } from '@/utils/logging'
 
 const tasksStore = useTasksStore()
+
+// JULES'S FIX: 從 store 獲取模型下載狀態
+const modelDownloadStatus = computed(() => tasksStore.modelDownloadStatus)
 
 // --- 組件本地狀態 ---
 const model = ref('tiny')

@@ -666,8 +666,8 @@ async def validate_api_key(request: Request):
         raise HTTPException(status_code=500, detail=f"伺服器內部錯誤: {e}")
 
 
-@app.get("/api/youtube/models")
-async def get_youtube_models():
+@app.post("/api/youtube/models")
+async def get_youtube_models(request: Request):
     """獲取可用的 Gemini 模型列表。"""
     # 在模擬模式下，回傳一個固定的假列表
     if IS_MOCK_MODE:
@@ -679,14 +679,25 @@ async def get_youtube_models():
         }
 
     # 真實模式下，從 gemini_processor.py 獲取
-    # 注意：此端點現在依賴於一個有效的 GOOGLE_API_KEY 環境變數
     try:
-        if not os.environ.get("GOOGLE_API_KEY"):
-             raise HTTPException(status_code=401, detail="後端尚未設定有效的 Google API 金鑰。")
+        # 從請求主體中獲取 API 金鑰
+        payload = await request.json()
+        api_key = payload.get("api_key")
+
+        # 建立一個安全的環境變數副本，用於執行子程序
+        env = os.environ.copy()
+        if api_key:
+            env["GOOGLE_API_KEY"] = api_key
+
+        # 如果請求中或環境變數中都沒有金鑰，則回傳錯誤
+        if not env.get("GOOGLE_API_KEY"):
+            raise HTTPException(status_code=401, detail="請求中或環境變數中均未提供有效的 Google API 金鑰。")
 
         tool_script_path = ROOT_DIR / "src" / "tools" / "gemini_processor.py"
         cmd = [sys.executable, str(tool_script_path), "--command=list_models"]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True, encoding='utf-8')
+
+        # 將包含金鑰的環境變數傳遞給子程序
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, encoding='utf-8', env=env)
         models = json.loads(result.stdout)
         return {"models": models}
     except subprocess.CalledProcessError as e:
