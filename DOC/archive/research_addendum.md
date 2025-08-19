@@ -1,3 +1,11 @@
+---
+**文件封存通知 (Document Archival Notice)**
+
+**封存日期 (Archived on):** 2025-08-19T07:47:30Z
+**原因 (Reason):** 本文件中的研究已被 `DOC/ARCHITECTURE_RESEARCH.md` 中更新的 `Huey` + `SQLite` + `Circus` 架構決策所取代。內容僅供歷史參考。
+(The research in this document has been superseded by the updated `Huey` + `SQLite` + `Circus` architectural decision in `DOC/ARCHITECTURE_RESEARCH.md`. This content is for historical reference only.)
+---
+
 # 效能優化研究報告附錄：最終策略對決
 
 ## 1. 背景

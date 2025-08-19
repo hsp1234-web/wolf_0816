@@ -1,3 +1,11 @@
+---
+**文件封存通知 (Document Archival Notice)**
+
+**封存日期 (Archived on):** 2025-08-19T07:47:00Z
+**原因 (Reason):** 這是一份早期的開發計畫，已被 `plan.md` 和 `DOC/ARCHITECTURE_RESEARCH.md` 中更新的 `Huey` + `SQLite` + `Circus` 架構決策所取代。內容僅供歷史參考。
+(This is an early development plan that has been superseded by the updated `Huey` + `SQLite` + `Circus` architectural decision in `plan.md` and `DOC/ARCHITECTURE_RESEARCH.md`. This content is for historical reference only.)
+---
+
 好的，遵照您的指示。我們將完全按照您的決策來執行。以下是整合我們所有討論後，得到的一份清晰、統一的最終計畫。這將是我們接下來所有工作的指導方針。
 
 **核心設計原則：**
