@@ -56,10 +56,61 @@ def live_server():
 
         # 啟動 DB Manager
         db_manager_cmd = [sys.executable, str(ROOT_DIR / "src" / "db" / "manager.py")]
+        # 清理上一次執行可能遺留的檔案
+        port_file = ROOT_DIR / "src" / "db" / "db_manager.port"
+        ready_file = ROOT_DIR / "src" / "db" / "db_manager.ready"
+        if port_file.exists(): port_file.unlink()
+        if ready_file.exists(): ready_file.unlink()
+
         db_proc = subprocess.Popen(db_manager_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
         processes.append(db_proc)
         log.info(f"  - DB Manager (PID: {db_proc.pid}) 啟動中...")
-        time.sleep(3)
+
+        # --- JULES'S FIX (V2): 增加更穩健的等待機制 ---
+        # 1. 等待 port 檔案並讀取埠號
+        db_manager_port = None
+        start_wait_time = time.time()
+        while time.time() - start_wait_time < 20:
+            if port_file.exists() and port_file.read_text().strip():
+                try:
+                    db_manager_port = int(port_file.read_text().strip())
+                    log.info(f"✅ DB Manager 的埠號檔案已偵測到，埠號: {db_manager_port}")
+                    break
+                except (ValueError, IOError):
+                    pass # 檔案可能正在寫入中
+            time.sleep(0.2)
+
+        if not db_manager_port:
+            pytest.fail("DB Manager 未能在指定時間內建立有效的埠號檔案。")
+
+        # 2. 等待網路服務就緒
+        service_ready = False
+        start_wait_time = time.time()
+        while time.time() - start_wait_time < 20:
+            try:
+                with socket.create_connection(("127.0.0.1", db_manager_port), timeout=1):
+                    log.info(f"✅ DB Manager 的網路服務在埠號 {db_manager_port} 上已就緒。")
+                    service_ready = True
+                    break
+            except (ConnectionRefusedError, socket.timeout):
+                time.sleep(0.2)
+
+        if not service_ready:
+            pytest.fail(f"DB Manager 的網路服務未能在埠號 {db_manager_port} 上及時就緒。")
+
+        # 3. 等待就緒信號檔案
+        ready_file_appeared = False
+        start_wait_time = time.time()
+        while time.time() - start_wait_time < 20:
+            if ready_file.exists():
+                log.info("✅ DB Manager 的就緒信號檔案已偵測到。")
+                ready_file_appeared = True
+                break
+            time.sleep(0.2)
+
+        if not ready_file_appeared:
+            pytest.fail("DB Manager 未能在指定時間內建立就緒檔案。")
+        # --- 等待機制結束 ---
 
         # 啟動 API Server
         api_port = find_free_port()

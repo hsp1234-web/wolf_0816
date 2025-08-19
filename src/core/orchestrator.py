@@ -182,8 +182,8 @@ def main():
     parser.add_argument(
         "--mock",
         action="store_true",
-        default=True, # 將模擬模式設為預設值
-        help="如果設置，則 worker 將以模擬模式運行。預設為啟用。"
+        default=False, # JULES: 將預設值改為 False，以啟用真實模式
+        help="如果設置，則 worker 將以模擬模式運行。預設為停用。"
     )
     parser.add_argument(
         "--no-mock",
