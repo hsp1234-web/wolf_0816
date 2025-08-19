@@ -1,6 +1,6 @@
 # 系統架構現況分析
 
-## 系統架構圖
+## 系統架構圖 (v5 - 多工作者架構)
 
 ```mermaid
 graph TD
@@ -8,33 +8,42 @@ graph TD
         A[Vue.js 前端應用<br>(vue-app)]
     end
 
-    subgraph "後端服務 (Backend Services)"
+    subgraph "核心服務 (Core Services)"
         B[FastAPI 伺服器<br>(src/api/api_server.py)]
-        C[非同步任務工作器<br>(src/tasks/worker.py)]
         D[資料庫管理器<br>(src/db/manager.py)]
         E[SQLite 資料庫<br>(database.db)]
     end
 
-    subgraph "開發與測試 (Dev & Test)"
-        F[Pytest/Playwright 測試套件<br>(e2e_tests)]
-        G[測試啟動器<br>(runner/localtest.py)]
+    subgraph "獨立工作者 (Standalone Workers)"
+        W_YT[YouTube 工作者<br>run_youtube_worker.py]
+        W_TS[轉錄工作者<br>run_transcription_worker.py]
+        W_AI[AI 報告工作者<br>run_ai_report_worker.py]
     end
 
-    A -- "REST API (HTTP)<br>WebSocket (WSS)" --> B
-    B -- "任務排程/狀態查詢" --> D
-    C -- "讀取待辦任務/寫入結果" --> D
-    D -- "讀/寫" --> E
-    B -- "提供靜態檔案" --> A
+    subgraph "開發與測試 (Dev & Test)"
+        F[Pytest/Playwright 測試套件<br>(e2e_tests)]
+        G[開發啟動器<br>(runner/localrun_new.py)]
+    end
 
-    G -- "執行" --> F
-    F -- "啟動/管理" --> B
-    F -- "啟動/管理" --> D
-    F -- "與前端互動" --> A
+    A -- "REST API / WebSocket" --> B
+    B -- "任務排程/狀態查詢" --> D
+    D -- "讀/寫" --> E
+
+    %% Workers interact with the DB
+    W_YT -- "讀/寫任務" --> D
+    W_TS -- "讀/寫任務" --> D
+    W_AI -- "讀/寫任務" --> D
+
+    G -- "啟動/管理" --> B
+    G -- "啟動/管理" --> D
+    G -- "啟動/管理" --> W_YT
+    G -- "啟動/管理" --> W_TS
+    G -- "啟動/管理" --> W_AI
 ```
 
 **文件更新日期：** 2025年8月19日
 **作者:** Jules (AI Software Engineer)
-**狀態:** 現行架構描述 (v4) - 已新增系統架構圖
+**狀態:** 現行架構描述 (v5) - 更新為多工作者架構
 
 ---
 
@@ -45,9 +54,9 @@ graph TD
 目前的系統主要由三個核心部分組成：
 1.  **Vue.js 前端**：一個位於 `vue-app/` 的現代化單頁應用程式 (SPA)，為使用者提供互動介面。
 2.  **FastAPI 後端**：一個位於 `src/` 的 Python 後端，負責處理業務邏輯、任務管理以及與資料庫的通訊。
-3.  **Pytest/Playwright 測試套件**：一個位於 `e2e_tests/` 的端對端測試框架，透過自動化的伺服器生命週期管理，確保了程式碼的品質與穩定性。
+3.  **多工作者系統**：一系列位於根目錄的獨立 `run_*.py` 程序，負責執行如影片下載、音訊轉錄等耗時的背景任務。
 
-本文件將詳細闡述這三個部分的設計與互動方式。
+本文件將詳細闡述這幾個部分的設計與互動方式。
 
 ---
 
@@ -62,65 +71,82 @@ graph TD
     - **狀態管理**: Pinia
     - **HTTP 客戶端**: Axios
 
-- **狀態管理 (`stores/tasks.js`)**:
-    - 所有與任務相關的客戶端狀態都由 Pinia 統一管理。
-    - 它負責從後端獲取任務列表、透過 WebSocket 接收即時更新，並將這些狀態提供給各個 Vue 元件使用。
-
 - **與後端通訊**:
-    - **REST API**: 前端透過 Axios 向後端發送 HTTP 請求，以執行獲取任務列表、建立新任務等操作。
-    - **WebSocket**: 為了實現即時更新，前端會建立一個到後端 `/api/ws` 的 WebSocket 連線，用於接收任務狀態（如：進行中、已完成、失敗）的即時變更通知。
+    - **REST API**: 用於執行獲取任務列表、建立新任務等操作。
+    - **WebSocket**: 用於接收任務狀態（如：進行中、已完成、失敗）的即時變更通知。
 
 - **建置流程**:
     - 開發者需在 `vue-app/` 目錄下執行 `bun install` 和 `bun run build`。
-    - 建置後的靜態檔案（HTML, CSS, JS）會被輸出到 `vue-app/dist/` 目錄。
-    - 後端 FastAPI 伺服器被設定為直接從該目錄提供前端應用服務，從而實現了單一服務的部署模式。
+    - 建置後的靜態檔案會被輸出到 `vue-app/dist/` 目錄，並由後端 FastAPI 伺服器直接提供服務。
 
 ---
 
 ## 3. 後端架構 (Backend Architecture)
 
-後端是一個基於 **FastAPI** 的 Python 應用，負責所有核心業務邏輯。
+後端由**核心服務**與**獨立工作者**兩部分組成，共同構成一個完整的系統。
 
-- **服務入口 (`src/api/api_server.py`)**:
-    - 這是後端的主應用檔案，使用 `uvicorn` 運行。
-    - 它定義了所有的 REST API 端點和 WebSocket 連線處理邏輯。
-    - 同時，它也負責提供建置好的 Vue.js 前端靜態檔案。
+- **核心服務**:
+    - **服務入口 (`src/api/api_server.py`)**: 後端主應用，定義了所有 REST API 端點和 WebSocket 邏輯。在 `WORKER_MODE=new` 環境變數下，它負責將任務分派到佇列，而非親自執行。
+    - **資料庫管理器 (`src/db/manager.py`)**: 一個獨立的伺服器行程，作為資料庫的唯一寫入點，避免了多程序寫入 SQLite 時的鎖定問題。
 
-- **資料庫層 (`src/db/`)**:
-    - 資料庫的操作被抽象化，由兩個核心元件處理：
-        - `manager.py`: 一個獨立的伺服器行程，作為資料庫的唯一寫入點，避免了多程序寫入 SQLite 時的鎖定問題。
-        - `client.py`: 一個客戶端，供 `api_server.py` 和 `worker.py` 使用，透過 socket 與 `manager.py` 通訊，以安全地執行資料庫操作。
-
-- **非同步任務 (`src/tasks/worker.py`)**:
-    - 這是一個獨立的背景 Worker 程序。
-    - 它會定期從資料庫中拉取待處理的任務（例如：音訊轉錄、影片下載），執行耗時的操作，並將結果寫回資料庫。
-    - 在測試環境中，此 Worker 的功能會被模擬，以避免安裝大型依賴。
+- **非同步任務 (獨立工作者)**:
+    - 專案的背景任務處理已演進為**多工作者模式**。
+    - 這些工作者是獨立的 Python 程序 (如 `run_youtube_worker.py`, `run_transcription_worker.py` 等)。
+    - 它們會各自監聽資料庫中的任務佇列，領取特定類型的任務（如 `youtube_download`, `transcription`），執行後將結果寫回資料庫。
+    - 這種架構提高了系統的模組化程度和可擴展性。
+    - 舊的整合式 Worker (`src/tasks/worker.py`) 已被棄用，僅在部分舊的測試腳本中可能被呼叫。
 
 ---
 
-## 4. 測試架構 (Testing Architecture)
+## 4. 測試與開發環境
 
-本專案的品質由一個位於 `e2e_tests/` 的端對端測試套件來保證。
+### 4.1. 測試架構 (Testing Architecture)
 
-- **核心技術棧**:
-    - **測試框架**: Pytest
-    - **瀏覽器自動化**: Playwright
-    - **整合**: `pytest-playwright`
+本專案的品質由位於 `e2e_tests/` 的端對端測試套件保證，其核心技術棧為 Pytest 與 Playwright。
 
-- **伺服器生命週期管理 (`conftest.py`)**:
-    - 這是測試架構的**核心**。`conftest.py` 中定義了一個名為 `live_server` 的 `session` 級別 fixture。
-    - **自動化流程**: 當執行測試時，此 fixture 會自動：
-        1.  建置 Vue.js 前端。
-        2.  啟動 `db_manager.py` 和 `api_server.py` 服務。
-        3.  等待伺服器健康檢查通過。
-        4.  將可用的伺服器 URL 提供給測試案例。
-        5.  在所有測試結束後，自動、乾淨地關閉所有伺服器行程。
-    - **優點**: 這種模式完全移除了手動啟動/關閉伺服器的需求，並透過動態尋找可用埠號和等待健康檢查，極大地提升了測試的穩定性和可靠性。
+- **伺服器生命週期管理 (`conftest.py`)**: 測試框架的核心，負責在執行測試時，自動啟動一個**簡化的**後端服務（通常只包含 API 伺服器和資料庫管理器），並在測試結束後自動關閉。
+- **測試執行 (`runner/localtest.py`)**: 執行完整自動化測試套件的建議入口。
 
-- **資料庫 Fixture (`db_client_fixture`)**:
-    - `conftest.py` 同時也提供了一個 `db_client_fixture`。
-    - 它依賴於 `live_server`，確保在伺服器完全啟動後，才為測試案例提供一個可用的資料庫客戶端實例，從而避免了競爭條件。
+### 4.2. 開發環境啟動流程 (`runner/localrun_new.py`)
 
-- **測試執行 (`runner/localtest.py`)**:
-    - 為了方便執行，專案提供了一個入口腳本 `runner/localtest.py`。
-    - 此腳本封裝了執行 `pytest` 的所有必要步驟，為開發者提供了一個單一的指令來運行完整的測試套件。
+**本節由 AI (Jules) 於 2025年8月19日 補充**
+
+主要的開發環境是透過 `runner/localrun_new.py` 腳本啟動的，它代表了應用程式最完整、最新的多工作者架構。
+
+- **分段式啟動與網頁可用時機**:
+    1.  **臨時狀態頁**：執行腳本後，會立即提供一個網址，但初期只會顯示一個「系統啟動中」的頁面。
+    2.  **背景準備**：腳本會在背景執行安裝依賴、建置前端等耗時操作。
+    3.  **服務啟動**：準備工作完成後，才會依序啟動資料庫、API 伺服器，以及所有的獨立工作者。
+    4.  **健康檢查**：所有服務啟動後，啟動器會持續對 API 伺服器進行健康檢查。
+
+- **結論**: **網頁達到「完整可用」狀態的準確時機是**：當執行 `localrun_new.py` 的終端機視窗中，顯示 `✅ 後端健康檢查成功。` 或 `✅✅✅ 伺服器已成功啟動！ ✅✅✅` 訊息時。在此之前，即使前端介面已顯示，後端功能也尚未就緒。
+
+---
+
+## 5. 主要依賴套件與資源分析
+
+**本節由 AI (Jules) 於 2025年8月19日 新增**
+
+專案的 `requirements-worker.txt` 中定義了幾個資源消耗較大的關鍵套件，主要由獨立工作者使用。
+
+### 5.1. 重量級機器學習核心
+
+-   **`torch` (PyTorch)**:
+    -   **用途**: 深度學習框架，是 `faster-whisper` 的基礎。
+    -   **大小**: 非常龐大，安裝檔大小約在 **500MB 至 2GB** 之間。
+    -   **資源**: 執行時需要 **數 GB 的記憶體 (RAM)** 並會大量使用 **CPU 或 GPU**。
+
+-   **`faster-whisper`**:
+    -   **用途**: 高效能的語音轉文字模型。
+    -   **大小**: 需要下載預訓練模型，大小可從數十 MB 至 **超過 1GB**。
+    -   **資源**: 執行時需要約 **1GB 至 1.7GB 的記憶體**，並會顯著佔用 CPU 資源。
+
+### 5.2. 通用工具與客戶端
+
+-   **`yt-dlp`**:
+    -   **用途**: 下載 YouTube 影片。
+    -   **資源**: 主要消耗**網路頻寬**與**磁碟 I/O**。
+
+-   **其他工具**: `pydub` (音訊處理), `google-generativeai` (API 客戶端), `opencc-python-reimplemented` (繁簡轉換), `WeasyPrint` (HTML 轉 PDF) 等，這些工具相對輕量，資源佔用較低。
+
+**總結**: `run_transcription_worker.py` 和 `run_ai_report_worker.py` 是系統中資源需求最高的程序。
