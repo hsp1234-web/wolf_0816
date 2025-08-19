@@ -105,7 +105,11 @@ def download_youtube_video(youtube_url: str):
 
     ydl_opts = {
         'format': 'bestaudio/best',
-        'outtmpl': str(output_dir / '%(title)s - %(id)s.%(ext)s'),
+        # JULES'S FIX (2025-08-18): 檔名淨化
+        # 原始的 '%(title)s' 模板會因包含特殊字元而導致後續的檔案處理工具失敗。
+        # 改為僅使用影片 ID 作為檔名，這是一個檔案系統安全的唯一識別碼。
+        # 完整的標題資訊仍然會被儲存在資料庫中。
+        'outtmpl': str(output_dir / '%(id)s.%(ext)s'),
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
