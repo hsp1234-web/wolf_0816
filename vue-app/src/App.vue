@@ -1,5 +1,11 @@
 <template>
   <div id="app" class="container">
+    <!-- 安裝狀態覆蓋層 -->
+    <div v-if="installationStatus.inProgress" class="installation-overlay">
+      <div class="spinner"></div>
+      <p>{{ installationStatus.message }}</p>
+    </div>
+
     <!-- 全域通知組件 -->
     <NotificationHost />
 
@@ -12,12 +18,13 @@
     <Dashboard />
 
     <!-- 功能分頁導覽 -->
-    <div class="card">
+    <div class="card" :class="{ 'disabled-content': installationStatus.inProgress }">
       <div class="tab-container">
         <button
           class="tab-button"
           :class="{ active: activeTab === 'transcribe' }"
           @click="setActiveTab('transcribe')"
+          :disabled="installationStatus.inProgress"
         >
           📁 本機檔案轉錄
           <span :class="getWorkerStatusInfo('transcription').class" class="status-indicator">
@@ -28,6 +35,7 @@
           class="tab-button"
           :class="{ active: activeTab === 'downloader' }"
           @click="setActiveTab('downloader')"
+          :disabled="installationStatus.inProgress"
         >
           📥 媒體下載器
           <span :class="getWorkerStatusInfo('youtube').class" class="status-indicator">
@@ -38,6 +46,7 @@
           class="tab-button"
           :class="{ active: activeTab === 'youtube' }"
           @click="setActiveTab('youtube')"
+          :disabled="installationStatus.inProgress"
         >
           ▶️ YouTube 轉報告
           <span :class="getWorkerStatusInfo('youtube').class" class="status-indicator">
@@ -48,7 +57,7 @@
     </div>
 
     <!-- 分頁內容 -->
-    <main>
+    <main :class="{ 'disabled-content': installationStatus.inProgress }">
       <!-- 本機檔案轉錄分頁 -->
       <div v-show="activeTab === 'transcribe'">
         <TaskUploader />
@@ -95,11 +104,15 @@ const tasksStore = useTasksStore()
 // --- 狀態管理 ---
 const activeTab = ref('transcribe')
 const workerStatuses = computed(() => tasksStore.workerStatuses)
+const installationStatus = computed(() => tasksStore.installationStatus)
 
 // --- 方法 ---
 
 // 根據工作者狀態回傳顯示資訊
 const getWorkerStatusInfo = (workerName) => {
+  if (installationStatus.value.inProgress) {
+      return { text: '準備中', class: 'status-yellow' };
+  }
   const status = workerStatuses.value[workerName]?.status || 'NOT_STARTED';
   switch (status) {
     case 'READY':
@@ -115,6 +128,7 @@ const getWorkerStatusInfo = (workerName) => {
 
 // 設定當前頁籤，並按需啟動工作者
 const setActiveTab = (tabName) => {
+  if (installationStatus.value.inProgress) return;
   activeTab.value = tabName
   logAction('click-tab', tabName)
 
@@ -136,12 +150,8 @@ const setActiveTab = (tabName) => {
 
 // --- 生命週期鉤子 ---
 onMounted(() => {
-  // 從後端獲取任務歷史紀錄
-  tasksStore.fetchTasks()
-  // 獲取工作者初始狀態
-  tasksStore.fetchWorkerStatuses()
-  // 建立 WebSocket 連線
-  tasksStore.connectWebSocket()
+  // 使用新的兩階段啟動方法
+  tasksStore.initializeSystem();
 })
 </script>
 

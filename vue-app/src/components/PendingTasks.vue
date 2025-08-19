@@ -22,9 +22,14 @@
             ></div>
           </div>
         </div>
-        <span class="task-status" :class="`status-${task.status}`">
-          {{ task.message || task.status }}
-        </span>
+        <div class="task-status-container">
+          <span v-if="task.elapsed_time > 0" class="task-timer">
+            {{ formatTime(task.elapsed_time) }}
+          </span>
+          <span class="task-status" :class="`status-${task.status}`">
+            {{ task.message || task.status }}
+          </span>
+        </div>
       </div>
     </div>
   </div>
@@ -39,6 +44,16 @@ const tasksStore = useTasksStore()
 
 // 建立一個計算屬性來響應式地獲取進行中的任務
 const pendingTasks = computed(() => tasksStore.pendingTasks)
+
+// 格式化時間的輔助函數
+const formatTime = (seconds) => {
+  if (isNaN(seconds) || seconds < 0) {
+    return '00:00'
+  }
+  const mins = Math.floor(seconds / 60)
+  const secs = Math.floor(seconds % 60)
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+}
 </script>
 
 <style scoped>

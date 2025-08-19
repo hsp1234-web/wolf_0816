@@ -62,6 +62,8 @@ import re
 import json
 import queue
 from pathlib import Path
+import tarfile
+import sysconfig
 
 try:
     import requests
@@ -330,42 +332,16 @@ class DisplayManager:
 class ReusableTCPServer(socketserver.TCPServer):
     allow_reuse_address = True
 
-class TempServerManager:
-    """臨時伺服器管理器：啟動臨時 HTTP 伺服器以佔用埠號並顯示狀態。"""
-    def __init__(self, port, log_manager, log_queue, project_root="."):
-        self.port = port; self._log_manager = log_manager; self.log_queue = log_queue
-        self.project_root = Path(project_root); self.server = None
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._stop_event = threading.Event()
-
-    def _run(self):
-        try:
-            StatusServerRequestHandler.log_queue = self.log_queue
-            StatusServerRequestHandler.project_root = self.project_root
-            with ReusableTCPServer(("", self.port), StatusServerRequestHandler) as httpd:
-                self.server = httpd
-                self._log_manager.log("DEBUG", f"狀態伺服器已在埠號 {self.port} 上綁定...")
-                server_thread = threading.Thread(target=httpd.serve_forever); server_thread.daemon = True; server_thread.start()
-                self._stop_event.wait()
-        except Exception as e:
-            self._log_manager.log("CRITICAL", f"!!! 狀態伺服器主執行緒發生致命錯誤: {e}")
-        finally:
-            if self.server: self.server.shutdown(); self.server.server_close()
-            self._log_manager.log("SUCCESS", "狀態顯示伺服器已徹底關閉。")
-
-    def start(self): self._thread.start()
-    def stop(self):
-        self._log_manager.log("INFO", "正在關閉狀態顯示伺服器...")
-        if self.log_queue: self.log_queue.put(None)
-        self._stop_event.set(); self._thread.join(timeout=5)
-
 class BackgroundWorker:
     """背景工作者：在獨立執行緒中執行所有耗時的安裝與啟動任務。"""
-    def __init__(self, log_manager, stats_dict, project_path_str, port, temp_server_manager, log_queue):
-        self._log_manager = log_manager; self._stats = stats_dict
-        self.project_path = Path(project_path_str); self.port = port
-        self.temp_server_manager = temp_server_manager; self.log_queue = log_queue
-        self.server_process = None; self._stop_event = threading.Event()
+    def __init__(self, log_manager, stats_dict, project_path_str, port, mini_server_process):
+        self._log_manager = log_manager
+        self._stats = stats_dict
+        self.project_path = Path(project_path_str)
+        self.port = port
+        self.mini_server_process = mini_server_process
+        self.main_server_process = None
+        self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
     def _stream_process_output(self, process):
@@ -386,6 +362,9 @@ class BackgroundWorker:
         self._stats['status'] = f"安裝依賴 ({requirements_file})..."
         try:
             subprocess.run([sys.executable, "-m", "pip", "install", "-q", "uv"], check=True)
+            # JULES'S FIX: To package dependencies, we must install them to a specific location.
+            # However, for Colab, the default site-packages is what we want to cache.
+            # So, the original install logic is correct for the "slow path".
             command = [sys.executable, "-m", "uv", "pip", "install", "-r", str(req_path)]
             process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', bufsize=1)
             return_code = self._stream_process_output(process)
@@ -404,89 +383,192 @@ class BackgroundWorker:
             self.log_queue.put({"log": f"\\033[31m[CRITICAL] {error_msg}\\033[0m"})
             return False
 
+    def _extract_dependencies(self, archive_path: Path) -> bool:
+        """從 .tar.gz 檔案中解壓縮依賴。"""
+        self._log_manager.log("INFO", f"正在從 {archive_path.name} 解壓縮...")
+        self._stats['status'] = "解壓縮依賴..."
+        try:
+            # In Colab, we extract to the root, as paths in tar are absolute or relative to specific points
+            extract_target = Path("/")
+            self._log_manager.log(f"解壓縮目標路徑: {extract_target}")
+            with tarfile.open(archive_path, "r:gz") as tar:
+                tar.extractall(path=extract_target)
+            self._log_manager.log("SUCCESS", "✅ 依賴解壓縮完成。")
+            return True
+        except Exception as e:
+            self._log_manager.log("CRITICAL", f"解壓縮依賴時發生錯誤: {e}", exc_info=True)
+            return False
+
+    def _create_dependency_cache(self, archive_path: Path) -> bool:
+        """將已安裝的依賴打包成 .tar.gz 快取檔。"""
+        self._log_manager.log("INFO", "偵測到首次安裝，正在建立依賴快取...")
+        self._stats['status'] = "建立依賴快取..."
+        try:
+            # In Colab, packages are typically installed in /usr/local/lib/pythonX.Y/site-packages
+            site_packages_path = next(p for p in sys.path if 'site-packages' in p and p.startswith('/usr/local/lib'))
+            site_packages = Path(site_packages_path)
+
+            # Also include frontend dependencies, which are in the project folder
+            node_modules = self.project_path / "vue-app" / "node_modules"
+
+            paths_to_cache = []
+            if site_packages.exists():
+                paths_to_cache.append(site_packages)
+                self._log_manager.log(f"找到 site-packages 目錄: {site_packages}")
+            else:
+                self._log_manager.log("WARN", f"找不到 site-packages 目錄: {site_packages}")
+
+            if node_modules.exists():
+                paths_to_cache.append(node_modules)
+                self._log_manager.log(f"找到 node_modules 目錄: {node_modules}")
+            else:
+                self._log_manager.log("WARN", f"找不到 node_modules 目錄: {node_modules}")
+
+            if not paths_to_cache:
+                self._log_manager.log("ERROR", "找不到任何可快取的依賴目錄。")
+                return False
+
+            self._log_manager.log(f"正在建立快取檔案: {archive_path}")
+            with tarfile.open(archive_path, "w:gz") as tar:
+                for path in paths_to_cache:
+                    # arcname should be the path as it should be on extraction
+                    # For site-packages, it's an absolute path.
+                    # For node_modules, it's relative to the project dir.
+                    arcname = path.as_posix()
+                    self._log_manager.log(f"正在將 {path} (arcname: {arcname}) 加入快取...")
+                    tar.add(path, arcname=arcname)
+
+            self._log_manager.log("SUCCESS", f"✅ 成功建立依賴快取檔案: {archive_path.name}")
+            return True
+        except Exception as e:
+            self._log_manager.log("CRITICAL", f"建立依賴快取時發生錯誤: {e}", exc_info=True)
+            return False
+
+    def _build_frontend(self) -> bool:
+        """建置 Vue.js 前端應用。"""
+        self._log_manager.log("INFO", "正在建置前端應用...")
+        self._stats['status'] = "建置前端..."
+        vue_app_dir = self.project_path / "vue-app"
+        try:
+            # We assume bun is installed or part of the environment
+            log_msg = "使用 bun install 安裝前端依賴..."
+            self._log_manager.log("INFO", log_msg)
+            self.log_queue.put({"log": f"\\033[1;36m> {log_msg}\\033[0m"})
+            # In cache mode, node_modules exists, but bun install is safe to run
+            subprocess.run(["bun", "install"], cwd=vue_app_dir, check=True, capture_output=True, text=True, encoding='utf-8')
+
+            log_msg = "使用 bun run build 建置前端..."
+            self._log_manager.log("INFO", log_msg)
+            self.log_queue.put({"log": f"\\033[1;36m> {log_msg}\\033[0m"})
+            subprocess.run(["bun", "run", "build"], cwd=vue_app_dir, check=True, capture_output=True, text=True, encoding='utf-8')
+
+            self._log_manager.log("SUCCESS", "✅ 前端應用建置成功。")
+            return True
+        except FileNotFoundError:
+            self._log_manager.log("CRITICAL", "找不到 'bun' 指令。請確保 Bun.js 已安裝。")
+            return False
+        except subprocess.CalledProcessError as e:
+            self._log_manager.log("CRITICAL", f"前端建置失敗: {e.stderr}")
+            return False
+        except Exception as e:
+            self._log_manager.log("CRITICAL", f"前端建置時發生未預期錯誤: {e}", exc_info=True)
+            return False
+
+    def _update_status_file(self, status_message: str):
+        """Helper to write status updates to the temp file for the mini_server."""
+        status_file = self.project_path / "temp_status.json"
+        try:
+            with open(status_file, 'w', encoding='utf-8') as f:
+                json.dump({"message": status_message}, f)
+        except IOError as e:
+            self._log_manager.log("WARN", f"無法寫入狀態檔案: {e}")
+
     def _run(self):
         try:
-            if not self._install_dependencies("requirements-server.txt"): return
-            # 為實現完整模式，恢復 requirements-worker.txt 的安裝
-            if not self._install_dependencies("requirements-worker.txt"): return
-            self.temp_server_manager.stop()
-            time.sleep(1)
+            self._update_status_file("正在準備環境...")
+
+            cache_archive = self.project_path.parent / "dependencies.tar.gz"
+
+            if cache_archive.is_file() and not FORCE_REPO_REFRESH:
+                self._log_manager.log("INFO", "✅ 發現依賴快取，從快取啟動...")
+                self._update_status_file("正在解壓縮依賴...")
+                if not self._extract_dependencies(cache_archive):
+                    raise RuntimeError("從快取解壓縮依賴失敗。")
+            else:
+                self._log_manager.log("INFO", "未發現依賴快取或已啟用強制刷新，執行完整安裝...")
+                self._update_status_file("正在安裝前端依賴...")
+                if not self._build_frontend():
+                    raise RuntimeError("前端依賴準備失敗。")
+
+                self._update_status_file("正在安裝後端伺服器依賴...")
+                if not self._install_dependencies("requirements-server.txt"):
+                    raise RuntimeError("伺服器依賴安裝失敗。")
+
+                self._update_status_file("正在安裝後端工作者依賴...")
+                if not self._install_dependencies("requirements-worker.txt"):
+                    raise RuntimeError("工作者依賴安裝失敗。")
+
+                self._update_status_file("正在建立依賴快取...")
+                if not self._create_dependency_cache(cache_archive):
+                    self._log_manager.log("WARN", "建立依賴快取失敗，但將繼續。")
+
+            self._update_status_file("準備啟動主應用程式...")
+            self._log_manager.log("INFO", "正在終止臨時伺服器...")
+            self.mini_server_process.terminate()
+            try:
+                self.mini_server_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.mini_server_process.kill()
+
             self._log_manager.log("INFO", "🚀 所有依賴已備妥，正在啟動核心協調器...")
             self._stats['status'] = "啟動主程式..."
+
             orchestrator_script_path = self.project_path / "src" / "core" / "orchestrator.py"
-            if not orchestrator_script_path.is_file():
-                self._log_manager.log("CRITICAL", f"核心協調器未找到: {orchestrator_script_path}")
-                return
-            port_file_path = self.project_path / "src" / "db" / "db_manager.port"
-            if port_file_path.exists():
-                try: port_file_path.unlink()
-                except Exception as e: self._log_manager.log("ERROR", f"清理舊埠號檔案失敗: {e}")
-            # 核心修改：移除 API_MODE='mock'，以允許 Colabpro.py 執行真實依賴
             launch_command = [sys.executable, str(orchestrator_script_path), "--port", str(self.port)]
             process_env = os.environ.copy()
-            # process_env['API_MODE'] = 'mock' # 已移除，以啟用完整模式
-            self._log_manager.log("INFO", "🚀 正在以完整模式啟動協調器...")
-            try:
-                key_from_secret = userdata.get('GOOGLE_API_KEY')
-                if key_from_secret:
-                    process_env['GOOGLE_API_KEY'] = key_from_secret
-                    self._log_manager.log("SUCCESS", "✅ 成功從 Colab Secret 讀取 GOOGLE_API_KEY。")
-            except Exception:
-                self._log_manager.log("WARN", "⚠️ 無法從 Colab Secret 讀取金鑰，將嘗試從 config.json 讀取。")
-            src_path_str = str((self.project_path / "src").resolve())
-            process_env['PYTHONPATH'] = f"{src_path_str}{os.pathsep}{process_env.get('PYTHONPATH', '')}"
-            self.server_process = subprocess.Popen(launch_command, cwd=str(self.project_path), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', preexec_fn=os.setsid, env=process_env)
-            self._log_manager.log("INFO", f"協調器子進程已啟動 (PID: {self.server_process.pid})，監聽日誌...")
+            process_env['PYTHONPATH'] = f"{str(self.project_path / 'src')}{os.pathsep}{process_env.get('PYTHONPATH', '')}"
+
+            self.main_server_process = subprocess.Popen(launch_command, cwd=str(self.project_path), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', preexec_fn=os.setsid, env=process_env)
+
             uvicorn_ready_pattern = re.compile(r"Uvicorn running on")
-            for line in iter(self.server_process.stdout.readline, ''):
+            for line in iter(self.main_server_process.stdout.readline, ''):
                 if self._stop_event.is_set(): break
                 self._log_manager.log("DEBUG", line.strip())
                 if uvicorn_ready_pattern.search(line):
                     self._stats['status'] = "✅ 伺服器運行中"
                     self._log_manager.log("SUCCESS", "✅ 主應用程式已成功接管埠號並運行！")
-                    self.log_queue.put({"status": "ready"})
-            self.server_process.wait()
+
+            self.main_server_process.wait()
             if self._stats['status'] != "✅ 伺服器運行中":
-                self._stats['status'] = "❌ 伺服器啟動失敗"
-                self._log_manager.log("CRITICAL", "協調器進程在就緒前已終止。")
+                raise RuntimeError("主伺服器未能成功啟動。")
+
         except Exception as e:
-            self._stats['status'] = "❌ 發生致命錯誤"; self._log_manager.log("CRITICAL", f"背景工作者執行緒出錯: {e}")
+            self._stats['status'] = f"❌ 發生致命錯誤: {e}"
+            self._log_manager.log("CRITICAL", f"背景工作者執行緒出錯: {e}", exc_info=True)
+            self._update_status_file(f"錯誤: {e}")
         finally:
-            if self._stats['status'] != "✅ 伺服器運行中": self._stats['status'] = "⏹️ 已停止"
+            if self._stats['status'] != "✅ 伺服器運行中":
+                self._stats['status'] = "⏹️ 已停止"
 
     def start(self): self._thread.start()
     def stop(self):
         self._stop_event.set()
-        if self.server_process and self.server_process.poll() is None:
-            self._log_manager.log("INFO", "正在終止伺服器進程...")
+        if self.main_server_process and self.main_server_process.poll() is None:
+            self._log_manager.log("INFO", "正在終止主伺服器進程...")
             try:
-                os.killpg(os.getpgid(self.server_process.pid), subprocess.signal.SIGTERM)
-                self.server_process.wait(timeout=5)
-            except (ProcessLookupError, subprocess.TimeoutExpired):
-                try: os.killpg(os.getpgid(self.server_process.pid), subprocess.signal.SIGKILL)
-                except ProcessLookupError: pass
+                os.killpg(os.getpgid(self.main_server_process.pid), subprocess.signal.SIGTERM)
+                self.main_server_process.wait(timeout=5)
+            except (ProcessLookupError, subprocess.TimeoutExpired, AttributeError):
+                try:
+                    os.killpg(os.getpgid(self.main_server_process.pid), subprocess.signal.SIGKILL)
+                except Exception: pass
         self._thread.join(timeout=2)
 
-# SECTION 2: 核心功能函式
+
+# SECTION 2: 核心功能函式 (部分保留)
 def find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("", 0)); return s.getsockname()[1]
-
-def archive_reports(log_manager, start_time, end_time, status):
-    print("\n\n" + "="*60 + "\n--- 任務結束，開始執行自動歸檔 ---\n" + "="*60)
-    try:
-        root_folder = Path(LOG_ARCHIVE_ROOT_FOLDER); root_folder.mkdir(exist_ok=True)
-        ts_folder_name = start_time.strftime('%Y-%m-%dT%H-%M-%S%z')
-        report_dir = root_folder / ts_folder_name; report_dir.mkdir(exist_ok=True)
-        log_history = log_manager.get_full_history()
-        detailed_log_content = f"# 詳細日誌\n\n```\n" + "\n".join([f"[{log['timestamp'].isoformat()}] [{log['level']}] {log['message']}" for log in log_history]) + "\n```"
-        (report_dir / "詳細日誌.md").write_text(detailed_log_content, encoding='utf-8')
-        duration = end_time - start_time
-        perf_report_content = f"# 效能報告\n\n- **任務狀態**: {status}\n- **開始時間**: `{start_time.isoformat()}`\n- **結束時間**: `{end_time.isoformat()}`\n- **總耗時**: `{str(duration)}`\n"
-        (report_dir / "效能報告.md").write_text(perf_report_content.strip(), encoding='utf-8')
-        (report_dir / "綜合報告.md").write_text(f"# 綜合報告\n\n{perf_report_content}\n{detailed_log_content}", encoding='utf-8')
-        print(f"✅ 報告已成功歸檔至: {report_dir}")
-    except Exception as e: print(f"❌ 歸檔報告時發生錯誤: {e}")
 
 def install_system_deps():
     print("檢查並安裝系統級依賴 FFmpeg...")
@@ -501,65 +583,16 @@ def install_system_deps():
     except Exception as e:
         print(f"❌ 安裝 FFmpeg 時發生錯誤: {e}")
 
-def create_log_viewer_html(log_manager):
-    """產生一個包含頂部和底部複製按鈕的可收合日誌檢視器 HTML。"""
-    try:
-        latest_logs = log_manager.get_latest_logs(LOG_COPY_MAX_LINES)
-        log_strings_for_html = []
-        for log in latest_logs:
-            log_line = f"[{log['timestamp'].isoformat()}] [{log['level']}] {log['message']}"
-            log_strings_for_html.append(log_line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;'))
-
-        logs_for_html_display = "\n".join(log_strings_for_html)
-        num_logs = len(latest_logs)
-        unique_log_id = f"log-area-{int(time.time() * 1000)}"
-
-        # 為按鈕定義 onclick JavaScript 邏輯
-        onclick_js = f'''(async () => {{
-            try {{
-                const textToCopy = document.getElementById("{unique_log_id}").innerText;
-                await navigator.clipboard.writeText(textToCopy);
-                this.innerText="✅ 已複製!";
-            }} catch (err) {{
-                this.innerText="❌ 複製失敗";
-            }} finally {{
-                setTimeout(() => {{ this.innerText="📋 複製這 {num_logs} 條日誌"; }}, 2000);
-            }}
-        }})()'''.replace("\n", " ")
-
-        # 定義按鈕 HTML 模板
-        top_button_html = f'''<button onclick='{onclick_js}' style="padding: 6px 12px; margin-bottom: 12px; cursor: pointer; border: 1px solid #ccc; border-radius: 5px; background-color: #fff;">
-            📋 複製這 {num_logs} 條日誌
-        </button>'''
-        bottom_button_html = f'''<button onclick='{onclick_js}' style="padding: 6px 12px; margin-top: 12px; cursor: pointer; border: 1px solid #ccc; border-radius: 5px; background-color: #fff;">
-            📋 複製這 {num_logs} 條日誌
-        </button>'''
-
-        return f'''
-        <details style="margin-top: 15px; margin-bottom: 15px; border: 1px solid #e0e0e0; padding: 12px; border-radius: 8px; background-color: #f9f9f9;">
-            <summary style="cursor: pointer; font-weight: bold; color: #333;">
-                點此展開/收合最近 {num_logs} 條詳細日誌
-            </summary>
-            <div style="margin-top: 12px;">
-                {top_button_html}
-                <pre id="{unique_log_id}" style="background-color: #fff; padding: 12px; border: 1px solid #e0e0e0; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; font-family: monospace; font-size: 13px; color: #444;"><code>{logs_for_html_display}</code></pre>
-                {bottom_button_html}
-            </div>
-        </details>
-        '''
-    except Exception as e:
-        return f"<p>❌ 產生最終日誌報告時發生錯誤: {e}</p>"
-
-
 # SECTION 3: 主程式執行入口
 def launch_application(project_path_str: str):
-    """主執行函式，採用兩階段啟動。"""
+    """主執行函式，採用兩階段火箭啟動。"""
     shared_stats = {"start_time_monotonic": time.monotonic(), "status": "初始化...", "proxy_url": None}
-    log_manager, display_manager, temp_server_manager, background_worker = None, None, None, None
+    log_manager, display_manager, background_worker = None, None, None
+    mini_server_proc = None
     start_time = datetime.now(pytz.timezone(TIMEZONE))
 
     try:
-        log_queue = queue.Queue()
+        # 1. 初始化日誌和顯示
         db_path = Path(project_path_str) / "launcher_logs.db"
         log_levels = {name: globals()[name] for name in globals() if name.startswith("SHOW_LOG_LEVEL_")}
         log_manager = LogManager(max_lines=LOG_DISPLAY_LINES, timezone_str=TIMEZONE, log_levels_to_show=log_levels, db_path=str(db_path))
@@ -567,89 +600,55 @@ def launch_application(project_path_str: str):
         display_manager.start()
         log_manager.log("INFO", "顯示管理器已啟動。")
 
-        shared_stats['status'] = "尋找可用埠號..."
+        # 2. 立即啟動最小化伺服器以顯示 UI
+        shared_stats['status'] = "啟動臨時介面伺服器..."
         port = find_free_port()
-        log_manager.log("INFO", f"找到空閒埠號: {port}")
-        temp_server_manager = TempServerManager(port=port, log_manager=log_manager, log_queue=log_queue, project_root=project_path_str)
-        temp_server_manager.start()
-        shared_stats['status'] = "建立狀態伺服器..."
+        log_manager.log("INFO", f"找到空閒埠號: {port} 用於臨時伺服器")
 
-        time.sleep(1)
-        max_retries, retry_delay, js_timeout_ms, py_timeout_sec = 20, 1, 7000, 10
-        js_get_url_script = f'''
-        (async () => {{
-            const proxyPromise = google.colab.kernel.proxyPort({port}, {{'cache': false}});
-            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error(`proxyPort call timed out after {js_timeout_ms}ms`)), {js_timeout_ms}));
-            try {{ const url = await Promise.race([proxyPromise, timeoutPromise]); return {{'url': url, 'error': null}}; }}
-            catch (e) {{ return {{'url': null, 'error': e.toString()}}; }}
-        }})()
-        '''
+        mini_server_script = str(Path(project_path_str) / "src" / "core" / "mini_server.py")
+        mini_server_cmd = [sys.executable, mini_server_script, str(port)]
+        mini_server_proc = subprocess.Popen(mini_server_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
 
-        log_manager.log("INFO", "啟動背景工作者，開始並行安裝依賴...")
-        background_worker = BackgroundWorker(log_manager=log_manager, stats_dict=shared_stats, project_path_str=project_path_str, port=port, temp_server_manager=temp_server_manager, log_queue=log_queue)
+        log_manager.log("INFO", "等待臨時伺服器就緒...")
+        time.sleep(3) # Give it a moment to start
+
+        # 3. 獲取代理 URL
+        js_get_url_script = f'''(async () => {{ const url = await google.colab.kernel.proxyPort({port}, {{'cache': false}}); return url; }})()'''
+        try:
+            proxy_url = colab_output.eval_js(js_get_url_script)
+            shared_stats['proxy_url'] = proxy_url
+            log_manager.log("SUCCESS", f"✅ 臨時介面已在: {proxy_url}")
+            shared_stats['status'] = "介面準備就緒，背景準備中..."
+        except Exception as e:
+            log_manager.log("CRITICAL", f"無法獲取 Colab 代理連結: {e}")
+            shared_stats['status'] = "❌ 獲取代理連結失敗"
+            raise
+
+        # 4. 啟動背景工作者執行完整安裝和主程式啟動
+        log_manager.log("INFO", "啟動背景工作者，開始完整安裝流程...")
+        # The port passed here is for the *final* orchestrator
+        final_port = find_free_port()
+        background_worker = BackgroundWorker(log_manager, shared_stats, project_path_str, final_port, mini_server_proc)
         background_worker.start()
 
-        for attempt in range(max_retries):
-            shared_stats['status'] = f"正在嘗試取得代理連結... (第 {attempt + 1}/{max_retries} 次)"
-            result_queue = queue.Queue()
-            def _eval_js_in_thread(q, script):
-                try: q.put({'result': colab_output.eval_js(script), 'error': None})
-                except Exception as e: q.put({'result': None, 'error': e})
-            eval_thread = threading.Thread(target=_eval_js_in_thread, args=(result_queue, js_get_url_script)); eval_thread.daemon = True; eval_thread.start()
-            try:
-                output = result_queue.get(timeout=py_timeout_sec)
-                if output.get('error'):
-                    error_msg = str(output['error']); shared_stats['status'] = f"嘗試失敗 ({error_msg[:50]}...)，1秒後重試。"
-                    log_manager.log("WARN", f"獲取代理連結的背景執行緒發生錯誤: {error_msg}")
-                else:
-                    result = output.get('result')
-                    if result and result.get('error'):
-                        error_msg = str(result['error']); shared_stats['status'] = f"JS錯誤 ({error_msg[:50]}...)，1秒後重試。"
-                        log_manager.log("WARN", f"獲取代理連結時發生 JS 錯誤: {error_msg}")
-                    elif result and result.get('url') and result['url'].strip().startswith('http'):
-                        candidate_url = result['url'].strip()
-                        shared_stats['proxy_url'] = candidate_url; shared_stats['status'] = "✅ 成功取得代理連結！"
-                        log_manager.log("SUCCESS", f"成功取得並驗證代理連結: {candidate_url}")
-                        break
-                    else:
-                        shared_stats['status'] = "收到無效的回傳值，1秒後重試。"; log_manager.log("WARN", f"收到無效的代理回傳值: '{str(result)[:100]}...'")
-            except queue.Empty:
-                shared_stats['status'] = f"操作超時 ({py_timeout_sec}秒)，1秒後重試。"; log_manager.log("WARN", f"獲取代理連結操作超時 ({py_timeout_sec}秒)。")
-            except Exception as e:
-                error_msg = str(e); shared_stats['status'] = f"發生未預期錯誤 ({error_msg[:50]}...)，1秒後重試。"
-                log_manager.log("ERROR", f"獲取代理連結迴圈發生未預期錯誤: {e}")
-            time.sleep(retry_delay)
-
-        if not shared_stats.get('proxy_url'):
-            shared_stats['status'] = "❌ 取得代理連結失敗"; log_manager.log("CRITICAL", "無法取得代理連結，但背景安裝任務仍在繼續。")
-
+        # 5. 等待背景工作者完成
         background_worker._thread.join()
         log_manager.log("INFO", "背景工作者執行緒已結束。")
 
-    except KeyboardInterrupt:
-        if log_manager: log_manager.log("WARN", "🛑 偵測到使用者手動中斷...")
     except Exception as e:
-        if log_manager: log_manager.log("CRITICAL", f"❌ 發生未預期的致命錯誤: {e}")
+        if log_manager: log_manager.log("CRITICAL", f"❌ 發生未預期的致命錯誤: {e}", exc_info=True)
         else: print(f"❌ 發生未預期的致命錯誤: {e}")
     finally:
         if background_worker: background_worker.stop()
-        if temp_server_manager and temp_server_manager._thread.is_alive(): temp_server_manager.stop()
-        if display_manager and display_manager._thread.is_alive(): display_manager.stop()
+        if mini_server_proc and mini_server_proc.poll() is None:
+            mini_server_proc.terminate()
+        if display_manager: display_manager.stop()
 
         end_time = datetime.now(pytz.timezone(TIMEZONE))
         if log_manager and display_manager:
             clear_output(wait=True)
-
-            # 顯示最終狀態
             print("\n".join(display_manager._build_output_buffer()))
-            print("\n--- ✅ 所有任務完成，系統已安全關閉 ---")
-
-            # 歸檔
-            archive_reports(log_manager, start_time, end_time, shared_stats.get('status', '未知'))
-
-            # 顯示單一的、包含雙按鈕的日誌檢視器
-            display(HTML(create_log_viewer_html(log_manager)))
-
+            print("\n--- ✅ 所有任務完成 ---")
         if log_manager: log_manager.close()
 
 
