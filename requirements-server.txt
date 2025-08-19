@@ -11,3 +11,4 @@ pytest
 playwright
 pytest-playwright
 opencc-python-reimplemented
+pytest-timeout

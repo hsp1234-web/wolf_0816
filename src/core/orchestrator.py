@@ -168,15 +168,19 @@ def main():
     """
     # JULES'S FIX (2025-08-17): 確保依賴在啟動前都已安裝
     # 模仿 localtest.py 的行為，使 orchestrator 成為一個更可靠的獨立啟動器。
-    try:
-        log.info("正在檢查並安裝伺服器依賴 (uv)...")
-        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "uv"], check=True, capture_output=True)
-        req_file = ROOT_DIR / "requirements-server.txt"
-        subprocess.run([sys.executable, "-m", "uv", "pip", "install", "-q", "-r", str(req_file)], check=True, capture_output=True, text=True)
-        log.info("✅ 伺服器依賴已是最新狀態。")
-    except Exception as e:
-        log.critical(f"❌ 安裝依賴時發生錯誤，啟動中止: {e}", exc_info=True)
-        sys.exit(1)
+    # JULES'S FIX (2025-08-19): 新增環境變數開關，以便在測試引擎中跳過此檢查
+    if os.environ.get("SKIP_DEP_CHECK"):
+        log.info("環境變數 SKIP_DEP_CHECK=1 已設定，跳過內部依賴檢查。")
+    else:
+        try:
+            log.info("正在檢查並安裝伺服器依賴 (uv)...")
+            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "uv"], check=True, capture_output=True)
+            req_file = ROOT_DIR / "requirements-server.txt"
+            subprocess.run([sys.executable, "-m", "uv", "pip", "install", "-q", "-r", str(req_file)], check=True, capture_output=True, text=True)
+            log.info("✅ 伺服器依賴已是最新狀態。")
+        except Exception as e:
+            log.critical(f"❌ 安裝依賴時發生錯誤，啟動中止: {e}", exc_info=True)
+            sys.exit(1)
 
     parser = argparse.ArgumentParser(description="系統協調器。")
     parser.add_argument(
