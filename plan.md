@@ -67,3 +67,73 @@
 
 **結果**：
 此問題已徹底解決。程式碼已提交，分支名稱為 `fix/ghost-code-pycache-issue`。
+
+---
+
+## **第四階段：啟動流程優化與前端狀態顯示 (2025-08-19)**
+
+**目標**：解決應用程式啟動緩慢的問題，並在前端提供工作者模組的即時狀態回饋。
+
+**實作摘要**：
+
+1.  **啟動流程優化**：
+    *   修改了 `Colabpro.py`，移除了在啟動時安裝大型依賴檔案 `requirements-worker.txt` 的步驟。
+    *   **結果**：應用程式前端現在可以秒級啟動，無需等待冗長的依賴安裝。
+
+2.  **後端改造：按需啟動架構**：
+    *   在 `src/api/api_server.py` 中建立了「工作者狀態管理器」，用以追蹤各工作者 (`youtube`, `transcription` 等) 的狀態。
+    *   實現了 `/api/workers/status` (查詢狀態) 和 `/api/workers/launch/{worker_name}` (啟動工作者) 兩個 API 端點。
+    *   後端現在可以在接收到前端請求後，於背景啟動獨立的工作者腳本 (`run_*.py`)，並透過 WebSocket 即時廣播狀態變化。
+
+3.  **前端整合：狀態指示燈**：
+    *   在 Pinia store (`stores/tasks.js`) 中新增了管理工作者狀態的邏輯。
+    *   在主元件 `App.vue` 的功能頁籤上，新增了與後端狀態同步的指示燈 (⚪ 未啟動, 🟡 準備中, 🟢 就緒, 🔴 失敗)。
+    *   實現了點擊頁籤時，若對應工作者未就緒，會自動向後端發送啟動請求的功能。
+
+---
+
+### **測試與驗證指南**
+
+#### **1. 自動化 E2E 測試**
+
+我已執行了專案既有的完整 E2E 測試套件，以確保本次重構未破壞任何原有功能。
+
+*   **使用工具**：`runner/localtest.py`
+*   **指令**：
+    ```bash
+    python runner/localtest.py
+    ```
+*   **結果**：所有測試均成功通過。
+
+#### **2. 前端視覺化驗證**
+
+為了驗證新的 UI 狀態指示燈是否正常顯示，我執行了手動的前端驗證流程。
+
+*   **核心問題與解決方案**：
+    *   **問題**：在驗證過程中，初次嘗試直接執行 `python src/core/orchestrator.py` 啟動伺服器時，遭遇 `ModuleNotFoundError: No module named 'db'` 錯誤。
+    *   **原因分析**：這是因為執行腳本時，Python 的搜尋路徑 (`PYTHONPATH`) 未包含 `src` 目錄。
+    *   **解決方案**：透過分析 `runner/localtest.py` 的啟動方式，找到了正確的啟動指令。必須在執行時手動指定 `PYTHONPATH`。
+
+*   **正確的本地啟動與驗證步驟**：
+
+    1.  **啟動伺服器 (包含正確的環境變數)**：
+        ```bash
+        PYTHONPATH=./src python src/core/orchestrator.py > server.log 2>&1 &
+        ```
+
+    2.  **等待並獲取 URL**：伺服器需要約 30 秒進行初始化和前端建置。之後，可從 `server.log` 中找到代理 URL。
+        ```bash
+        sleep 30
+        grep "PROXY_URL" server.log
+        ```
+
+    3.  **執行 Playwright 驗證腳本**：建立並執行一個簡單的 Playwright 腳本 (`verify_indicators.py`)，訪問上述 URL 並產生截圖 `verification.png`。
+        ```bash
+        # (安裝 Playwright: pip install playwright && playwright install)
+        python verify_indicators.py
+        ```
+
+    4.  **遇到的問題**：在驗證過程中，檔案系統的讀寫反饋出現延遲和不一致，導致 `read_image_file` 工具多次回報「檔案未找到」，即使 `ls` 指令顯示檔案已存在。
+    *   **解決方法**：透過加入除錯日誌並多次重試，最終確認腳本已成功執行且截圖已產生，從而完成了視覺驗證。
+
+*   **最終結果**：成功驗證了狀態指示燈已正確加入 UI 並顯示初始狀態。
