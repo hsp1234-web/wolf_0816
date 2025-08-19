@@ -51,6 +51,13 @@ except ImportError:
     print("正在安裝 pytz...")
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "pytz"])
     import pytz
+try:
+    import gdown
+except ImportError:
+    print("正在安裝 gdown...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "gdown"])
+    import gdown
+
 
 import os
 import shutil
@@ -62,6 +69,7 @@ from collections import deque
 import re
 import json
 import queue
+import zipfile
 from IPython.display import clear_output, display, HTML
 from google.colab import output as colab_output, userdata
 
@@ -357,61 +365,117 @@ class BackgroundWorker:
         return_code = process.wait()
         return return_code
 
+    def _try_prebake_setup(self) -> bool:
+        """
+        僅嘗試使用預烘烤的依賴。如果成功，返回 True。
+        任何步驟失敗，都會記錄錯誤並返回 False，不執行後備操作。
+        """
+        self._log_manager.log("INFO", "--- 開始預烘烤環境檢查 ---")
+        self._stats['status'] = "檢查預烘烤環境..."
+
+        artifacts_dir = self.project_path / "artifacts"
+        backend_deps_zip = artifacts_dir / "backend-deps.zip"
+        frontend_dist_zip = artifacts_dir / "frontend-dist.zip"
+        gdrive_url_placeholder = "YOUR_GOOGLE_DRIVE_LINK_HERE"  # 使用者應替換此連結
+
+        try:
+            if not backend_deps_zip.is_file() or not frontend_dist_zip.is_file():
+                self._log_manager.log("INFO", "本地未找到預烘烤壓縮檔，嘗試從 Google Drive 下載...")
+                self._stats['status'] = "從雲端下載環境..."
+                if gdrive_url_placeholder == "YOUR_GOOGLE_DRIVE_LINK_HERE":
+                    raise ValueError("Google Drive 連結未設定，無法下載。")
+
+                # 這裡假設使用者提供的是包含 backend-deps.zip 和 frontend-dist.zip 的 master-bundle.zip
+                master_bundle_path = artifacts_dir / "master-bundle.zip"
+                gdown.download(gdrive_url_placeholder, str(master_bundle_path), quiet=False)
+                with zipfile.ZipFile(master_bundle_path, 'r') as zip_ref:
+                    zip_ref.extractall(artifacts_dir)
+                self._log_manager.log("SUCCESS", "✅ 已成功從雲端下載並解開主壓縮包。")
+
+            # 解壓縮後端依賴
+            self._stats['status'] = "解壓縮後端依賴..."
+            backend_target_dir = self.project_path / "temp_build" / "backend_deps"
+            if backend_target_dir.exists(): shutil.rmtree(backend_target_dir)
+            backend_target_dir.mkdir(parents=True)
+            with zipfile.ZipFile(backend_deps_zip, 'r') as z: z.extractall(backend_target_dir)
+            sys.path.insert(0, str(backend_target_dir.resolve()))
+            self._log_manager.log("INFO", f"後端依賴已解壓至 {backend_target_dir} 並加入 sys.path")
+
+            # 解壓縮前端成品
+            self._stats['status'] = "解壓縮前端成品..."
+            frontend_target_dir = self.project_path / "vue-app" / "dist"
+            if frontend_target_dir.exists(): shutil.rmtree(frontend_target_dir)
+            frontend_target_dir.mkdir(parents=True)
+            with zipfile.ZipFile(frontend_dist_zip, 'r') as z: z.extractall(frontend_target_dir)
+            self._log_manager.log("INFO", f"前端成品已解壓至 {frontend_target_dir}")
+
+            self._log_manager.log("SUCCESS", "--- ✅ 預烘烤環境設定成功 ---")
+            return True
+        except Exception as e:
+            self._log_manager.log("WARN", f"預烘烤設定失敗: {e}。")
+            return False
+
+    def _bake_new_artifacts(self):
+        """執行打包腳本以產生新的預烘烤檔案。"""
+        self._log_manager.log("INFO", "為未來使用建立新的預烘烤檔案...")
+        script_path = self.project_path / "scripts" / "build_artifacts.sh"
+        if not script_path.is_file():
+            self._log_manager.log("ERROR", f"打包腳本未找到: {script_path}")
+            return
+        try:
+            process = subprocess.run([str(script_path)], capture_output=True, text=True, cwd=str(self.project_path))
+            if process.returncode == 0:
+                self._log_manager.log("SUCCESS", "✅ 新的預烘烤檔案已成功建立在 'artifacts' 資料夾。")
+                self.log_queue.put({"log": "\\033[32m> ✅ 新的壓縮檔已產生。請從 'artifacts' 目錄下載並更新您的 Google Drive 連結。\\033[0m"})
+            else:
+                self._log_manager.log("ERROR", f"打包腳本執行失敗，日誌: {process.stdout} {process.stderr}")
+        except Exception as e:
+            self._log_manager.log("ERROR", f"執行打包腳本時發生錯誤: {e}")
+
     def _install_dependencies(self, requirements_file: str, installer: str = "uv"):
         req_path = self.project_path / requirements_file
         if not req_path.is_file():
             self._log_manager.log("WARN", f"未找到 {requirements_file}，跳過安裝。")
             return True
-
         self._log_manager.log("INFO", f"正在使用 {installer} 安裝 `{requirements_file}`...")
         self.log_queue.put({"log": f"\\033[1;36m> 開始安裝 {requirements_file}...\\033[0m"})
         self._stats['status'] = f"安裝依賴 ({requirements_file})..."
-
         try:
-            # 確保 uv 已安裝
             subprocess.run([sys.executable, "-m", "pip", "install", "-q", "uv"], check=True)
-            # 使用 uv 安裝，移除 -q 以便擷取日誌
             command = [sys.executable, "-m", "uv", "pip", "install", "-r", str(req_path)]
-
             process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding='utf-8',
-                bufsize=1  # Line-buffered
+                command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding='utf-8', bufsize=1
             )
-
             return_code = self._stream_process_output(process)
-
             if return_code != 0:
-                error_msg = f"依賴安裝失敗 ({requirements_file})，返回碼: {return_code}"
-                self._log_manager.log("CRITICAL", error_msg)
-                self.log_queue.put({"log": f"\\033[31m[ERROR] {error_msg}\\033[0m"})
+                self._log_manager.log("CRITICAL", f"依賴安裝失敗 ({requirements_file})，返回碼: {return_code}")
                 return False
-
-            success_msg = f"✅ 成功安裝 {requirements_file}"
-            self._log_manager.log("SUCCESS", success_msg)
-            self.log_queue.put({"log": f"\\033[32m{success_msg}\\033[0m"})
+            self._log_manager.log("SUCCESS", f"✅ 成功安裝 {requirements_file}")
             return True
         except Exception as e:
-            error_msg = f"安裝 {requirements_file} 時發生嚴重錯誤: {e}"
-            self._log_manager.log("CRITICAL", error_msg)
-            self.log_queue.put({"log": f"\\033[31m[CRITICAL] {error_msg}\\033[0m"})
+            self._log_manager.log("CRITICAL", f"安裝 {requirements_file} 時發生嚴重錯誤: {e}")
             return False
 
     def _run(self):
         try:
-            # 步驟 1: 安裝所有依賴
-            if not self._install_dependencies("requirements-server.txt"): return
-            if not self._install_dependencies("requirements-worker.txt"): return
+            # 步驟 1: 嘗試使用預烘烤的快速路徑
+            use_prebaked_success = self._try_prebake_setup()
+
+            if not use_prebaked_success:
+                # 預烘烤失敗，執行標準安裝流程
+                self._log_manager.log("INFO", "預烘烤環境設定失敗，切換至標準安裝流程。")
+                if not self._install_dependencies("requirements-server.txt"): return
+                if not self._install_dependencies("requirements-worker.txt"): return
+                # 標準安裝成功後，為下次啟動產生新的烘烤檔案
+                self._bake_new_artifacts()
 
             # 步驟 2: 關閉臨時伺服器
             self.temp_server_manager.stop()
-            time.sleep(1) # 給予作業系統一點時間來釋放埠號
+            time.sleep(1)
 
             # 步驟 3: 啟動核心協調器
-            self._log_manager.log("INFO", "🚀 所有依賴已備妥，正在啟動核心協調器...")
+            self._log_manager.log("INFO", "🚀 依賴已備妥，正在啟動核心協調器...")
             self._stats['status'] = "啟動主程式..."
             orchestrator_script_path = self.project_path / "src" / "core" / "orchestrator.py"
             if not orchestrator_script_path.is_file():

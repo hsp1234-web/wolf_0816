@@ -63,3 +63,6 @@ config.json
 
 # Generated config files
 circus.ini
+
+# Pre-baked artifacts
+/artifacts/

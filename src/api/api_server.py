@@ -892,7 +892,9 @@ def run_worker_in_background(worker_name: str, loop: asyncio.AbstractEventLoop):
                 "last_error": WORKER_STATUS[worker_name].get("last_error")
             }
         }
+        log.info(f"📢 [執行緒] 準備廣播最終狀態: {final_update}")
         asyncio.run_coroutine_threadsafe(manager.broadcast_json(final_update), loop)
+        log.info(f"📢 [執行緒] 已成功排程廣播任務。")
         if worker_name in WORKER_STATUS:
             WORKER_STATUS[worker_name]["process"] = None # 清理進程對象
 
