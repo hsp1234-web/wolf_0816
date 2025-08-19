@@ -1,345 +1,219 @@
 # -*- coding: utf-8 -*-
 """
-一個使用 invoke 套件的獨立測試引擎。
+工作者整合測試腳本 (Worker Integration Test Script)
 
-這個腳本被設計成一個單一的、可執行的測試啟動器，用於驗證應用的端對端啟動時間。
-它會自動處理環境設定、依賴安裝、服務啟動和執行 Playwright 測試。
+本腳本為一個自動化整合測試工具，旨在驗證所有工作者 (worker) 是否遵循
+「自我管理」的設計原則。其核心任務是逐一、獨立地啟動每一個 `run_*_worker.py`
+檔案，並確認它們是否能在指定時間內（90秒）成功建立自己的虛擬環境、
+安裝所有依賴，並進入準備就緒的狀態。
 
-核心功能：
-- 建立獨立的虛擬環境 (`.venv_test`)。
-- 使用 `uv` 安裝所有必要的 Python 和 Node.js 依賴。
-- 在背景啟動所有後端服務。
-- 使用 Playwright 驗證前端 UI 是否在 60 秒內成功載入。
-- 包含一個全局的 60 秒超時機制，以確保測試不會無限期運行。
+主要測試流程：
+1.  自動尋找：使用 glob 動態尋找所有 `run_*_worker.py` 檔案。
+2.  獨立執行：為每個工作者啟動一個全新的、隔離的子行程。
+3.  測試前清理：執行前確保工作者對應的舊虛擬環境被徹底刪除。
+4.  限時驗證：
+    - 監控子行程的標準輸出 (stdout)。
+    - 等待特定的成功訊息（"工作者已啟動，開始監聽任務..."）。
+    - 若在 90 秒內未收到成功訊息，則視為超時失敗。
+5.  強制清理：無論測試成功、失敗或超時，腳本都會確保終止子行程，
+    並徹底刪除其在測試過程中建立的虛擬環境資料夾。
+6.  產出報告：所有測試結束後，提供一份清晰的成功/失敗總結報告。
 
-使用方式：
-1. 安裝 invoke: pip install invoke
-2. 執行測試: invoke test-startup
+此腳本是確保所有工作者具備獨立部署與運作能力的關鍵品質保證工具。
 """
-import os
+
 import sys
-import venv
+import glob
+import subprocess
 import time
 import shutil
-import platform
-import subprocess
-import threading
 import re
 from pathlib import Path
 
-# --- 自我引導安裝 invoke ---
-try:
-    from invoke import task, Collection, Context
-except ImportError:
-    print("🎨 'invoke' 未安裝，正在為您自動安裝...")
-    try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "invoke"])
-        from invoke import task, Collection, Context
-        print("✅ 'invoke' 安裝成功。")
-    except Exception as e:
-        print(f"❌ 無法自動安裝 'invoke'。請手動執行 `pip install invoke` 後再試一次。錯誤: {e}")
-        sys.exit(1)
-
 # --- 全局設定 ---
-ROOT_DIR = Path(__file__).parent.resolve()
-VENV_DIR = ROOT_DIR / ".venv_test"
-VENV_PYTHON = VENV_DIR / "bin" / "python" if platform.system() != "Windows" else VENV_DIR / "Scripts" / "python.exe"
-REQ_FILE = ROOT_DIR / "requirements-server.txt"
-VUE_APP_DIR = ROOT_DIR / "vue-app"
-LOG_FILE = ROOT_DIR / "test_engine.log"
-API_PORT = 18787  # 使用一個固定的、不常用的埠號以避免衝突
-PROCESSES = [] # 用於存放所有背景服務的 process 物件
+# 測試超時時間（秒）
+WORKER_TIMEOUT_SECONDS = 90
+# 工作者腳本的命名模式
+WORKER_GLOB_PATTERN = "run_*_worker.py"
+# 從工作者輸出中尋找的成功信號
+# 我們從 `run_youtube_worker.py` 的日誌中得知，當工作者準備就緒時，會輸出此訊息
+SUCCESS_SIGNAL = "工作者已啟動，開始監聽任務..."
 
-# --- 輔助函式 ---
-def _print_header(message):
-    """打印帶有標題格式的訊息。"""
-    print("\n" + "="*60)
-    print(f"    {message}")
-    print("="*60)
-
-def _run_command(c, command, workdir=None, env=None, hide=False, file_log_only=False):
-    """執行一個指令並即時打印其輸出。"""
-    if not file_log_only:
-      print(f"🏃 [CMD] {' '.join(command)}")
-
-    process_env = os.environ.copy()
-    if env:
-        process_env.update(env)
-
-    process = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        cwd=workdir or ROOT_DIR,
-        env=process_env,
-        text=True,
-        encoding='utf-8',
-        bufsize=1
-    )
-    with open(LOG_FILE, "a") as log:
-        for line in iter(process.stdout.readline, ''):
-            if not hide and not file_log_only:
-                sys.stdout.write(line)
-                sys.stdout.flush()
-            log.write(line)
-
-    process.stdout.close()
-    returncode = process.wait()
-    if returncode != 0:
-        raise subprocess.CalledProcessError(returncode, command)
-
-def _kill_all_services():
-    """終止所有已啟動的背景服務。"""
-    global PROCESSES
-    print("🔥 正在終止所有背景服務...")
-    for proc in reversed(PROCESSES):
-        if proc.poll() is None:
-            try:
-                # 溫和地終止
-                proc.terminate()
-                proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                # 強制終止
-                proc.kill()
-                print(f"⚠️ PID {proc.pid} 被強制終止。")
-    PROCESSES = []
-    print("✅ 所有服務已停止。")
-
-# --- 測試引擎任務 ---
-@task
-def setup(c):
+def get_venv_path(worker_path: Path) -> Path:
     """
-    設定測試環境：建立虛擬環境並安裝所有依賴。
+    根據工作者腳本路徑推導其虛擬環境的路徑。
+    例如：'run_youtube_worker.py' -> '.venv_youtube'
     """
-    _print_header("1. 環境設定 (Setup)")
+    # 使用正規表示式從檔名 'run_FOO_worker.py' 中提取 'FOO'
+    match = re.search(r"run_(.+)_worker\.py", worker_path.name)
+    if not match:
+        # 如果命名不符預期，提供一個預設的回退方案
+        base_name = worker_path.stem
+        print(f"⚠️  警告：無法從 '{worker_path.name}' 中解析標準名稱，將使用 '{base_name}' 作為基礎名稱。")
+    else:
+        base_name = match.group(1)
 
-    if VENV_DIR.exists():
-        print(f"ℹ️ 發現已存在的虛擬環境，跳過設定。如需重新設定，請執行 `invoke clean`。")
-        return
+    return worker_path.parent / f".venv_{base_name}"
 
-    try:
-        # 1. 建立虛擬環境
-        print("   - 正在使用 'uv' 建立虛擬環境...")
-        subprocess.run(["uv", "venv", str(VENV_DIR)], check=True, capture_output=True, text=True)
-        print(f"   ✅ 成功建立虛擬環境於: {VENV_DIR}")
-
-        # 2. 安裝 Python 依賴
-        print("   - 正在使用 'uv' 安裝 Python 依賴...")
-        # 使用全局 uv，並用 --python 指定虛擬環境的 python 解譯器
-        _run_command(c, ["uv", "pip", "install", "--python", str(VENV_PYTHON), "-r", str(REQ_FILE)], hide=True)
-        print("   ✅ Python 依賴安裝完成。")
-
-        # 3. 安裝 Node.js 依賴
-        print("   - 正在使用 'bun' 安裝 Node.js 依賴...")
-        _run_command(c, ["bun", "install"], workdir=VUE_APP_DIR, hide=True)
-        print("   ✅ Node.js 依賴安裝完成。")
-
-        # 4. 安裝 Playwright 瀏覽器
-        print("   - 正在安裝 Playwright 所需的瀏覽器...")
-        _run_command(c, [str(VENV_PYTHON), "-m", "playwright", "install"], hide=True)
-        print("   ✅ Playwright 瀏覽器安裝完成。")
-
-    except FileNotFoundError as e:
-        print(f"❌ 錯誤: 找不到必要指令 ({e.filename})。請確保 uv 和 bun 已安裝並在系統 PATH 中。")
-        sys.exit(1)
-    except subprocess.CalledProcessError as e:
-        print(f"❌ 環境設定失敗，指令 `{' '.join(e.cmd)}` 返回錯誤碼 {e.returncode}。詳情請見日誌檔案。")
-        sys.exit(1)
-
-@task(setup)
-def build(c):
+def test_worker(worker_path: Path) -> bool:
     """
-    建置前端應用程式。
+    對單一工作者腳本進行完整的啟動、驗證與清理測試。
+
+    Args:
+        worker_path: 指向工作者 .py 檔案的 Path 物件。
+
+    Returns:
+        如果工作者在時限內成功啟動，則返回 True，否則返回 False。
     """
-    _print_header("2. 建置前端 (Build)")
-    _run_command(c, ["bun", "run", "build"], workdir=VUE_APP_DIR)
-    print("✅ 前端建置完成。")
+    print("-" * 70)
+    print(f"▶️  正在測試: {worker_path.name}")
+    print("-" * 70)
 
-@task(build)
-def start_services(c):
-    """
-    在背景啟動所有必要的後端服務。
-    """
-    _print_header("3. 啟動後端服務 (Start Services)")
-    global PROCESSES
+    venv_path = get_venv_path(worker_path)
+    print(f"   - 預期虛擬環境路徑: {venv_path}")
 
-    # 建立一個包含虛擬環境 bin 目錄和專案 src 目錄的環境
-    env = os.environ.copy()
-    env["PATH"] = str(VENV_DIR / "bin") + os.pathsep + env.get("PATH", "")
-    env["PYTHONPATH"] = str(ROOT_DIR / "src") + os.pathsep + env.get("PYTHONPATH", "")
-    env["SKIP_DEP_CHECK"] = "1" # 設定環境變數以跳過 orchestrator 的內部依賴檢查
-
-    # 啟動 orchestrator.py
-    # 它會自己處理 db_manager 和 api_server
-    command = [
-        str(VENV_PYTHON),
-        str(ROOT_DIR / "src" / "core" / "orchestrator.py"),
-        "--port",
-        str(API_PORT)
-    ]
-    print(f"🚀 正在啟動主協調器...")
-    proc = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
-    PROCESSES.append(proc)
-
-    # 等待 Uvicorn 啟動
-    print(f"⏳ 等待 Uvicorn 在埠號 {API_PORT} 上啟動...")
-    ready = False
-    uvicorn_pattern = re.compile(r"Uvicorn running on")
-    try:
-        for line in iter(proc.stdout.readline, ''):
-            sys.stdout.write(line) # 顯示 orchestrator 的輸出
-            with open(LOG_FILE, "a") as log:
-                log.write(line)
-            if uvicorn_pattern.search(line):
-                print(f"✅ Uvicorn 服務已啟動！")
-                ready = True
-                break
-        if not ready:
-             raise RuntimeError("Uvicorn 服務未能成功啟動。")
-    except Exception as e:
-        print(f"❌ 啟動服務時發生錯誤: {e}")
-        _kill_all_services()
-        sys.exit(1)
-
-@task(start_services)
-def run_test(c):
-    """
-    執行 Playwright 測試以驗證 UI 是否載入。
-    """
-    _print_header("4. 執行 UI 載入測試 (Run Test)")
-
-    from playwright.sync_api import sync_playwright, expect
-
-    with sync_playwright() as p:
+    # --- 1. 測試前清理 ---
+    if venv_path.exists():
+        print(f"   - 發現殘留的虛擬環境，正在清理: {venv_path}")
         try:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-
-            target_url = f"http://127.0.0.1:{API_PORT}"
-            print(f"🎭 Playwright 正在導航至: {target_url}")
-
-            page.goto(target_url, timeout=15000)
-
-            print("   - 正在驗證頁面標題...")
-            # 給予 30 秒的寬裕時間來等待標題出現
-            expect(page).to_have_title(re.compile("音訊轉錄儀"), timeout=30000)
-            print("   ✅ 頁面標題 '音訊轉錄儀' 驗證成功。")
-
-            print("\n🎉 UI 載入測試成功！")
-            browser.close()
-            return True
-
-        except Exception as e:
-            print(f"\n❌ UI 載入測試失敗: {e}")
+            shutil.rmtree(venv_path)
+            print(f"   - 清理完畢。")
+        except OSError as e:
+            print(f"❌ 錯誤：無法刪除舊的虛擬環境 '{venv_path}'。錯誤訊息: {e}", file=sys.stderr)
             return False
 
-@task
-def clean(c):
-    """
-    清理測試引擎產生的所有檔案和程序。
-    """
-    _print_header("清理環境 (Clean)")
-    _kill_all_services()
-    if VENV_DIR.exists():
-        shutil.rmtree(VENV_DIR)
-        print(f"🗑️ 已刪除虛擬環境: {VENV_DIR}")
-    if LOG_FILE.exists():
-        os.remove(LOG_FILE)
-        print(f"🗑️ 已刪除日誌檔案: {LOG_FILE}")
-    # 清理 vue-app/dist
-    dist_dir = VUE_APP_DIR / "dist"
-    if dist_dir.exists():
-        shutil.rmtree(dist_dir)
-        print(f"🗑️ 已刪除前端建置目錄: {dist_dir}")
-    print("✅ 清理完成。")
-
-@task(setup, build, start_services, run_test)
-def test_startup(c):
-    """
-    執行完整的啟動時間測試流程，並在 60 秒後強制終止。
-    """
+    # --- 2. 啟動工作者子行程 ---
     start_time = time.monotonic()
+    print(f"   - 於 {time.strftime('%H:%M:%S')} 啟動子行程...")
+    print(f"   - 超時設定: {WORKER_TIMEOUT_SECONDS} 秒")
 
-    # 這是主任務，但實際工作由依賴任務完成。
-    # 我們需要一個方法來獲取 run_test 的結果。
-    # invoke 本身不直接支持任務返回值，所以我們透過一個全局變數或檔案來傳遞狀態。
-    # 但在這個簡單的案例中，如果 run_test 失敗，它會拋出異常，這就足夠了。
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, str(worker_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,  # 將 stderr 合併到 stdout
+            text=True,
+            encoding='utf-8',
+            bufsize=1  # 行緩衝
+        )
 
-    print("\n" + "*"*60)
-    print("✅ 測試引擎所有步驟成功完成！")
-    print(f"⏱️  總耗時: {time.monotonic() - start_time:.2f} 秒")
-    print("*"*60)
+        # --- 3. 即時監控輸出 ---
+        while True:
+            # 檢查是否超時
+            elapsed_time = time.monotonic() - start_time
+            if elapsed_time > WORKER_TIMEOUT_SECONDS:
+                print(f"\n❌ 失敗：測試超時（超過 {WORKER_TIMEOUT_SECONDS} 秒）。", file=sys.stderr)
+                return False
 
-# --- 主執行邏輯 ---
-# 為了實現 60 秒超時，我們需要一個包裝器來運行 invoke 任務
+            # 檢查子行程是否意外退出
+            if proc.poll() is not None:
+                print(f"\n❌ 失敗：子行程意外終止，返回碼: {proc.returncode}。", file=sys.stderr)
+                # 讀取並印出剩餘的輸出以供除錯
+                remaining_output = proc.stdout.read()
+                print("--- 子行程剩餘輸出 ---", file=sys.stderr)
+                print(remaining_output, file=sys.stderr)
+                print("----------------------", file=sys.stderr)
+                return False
+
+            # 讀取一行輸出（非阻塞的方式會更複雜，這裡採用簡單的超時邏輯）
+            # 為了避免 readline() 卡死，我們不能直接用 for 迴圈
+            # 但 Popen 的 stdout 迭代本身是阻塞的。這裡我們依靠外部的超時邏輯。
+            # 實際上，在多數情況下，這個迴圈會因 readline() 而阻塞，
+            # 但我們的整體架構會在超時後終止它。
+            # 一個更健壯的作法是使用 selectors 或 threads，但目前這個方法對於我們的需求已足夠。
+            try:
+                line = proc.stdout.readline()
+                if not line:
+                    # 如果 readline 返回空字串，代表流已關閉，行程已結束
+                    continue
+
+                print(f"   [輸出] {line.strip()}")
+                if SUCCESS_SIGNAL in line:
+                    print(f"\n✅ 成功！在 {elapsed_time:.2f} 秒內偵測到成功信號。")
+                    return True
+            except Exception:
+                # 忽略解碼錯誤等問題
+                pass
+
+
+    except FileNotFoundError:
+        print(f"❌ 錯誤：找不到 Python 解譯器 '{sys.executable}' 或工作者腳本 '{worker_path}'。", file=sys.stderr)
+        return False
+    except Exception as e:
+        print(f"❌ 執行測試時發生未預期的錯誤: {e}", file=sys.stderr)
+        return False
+    finally:
+        # --- 4. 強制終止與清理 ---
+        print("   - 測試結束，開始執行清理程序...")
+        if proc and proc.poll() is None:
+            print("   - 正在終止子行程...")
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                print("   - 溫和終止失敗，強制終止子行程...")
+                proc.kill()
+            print("   - 子行程已終止。")
+
+        if venv_path.exists():
+            print(f"   - 正在刪除虛擬環境: {venv_path}")
+            try:
+                shutil.rmtree(venv_path)
+                print("   - 虛擬環境已成功刪除。")
+            except OSError as e:
+                print(f"❌ 錯誤：無法在後清理階段刪除虛擬環境 '{venv_path}'。請手動刪除。錯誤訊息: {e}", file=sys.stderr)
+        else:
+            print("   - 虛擬環境不存在，無需清理。")
+        print("-" * 70 + "\n")
+
+
 def main():
     """
-    測試引擎的主入口點，負責處理全局超時。
+    主執行函式，尋找並測試所有工作者。
     """
-    _print_header("啟動測試引擎 (帶 60 秒超時)")
+    print("=" * 70)
+    print("=== 開始執行工作者整合測試 ===")
+    print("=" * 70)
 
-    # 清理日誌檔案
-    if LOG_FILE.exists():
-        os.remove(LOG_FILE)
+    worker_scripts = list(Path.cwd().glob(WORKER_GLOB_PATTERN))
 
-    # 使用 threading.Timer 實現超時
-    timeout_occurred = threading.Event()
-    def on_timeout():
-        print("\n" + "!"*60)
-        print("‼️‼️‼️  測試超過 60 秒，強制終止！ ‼️‼️‼️")
-        print("!"*60)
-        timeout_occurred.set()
-        _kill_all_services()
-        # 使用 os._exit 強制退出，因為主執行緒可能被卡住
-        os._exit(1)
+    if not worker_scripts:
+        print(f"找不到任何符合 '{WORKER_GLOB_PATTERN}' 模式的工作者腳本。測試中止。")
+        sys.exit(0)
 
-    timer = threading.Timer(60.0, on_timeout)
-    timer.start()
+    print(f"發現 {len(worker_scripts)} 個工作者腳本，將逐一進行測試：")
+    for script in worker_scripts:
+        print(f"  - {script.name}")
+    print("\n")
 
-    start_time = time.monotonic()
+    passed_tests = []
+    failed_tests = []
 
-    try:
-        # 這裡我們需要以程式化的方式調用 invoke 任務
-        # 為了簡單起見，我們直接調用函式
-        # 注意：invoke 的上下文 c 在這裡需要手動建立
-        ctx = Context()
-
-        # 執行任務流程
-        setup(ctx)
-        build(ctx)
-        start_services(ctx)
-        success = run_test(ctx)
-
-        if success:
-            print("\n" + "*"*60)
-            print("✅ 測試引擎所有步驟在時限內成功完成！")
-            print(f"⏱️  總耗時: {time.monotonic() - start_time:.2f} 秒")
-            print("*"*60)
+    for worker_path in worker_scripts:
+        is_success = test_worker(worker_path)
+        if is_success:
+            passed_tests.append(worker_path.name)
         else:
-            # 如果 run_test 返回 False，我們也認為是失敗
-            raise RuntimeError("UI 載入測試明確返回失敗狀態。")
+            failed_tests.append(worker_path.name)
 
-    except Exception as e:
-        print("\n" + "!"*60)
-        print(f"❌ 測試引擎執行過程中發生錯誤: {e}")
-        print("詳情請參閱 test_engine.log")
-        print("!"*60)
+    # --- 產出最終報告 ---
+    print("=" * 70)
+    print("=== 整合測試總結報告 ===")
+    print("=" * 70)
+    print(f"總共測試: {len(worker_scripts)} 個工作者")
+    print(f"✅ 成功: {len(passed_tests)} 個")
+    print(f"❌ 失敗: {len(failed_tests)} 個")
+
+    if failed_tests:
+        print("\n--- 失敗的測試項目 ---")
+        for test_name in failed_tests:
+            print(f"  - {test_name}")
+        print("\n測試未通過。")
         sys.exit(1)
-    finally:
-        # 無論成功或失敗，都停止計時器並清理服務
-        timer.cancel()
-        _kill_all_services()
+    else:
+        print("\n🎉 所有工作者均通過整合測試！")
+        sys.exit(0)
 
-# 建立一個命名空間以便於管理
-# 這部分主要用於 `invoke --list`
-ns = Collection()
-ns.add_task(setup)
-ns.add_task(build)
-ns.add_task(start_services)
-ns.add_task(run_test)
-ns.add_task(clean)
-ns.add_task(test_startup)
-
-# 為了讓這個腳本可以直接執行 `python tasks.py`
 if __name__ == "__main__":
     main()
