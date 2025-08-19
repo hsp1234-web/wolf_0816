@@ -407,8 +407,8 @@ class BackgroundWorker:
     def _run(self):
         try:
             if not self._install_dependencies("requirements-server.txt"): return
-            # 根據新的獨立工作者架構 (plan.md)，此依賴檔案已過時，其安裝過程是造成啟動緩慢的主因。
-            # if not self._install_dependencies("requirements-worker.txt"): return
+            # 為實現完整模式，恢復 requirements-worker.txt 的安裝
+            if not self._install_dependencies("requirements-worker.txt"): return
             self.temp_server_manager.stop()
             time.sleep(1)
             self._log_manager.log("INFO", "🚀 所有依賴已備妥，正在啟動核心協調器...")
@@ -421,11 +421,11 @@ class BackgroundWorker:
             if port_file_path.exists():
                 try: port_file_path.unlink()
                 except Exception as e: self._log_manager.log("ERROR", f"清理舊埠號檔案失敗: {e}")
-            # 核心修改：移除 --no-mock 並設定 API_MODE=mock 環境變數，以遵循 AGENTS.md 的模擬測試規範
+            # 核心修改：移除 API_MODE='mock'，以允許 Colabpro.py 執行真實依賴
             launch_command = [sys.executable, str(orchestrator_script_path), "--port", str(self.port)]
             process_env = os.environ.copy()
-            process_env['API_MODE'] = 'mock'
-            self._log_manager.log("INFO", "🚀 正在以模擬模式 (API_MODE=mock) 啟動協調器...")
+            # process_env['API_MODE'] = 'mock' # 已移除，以啟用完整模式
+            self._log_manager.log("INFO", "🚀 正在以完整模式啟動協調器...")
             try:
                 key_from_secret = userdata.get('GOOGLE_API_KEY')
                 if key_from_secret:
