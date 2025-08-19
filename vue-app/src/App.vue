@@ -1,5 +1,8 @@
 <template>
   <div id="app" class="container">
+    <!-- 全域通知組件 -->
+    <NotificationHost />
+
     <!-- 標題 -->
     <header class="card" style="display: flex; justify-content: space-between; align-items: center;">
       <h1>音訊轉錄儀 (Vue)</h1>
@@ -75,6 +78,7 @@ import YouTubeReporter from './components/YouTubeReporter.vue'
 import PendingTasks from './components/PendingTasks.vue'
 import CompletedTasks from './components/CompletedTasks.vue'
 import TranscriptOutput from './components/TranscriptOutput.vue'
+import NotificationHost from './components/NotificationHost.vue'
 
 // 獲取 Pinia store 的實例
 const tasksStore = useTasksStore()

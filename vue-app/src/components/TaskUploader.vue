@@ -26,20 +26,17 @@
           <input type="number" id="beam-size-input" v-model.number="beamSize" min="1" max="10" style="width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #ccc; box-sizing: border-box;">
           <small style="font-size: 0.8em; color: #666;">建議值為 5。較大的值可能更準確但較慢。</small>
         </div>
-        <button
-          id="confirm-settings-btn"
-          @click="confirmSettings"
-          :disabled="modelDownloadStatus.status === 'downloading' || modelDownloadStatus.status === 'starting'"
-        >
-          {{ (modelDownloadStatus.status === 'downloading' || modelDownloadStatus.status === 'starting') ? '下載中...' : '✓ 確認設定' }}
-        </button>
-        <!-- JULES'S FIX: 模型下載進度條邏輯 -->
-        <div v-if="modelDownloadStatus.status !== 'idle'" class="progress-container" style="margin-top: 10px;">
+        <!-- JULES'S FIX: 模型下載進度條邏輯，現在是自動觸發，無需手動確認 -->
+        <div v-if="modelDownloadStatus.status !== 'idle' && modelDownloadStatus.status !== 'completed'" class="progress-container" style="margin-top: 10px;">
           <div
             class="progress-bar"
             :style="{ width: modelDownloadStatus.progress + '%', backgroundColor: modelDownloadStatus.status === 'failed' ? '#dc3545' : '' }"
           ></div>
           <span class="progress-text">{{ modelDownloadStatus.message }}</span>
+        </div>
+        <div v-else-if="modelDownloadStatus.status === 'completed'" class="progress-container" style="margin-top: 10px;">
+            <div class="progress-bar" style="width: 100%; background-color: var(--success-color);"></div>
+            <span class="progress-text">{{ modelDownloadStatus.message }}</span>
         </div>
       </div>
       <div class="card flex-col">
@@ -83,13 +80,16 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useTasksStore } from '@/stores/tasks'
+import { useNotificationStore } from '@/stores/notifications'
 import { logAction } from '@/utils/logging'
+import eventBus from '@/utils/eventBus'
 
 const tasksStore = useTasksStore()
+const notificationStore = useNotificationStore()
 
-// JULES'S FIX: 從 store 獲取模型下載狀態
+// 從 store 獲取模型下載狀態
 const modelDownloadStatus = computed(() => tasksStore.modelDownloadStatus)
 
 // --- 組件本地狀態 ---
@@ -97,7 +97,7 @@ const model = ref('tiny')
 const language = ref('zh')
 const beamSize = ref(1)
 const uploadedFiles = ref([])
-const fileInput = ref(null) // 用於觸發檔案選擇器
+const fileInput = ref(null)
 
 // --- 檔案處理方法 ---
 const handleFileSelect = (event) => {
@@ -107,7 +107,6 @@ const handleFileSelect = (event) => {
 
 const addFiles = (files) => {
   files.forEach(file => {
-    // 防止重複添加
     if (!uploadedFiles.value.some(f => f.name === file.name)) {
       uploadedFiles.value.push(file)
     }
@@ -121,7 +120,6 @@ const removeFile = (index) => {
 // --- 拖放處理 ---
 const onDragOver = (event) => {
   event.preventDefault()
-  // 可以添加視覺回饋，例如改變邊框顏色
 }
 
 const onDrop = (event) => {
@@ -130,12 +128,24 @@ const onDrop = (event) => {
   addFiles(droppedFiles)
 }
 
-// --- 按鈕事件處理 ---
-const confirmSettings = () => {
-  logAction('click-confirm-settings', model.value)
-  tasksStore.downloadModel(model.value)
+// --- 事件總線監聽 ---
+const handleIncomingFile = (file) => {
+  if (file instanceof File) {
+    addFiles([file]);
+    notificationStore.addNotification(`檔案 "${file.name}" 已成功載入至轉錄區！`, 'success');
+  }
 }
 
+onMounted(() => {
+  eventBus.on('send-file-to-uploader', handleIncomingFile)
+})
+
+onUnmounted(() => {
+  eventBus.off('send-file-to-uploader', handleIncomingFile)
+})
+
+
+// --- 按鈕事件處理 ---
 const startProcessing = async () => {
   if (uploadedFiles.value.length === 0) return
   logAction('click-start-processing', `files_count: ${uploadedFiles.value.length}`)

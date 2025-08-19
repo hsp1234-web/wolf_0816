@@ -120,20 +120,12 @@ app.add_middleware(
     allow_headers=["*"],  # 允許所有標頭
 )
 
-# --- 路徑設定 (MODIFIED FOR VUE APP) ---
+# --- 路徑設定 (VUE APP MIGRATION) ---
 UPLOADS_DIR = ROOT_DIR / "uploads"
 VUE_APP_DIST_DIR = ROOT_DIR / "vue-app" / "dist"
 
 # 確保目錄存在
 UPLOADS_DIR.mkdir(exist_ok=True)
-
-# 掛載 Vue app 的靜態資源
-if VUE_APP_DIST_DIR.exists():
-    log.info(f"Serving Vue.js app from {VUE_APP_DIST_DIR}")
-    app.mount("/assets", StaticFiles(directory=VUE_APP_DIST_DIR / "assets"), name="vue-assets")
-else:
-    log.warning(f"Vue app build directory not found at {VUE_APP_DIST_DIR}. Frontend may not load.")
-
 
 # JULES'S FIX (2025-08-13): 根據計畫，新增此端點來處理複雜檔名
 from urllib.parse import unquote
@@ -217,8 +209,12 @@ def convert_to_media_url(absolute_path_str: str) -> str:
 
 # --- API 端點 ---
 
-@app.get("/", response_class=HTMLResponse)
-async def serve_frontend(request: Request):
+# 這是 Vue.js SPA (單頁應用) 的 catch-all 路由。
+# 它確保任何非 API、非靜態檔案的請求都會回傳主 index.html，
+# 然後由 Vue Router 接管前端的路由。
+# 必須放在所有其他 @app.get("/") 路由的後面。
+@app.get("/{full_path:path}", response_class=HTMLResponse)
+async def serve_vue_app(request: Request, full_path: str):
     """根端點，提供 Vue.js 前端操作介面。"""
     vue_index_path = VUE_APP_DIST_DIR / "index.html"
     if not vue_index_path.is_file():

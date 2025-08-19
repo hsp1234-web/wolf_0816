@@ -1,3 +1,16 @@
+#
+# **封存檔案 (Archived File)**
+#
+# 此檔案為舊版 API 伺服器的實作，其大部分邏輯已被 `src/api/api_server.py`
+# 和獨立的工作者 (worker) 腳本取代。
+# 其內容僅供歷史參考，不參與主程式的任何運作。
+#
+# This file is an implementation of the old API server. Most of its logic has been
+# replaced by `src/api/api_server.py` and the standalone worker scripts.
+# Its contents are for historical reference only and are not part of the main program's operation.
+#
+# 封存日期 (Date of Archival): 2025-08-18
+#
 # api_server.py
 import uuid
 import shutil
