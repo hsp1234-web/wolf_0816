@@ -1,8 +1,40 @@
 # 系統架構現況分析
 
-**文件日期：** 2025年8月17日
+## 系統架構圖
+
+```mermaid
+graph TD
+    subgraph "使用者端 (Browser)"
+        A[Vue.js 前端應用<br>(vue-app)]
+    end
+
+    subgraph "後端服務 (Backend Services)"
+        B[FastAPI 伺服器<br>(src/api/api_server.py)]
+        C[非同步任務工作器<br>(src/tasks/worker.py)]
+        D[資料庫管理器<br>(src/db/manager.py)]
+        E[SQLite 資料庫<br>(database.db)]
+    end
+
+    subgraph "開發與測試 (Dev & Test)"
+        F[Pytest/Playwright 測試套件<br>(e2e_tests)]
+        G[測試啟動器<br>(runner/localtest.py)]
+    end
+
+    A -- "REST API (HTTP)<br>WebSocket (WSS)" --> B
+    B -- "任務排程/狀態查詢" --> D
+    C -- "讀取待辦任務/寫入結果" --> D
+    D -- "讀/寫" --> E
+    B -- "提供靜態檔案" --> A
+
+    G -- "執行" --> F
+    F -- "啟動/管理" --> B
+    F -- "啟動/管理" --> D
+    F -- "與前端互動" --> A
+```
+
+**文件更新日期：** 2025年8月19日
 **作者:** Jules (AI Software Engineer)
-**狀態:** 現行架構描述 (v3)
+**狀態:** 現行架構描述 (v4) - 已新增系統架構圖
 
 ---
 
