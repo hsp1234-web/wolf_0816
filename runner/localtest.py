@@ -6,6 +6,7 @@ import logging
 import threading
 import os
 import urllib.request
+import shutil
 from pathlib import Path
 from multiprocessing import Process, Manager
 
@@ -31,6 +32,21 @@ GLOBAL_TIMEOUT = 120 # 超時時間
 # --- 日誌設定 ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 log = logging.getLogger('LocalTestRunner')
+
+
+def clear_pycache():
+    """遞迴地尋找並移除專案中所有的 __pycache__ 目錄。"""
+    log.info("🧹 開始清理 Python 位元組碼快取 (__pycache__)...")
+    count = 0
+    for path in ROOT_DIR.rglob('__pycache__'):
+        if path.is_dir():
+            log.info(f"  - 正在移除: {path}")
+            shutil.rmtree(path)
+            count += 1
+    if count > 0:
+        log.info(f"✅ 成功移除了 {count} 個 __pycache__ 目錄。")
+    else:
+        log.info("✅ 未找到任何 __pycache__ 目錄，無需清理。")
 
 
 # --- 狀態伺服器 ---
@@ -170,6 +186,7 @@ class LocalTestRunner:
         log.info("👋 所有服務已關閉。")
 
     def run(self):
+        clear_pycache() # 清除快取以避免「幽靈程式碼」問題
         overall_start_time = time.monotonic()
         try:
             # 1. 立即啟動狀態伺服器
