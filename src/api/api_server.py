@@ -73,6 +73,24 @@ class ConnectionManager:
         self.active_connections.append(websocket)
         log.info(f"新用戶端連線。目前共 {len(self.active_connections)} 個連線。")
 
+        # JULES'S FIX (2025-08-19): 解決前端狀態不同步問題。
+        # 當一個新用戶端連線時，立即將所有工作者的當前狀態發送給它。
+        # 這確保了即使用戶端錯過了先前的廣播，也能獲得最新的狀態。
+        try:
+            initial_status_payload = {
+                worker: {"status": data["status"], "last_error": data["last_error"]}
+                for worker, data in WORKER_STATUS.items()
+            }
+            initial_message = {
+                "type": "ALL_WORKERS_STATUS_UPDATE",
+                "payload": initial_status_payload
+            }
+            # 直接使用 websocket 物件的 send_json 方法，只發送給當前的 websocket
+            await websocket.send_json(initial_message)
+            log.info(f"已將所有工作者的初始狀態傳送給新連線的用戶端。")
+        except Exception as e:
+            log.error(f"發送初始工作者狀態時發生錯誤: {e}", exc_info=True)
+
     def disconnect(self, websocket: WebSocket):
         self.active_connections.remove(websocket)
         log.info(f"一個用戶端離線。目前共 {len(self.active_connections)} 個連線。")

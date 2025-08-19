@@ -150,12 +150,21 @@ export const useTasksStore = defineStore('tasks', {
       console.log('收到 WebSocket 訊息:', message);
       const { type, payload } = message;
 
+      if (type === 'ALL_WORKERS_STATUS_UPDATE') {
+        // JULES'S FIX (2025-08-19): 處理來自後端的完整狀態更新。
+        // 這會直接用後端傳來的完整物件替換掉前端的狀態，確保同步。
+        this.workerStatuses = payload;
+        console.log('已接收並初始化所有工作者的狀態:', this.workerStatuses);
+        return; // 訊息已處理
+      }
+
       if (type === 'WORKER_STATUS_UPDATE') {
         const { worker, status, last_error } = payload;
         if (this.workerStatuses[worker]) {
           this.workerStatuses[worker].status = status;
           this.workerStatuses[worker].last_error = last_error;
         } else {
+          // 如果物件不存在，則建立它
           this.workerStatuses[worker] = { status, last_error };
         }
         console.log(`工作者狀態更新: ${worker} -> ${status}`);

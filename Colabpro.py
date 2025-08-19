@@ -421,8 +421,11 @@ class BackgroundWorker:
             if port_file_path.exists():
                 try: port_file_path.unlink()
                 except Exception as e: self._log_manager.log("ERROR", f"清理舊埠號檔案失敗: {e}")
-            launch_command = [sys.executable, str(orchestrator_script_path), "--no-mock", "--port", str(self.port)]
+            # 核心修改：移除 --no-mock 並設定 API_MODE=mock 環境變數，以遵循 AGENTS.md 的模擬測試規範
+            launch_command = [sys.executable, str(orchestrator_script_path), "--port", str(self.port)]
             process_env = os.environ.copy()
+            process_env['API_MODE'] = 'mock'
+            self._log_manager.log("INFO", "🚀 正在以模擬模式 (API_MODE=mock) 啟動協調器...")
             try:
                 key_from_secret = userdata.get('GOOGLE_API_KEY')
                 if key_from_secret:
