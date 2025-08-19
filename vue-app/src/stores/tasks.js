@@ -16,6 +16,8 @@ export const useTasksStore = defineStore('tasks', {
     socketConnected: false,
     // 系統狀態
     systemStats: {},
+    // 工作者狀態
+    workerStatuses: {},
     // JULES'S FIX: 新增模型下載狀態
     modelDownloadStatus: {
       model: null,
@@ -147,6 +149,18 @@ export const useTasksStore = defineStore('tasks', {
     handleSocketMessage(message) {
       console.log('收到 WebSocket 訊息:', message);
       const { type, payload } = message;
+
+      if (type === 'WORKER_STATUS_UPDATE') {
+        const { worker, status, last_error } = payload;
+        if (this.workerStatuses[worker]) {
+          this.workerStatuses[worker].status = status;
+          this.workerStatuses[worker].last_error = last_error;
+        } else {
+          this.workerStatuses[worker] = { status, last_error };
+        }
+        console.log(`工作者狀態更新: ${worker} -> ${status}`);
+        return; // 訊息已處理
+      }
 
       // JULES'S FIX: 處理模型下載狀態更新
       if (type === 'DOWNLOAD_STATUS') {
@@ -365,6 +379,31 @@ export const useTasksStore = defineStore('tasks', {
             console.error('處理 YouTube 請求時發生錯誤:', error);
             throw new Error(error.response?.data?.detail || '建立 YouTube 分析任務失敗');
         }
-    }
+    },
+
+    async fetchWorkerStatuses() {
+      try {
+        const response = await axios.get(`${API_BASE_URL}/workers/status`);
+        this.workerStatuses = response.data;
+        console.log('工作者狀態已更新:', this.workerStatuses);
+      } catch (error) {
+        console.error('獲取工作者狀態時發生錯誤:', error);
+      }
+    },
+
+    async launchWorker(workerName) {
+      try {
+        console.log(`正在請求啟動工作者: ${workerName}`);
+        await axios.post(`${API_BASE_URL}/workers/launch/${workerName}`);
+        // 狀態更新將透過 WebSocket 推播，此處無需做任何事
+      } catch (error) {
+        console.error(`啟動工作者 ${workerName} 時發生錯誤:`, error);
+        // 可以選擇性地在這裡更新狀態為 FAILED
+        if (this.workerStatuses[workerName]) {
+          this.workerStatuses[workerName].status = 'FAILED';
+          this.workerStatuses[workerName].last_error = '啟動請求失敗';
+        }
+      }
+    },
   }
 })

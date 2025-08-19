@@ -20,6 +20,9 @@
           @click="setActiveTab('transcribe')"
         >
           📁 本機檔案轉錄
+          <span :class="getWorkerStatusInfo('transcription').class" class="status-indicator">
+            {{ getWorkerStatusInfo('transcription').text }}
+          </span>
         </button>
         <button
           class="tab-button"
@@ -27,6 +30,9 @@
           @click="setActiveTab('downloader')"
         >
           📥 媒體下載器
+          <span :class="getWorkerStatusInfo('youtube').class" class="status-indicator">
+            {{ getWorkerStatusInfo('youtube').text }}
+          </span>
         </button>
         <button
           class="tab-button"
@@ -34,6 +40,9 @@
           @click="setActiveTab('youtube')"
         >
           ▶️ YouTube 轉報告
+          <span :class="getWorkerStatusInfo('youtube').class" class="status-indicator">
+            {{ getWorkerStatusInfo('youtube').text }}
+          </span>
         </button>
       </div>
     </div>
@@ -68,7 +77,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useTasksStore } from './stores/tasks'
 import { logAction } from './utils/logging'
 import Dashboard from './components/Dashboard.vue'
@@ -83,18 +92,54 @@ import NotificationHost from './components/NotificationHost.vue'
 // 獲取 Pinia store 的實例
 const tasksStore = useTasksStore()
 
-// 控制當前作用中分頁的狀態
+// --- 狀態管理 ---
 const activeTab = ref('transcribe')
+const workerStatuses = computed(() => tasksStore.workerStatuses)
 
+// --- 方法 ---
+
+// 根據工作者狀態回傳顯示資訊
+const getWorkerStatusInfo = (workerName) => {
+  const status = workerStatuses.value[workerName]?.status || 'NOT_STARTED';
+  switch (status) {
+    case 'READY':
+      return { text: '就緒', class: 'status-green' };
+    case 'INSTALLING':
+      return { text: '準備中...', class: 'status-yellow' };
+    case 'FAILED':
+      return { text: '失敗', class: 'status-red' };
+    default:
+      return { text: '未啟動', class: 'status-grey' };
+  }
+};
+
+// 設定當前頁籤，並按需啟動工作者
 const setActiveTab = (tabName) => {
   activeTab.value = tabName
   logAction('click-tab', tabName)
+
+  const workerMap = {
+    transcribe: 'transcription',
+    youtube: 'youtube',
+    downloader: 'youtube' // 下載器也依賴 youtube 工作者
+  };
+
+  const workerName = workerMap[tabName];
+  if (workerName) {
+    const status = workerStatuses.value[workerName]?.status;
+    // 如果工作者未啟動或失敗，則嘗試啟動它
+    if (status === 'NOT_STARTED' || status === 'FAILED') {
+      tasksStore.launchWorker(workerName);
+    }
+  }
 }
 
-// 當元件掛載完成後，執行初始化操作
+// --- 生命週期鉤子 ---
 onMounted(() => {
   // 從後端獲取任務歷史紀錄
   tasksStore.fetchTasks()
+  // 獲取工作者初始狀態
+  tasksStore.fetchWorkerStatuses()
   // 建立 WebSocket 連線
   tasksStore.connectWebSocket()
 })
@@ -103,6 +148,26 @@ onMounted(() => {
 <style scoped>
 /* App.vue 的特定樣式可以放在這裡 */
 /* 全域樣式已在 main.css 中定義 */
+
+.status-indicator {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  margin-left: 10px;
+  color: white;
+  font-weight: 600;
+  vertical-align: middle;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.status-green { background-color: #28a745; }
+.status-yellow { background-color: #ffc107; color: #212529; }
+.status-red { background-color: #dc3545; }
+.status-grey { background-color: #6c757d; }
+
+
 .container {
   max-width: 1200px;
   margin: auto;

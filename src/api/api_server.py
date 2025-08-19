@@ -91,6 +91,26 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+# --- 工作者狀態管理器 (Worker Status Manager) ---
+# 定義已知的工作者及其對應的啟動腳本
+# 這將作為我們追蹤所有工作者狀態的中心註冊表
+WORKER_SCRIPTS = {
+    "youtube": ROOT_DIR / "run_youtube_worker.py",
+    "transcription": ROOT_DIR / "run_transcription_worker.py",
+    "ai_report": ROOT_DIR / "run_ai_report_worker.py",
+}
+
+# 全域工作者狀態註冊表
+# 狀態可以是: NOT_STARTED, INSTALLING, READY, FAILED, RUNNING
+WORKER_STATUS = {
+    name: {"status": "NOT_STARTED", "process": None, "last_error": None}
+    for name in WORKER_SCRIPTS
+}
+
+log.info(f"工作者管理器已初始化，將追蹤: {list(WORKER_STATUS.keys())}")
+# --- 工作者狀態管理器結束 ---
+
+
 from contextlib import asynccontextmanager
 
 # --- DB 客戶端 ---
@@ -389,6 +409,43 @@ async def get_system_stats():
         "gpu_usage": gpu_usage,
         "gpu_detected": gpu_detected,
     }
+
+
+@app.get("/api/workers/status", response_class=JSONResponse)
+async def get_workers_status():
+    """
+    獲取所有已知工作者的目前狀態。
+    """
+    # 為了安全，我們回傳一個不包含 'process' 物件的狀態副本
+    status_copy = {
+        worker: {
+            "status": data["status"],
+            "last_error": data["last_error"]
+        }
+        for worker, data in WORKER_STATUS.items()
+    }
+    return JSONResponse(content=status_copy)
+
+@app.post("/api/workers/launch/{worker_name}", status_code=202)
+async def launch_worker(worker_name: str):
+    """
+    按需啟動一個指定的工作者。
+    """
+    if worker_name not in WORKER_SCRIPTS:
+        raise HTTPException(status_code=404, detail=f"找不到名為 '{worker_name}' 的工作者。")
+
+    current_status = WORKER_STATUS[worker_name]["status"]
+    if current_status in ["INSTALLING", "RUNNING", "READY"]:
+        log.info(f"工作者 '{worker_name}' 的狀態為 {current_status}，跳過啟動。")
+        return {"status": "skipped", "message": f"工作者 '{worker_name}' 已在運行或準備就緒 ({current_status})，無需重新啟動。"}
+
+    log.info(f"收到啟動工作者 '{worker_name}' 的請求。")
+    # 在背景執行緒中啟動工作者，以避免阻塞 API 伺服器
+    loop = asyncio.get_running_loop()
+    thread = threading.Thread(target=run_worker_in_background, args=(worker_name, loop))
+    thread.start()
+
+    return {"status": "accepted", "message": f"已接受啟動工作者 '{worker_name}' 的請求。"}
 
 
 @app.get("/api/tasks")
@@ -765,6 +822,79 @@ async def process_youtube_urls(request: Request):
             })
 
     return JSONResponse(content={"message": f"已為 {len(tasks)} 個 URL 建立處理任務。", "tasks": tasks})
+
+
+def run_worker_in_background(worker_name: str, loop: asyncio.AbstractEventLoop):
+    """
+    在背景執行緒中安全地執行並監控一個工作者腳本。
+    """
+    script_path = WORKER_SCRIPTS.get(worker_name)
+    if not script_path or not script_path.exists():
+        log.error(f"❌ [執行緒] 找不到工作者 '{worker_name}' 的腳本: {script_path}")
+        return
+
+    try:
+        # 1. 更新狀態為安裝中並廣播
+        WORKER_STATUS[worker_name] = {"status": "INSTALLING", "process": None, "last_error": None}
+        status_update = {"type": "WORKER_STATUS_UPDATE", "payload": {"worker": worker_name, "status": "INSTALLING"}}
+        asyncio.run_coroutine_threadsafe(manager.broadcast_json(status_update), loop)
+        log.info(f"🧵 [執行緒] 開始準備工作者 '{worker_name}'...")
+
+        # 2. 執行工作者腳本
+        # 根據 AGENTS.md，我們應使用 --test 模式來快速驗證，避免安裝重依賴。
+        # 這些獨立的工作者腳本被設計為在閒置時自動退出。
+        cmd = [sys.executable, str(script_path), "--test"]
+
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding='utf-8'
+        )
+        WORKER_STATUS[worker_name]["process"] = process
+
+        stdout, stderr = process.communicate(timeout=120) # 增加 120 秒超時
+        return_code = process.returncode
+
+        # 3. 根據執行結果更新最終狀態
+        if return_code == 0:
+            log.info(f"✅ [執行緒] 工作者 '{worker_name}' 準備就緒 (腳本成功執行完畢)。")
+            WORKER_STATUS[worker_name]["status"] = "READY"
+            final_status = "READY"
+        else:
+            log.error(f"❌ [執行緒] 工作者 '{worker_name}' 啟動失敗 (返回碼: {return_code})。")
+            log.error(f"   Stderr: {stderr}")
+            WORKER_STATUS[worker_name]["status"] = "FAILED"
+            WORKER_STATUS[worker_name]["last_error"] = stderr.strip()
+            final_status = "FAILED"
+
+    except subprocess.TimeoutExpired:
+        log.error(f"❌ [執行緒] 工作者 '{worker_name}' 執行超時。")
+        process.kill()
+        stdout, stderr = process.communicate()
+        WORKER_STATUS[worker_name]["status"] = "FAILED"
+        WORKER_STATUS[worker_name]["last_error"] = "執行超時 (120秒)"
+        final_status = "FAILED"
+    except Exception as e:
+        log.error(f"❌ [執行緒] 執行工作者 '{worker_name}' 時發生嚴重錯誤: {e}", exc_info=True)
+        WORKER_STATUS[worker_name]["status"] = "FAILED"
+        WORKER_STATUS[worker_name]["last_error"] = str(e)
+        final_status = "FAILED"
+
+    finally:
+        # 4. 廣播最終狀態
+        final_update = {
+            "type": "WORKER_STATUS_UPDATE",
+            "payload": {
+                "worker": worker_name,
+                "status": final_status,
+                "last_error": WORKER_STATUS[worker_name].get("last_error")
+            }
+        }
+        asyncio.run_coroutine_threadsafe(manager.broadcast_json(final_update), loop)
+        if worker_name in WORKER_STATUS:
+            WORKER_STATUS[worker_name]["process"] = None # 清理進程對象
 
 
 def trigger_model_download(task_id: str, loop: asyncio.AbstractEventLoop):

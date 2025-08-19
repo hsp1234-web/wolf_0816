@@ -407,7 +407,8 @@ class BackgroundWorker:
     def _run(self):
         try:
             if not self._install_dependencies("requirements-server.txt"): return
-            if not self._install_dependencies("requirements-worker.txt"): return
+            # 根據新的獨立工作者架構 (plan.md)，此依賴檔案已過時，其安裝過程是造成啟動緩慢的主因。
+            # if not self._install_dependencies("requirements-worker.txt"): return
             self.temp_server_manager.stop()
             time.sleep(1)
             self._log_manager.log("INFO", "🚀 所有依賴已備妥，正在啟動核心協調器...")
