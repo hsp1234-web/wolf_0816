@@ -16,6 +16,20 @@ from pathlib import Path
 # --- 全域設定 ---
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
+def clear_pycache():
+    """遞迴地尋找並移除專案中所有的 __pycache__ 目錄。"""
+    log.info("🧹 開始清理 Python 位元組碼快取 (__pycache__)...")
+    count = 0
+    for path in ROOT_DIR.rglob('__pycache__'):
+        if path.is_dir():
+            log.info(f"  - 正在移除: {path}")
+            shutil.rmtree(path)
+            count += 1
+    if count > 0:
+        log.info(f"✅ 成功移除了 {count} 個 __pycache__ 目錄。")
+    else:
+        log.info("✅ 未找到任何 __pycache__ 目錄，無需清理。")
+
 # 將 src 目錄加入 sys.path 以便匯入後端模組
 sys.path.insert(0, str(ROOT_DIR / "src"))
 from db.database import initialize_database
@@ -63,6 +77,9 @@ class StagedLauncher:
 
     def run(self):
         """執行分段式啟動流程。"""
+        # 在執行任何操作之前，先清理 Python 快取，以解決「幽靈程式碼」問題
+        clear_pycache()
+
         start_time = time.time()
         log.info("🚀 啟動分段式啟動器...")
         log.info(f"✅ 網址已就緒: {self.api_url}")
