@@ -62,6 +62,8 @@ import re
 import json
 import queue
 from pathlib import Path
+import tarfile
+import sysconfig
 
 try:
     import requests
@@ -386,6 +388,9 @@ class BackgroundWorker:
         self._stats['status'] = f"安裝依賴 ({requirements_file})..."
         try:
             subprocess.run([sys.executable, "-m", "pip", "install", "-q", "uv"], check=True)
+            # JULES'S FIX: To package dependencies, we must install them to a specific location.
+            # However, for Colab, the default site-packages is what we want to cache.
+            # So, the original install logic is correct for the "slow path".
             command = [sys.executable, "-m", "uv", "pip", "install", "-r", str(req_path)]
             process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', bufsize=1)
             return_code = self._stream_process_output(process)
@@ -404,11 +409,130 @@ class BackgroundWorker:
             self.log_queue.put({"log": f"\\033[31m[CRITICAL] {error_msg}\\033[0m"})
             return False
 
+    def _extract_dependencies(self, archive_path: Path) -> bool:
+        """從 .tar.gz 檔案中解壓縮依賴。"""
+        self._log_manager.log("INFO", f"正在從 {archive_path.name} 解壓縮...")
+        self._stats['status'] = "解壓縮依賴..."
+        try:
+            # In Colab, we extract to the root, as paths in tar are absolute or relative to specific points
+            extract_target = Path("/")
+            self._log_manager.log(f"解壓縮目標路徑: {extract_target}")
+            with tarfile.open(archive_path, "r:gz") as tar:
+                tar.extractall(path=extract_target)
+            self._log_manager.log("SUCCESS", "✅ 依賴解壓縮完成。")
+            return True
+        except Exception as e:
+            self._log_manager.log("CRITICAL", f"解壓縮依賴時發生錯誤: {e}", exc_info=True)
+            return False
+
+    def _create_dependency_cache(self, archive_path: Path) -> bool:
+        """將已安裝的依賴打包成 .tar.gz 快取檔。"""
+        self._log_manager.log("INFO", "偵測到首次安裝，正在建立依賴快取...")
+        self._stats['status'] = "建立依賴快取..."
+        try:
+            # In Colab, packages are typically installed in /usr/local/lib/pythonX.Y/site-packages
+            site_packages_path = next(p for p in sys.path if 'site-packages' in p and p.startswith('/usr/local/lib'))
+            site_packages = Path(site_packages_path)
+
+            # Also include frontend dependencies, which are in the project folder
+            node_modules = self.project_path / "vue-app" / "node_modules"
+
+            paths_to_cache = []
+            if site_packages.exists():
+                paths_to_cache.append(site_packages)
+                self._log_manager.log(f"找到 site-packages 目錄: {site_packages}")
+            else:
+                self._log_manager.log("WARN", f"找不到 site-packages 目錄: {site_packages}")
+
+            if node_modules.exists():
+                paths_to_cache.append(node_modules)
+                self._log_manager.log(f"找到 node_modules 目錄: {node_modules}")
+            else:
+                self._log_manager.log("WARN", f"找不到 node_modules 目錄: {node_modules}")
+
+            if not paths_to_cache:
+                self._log_manager.log("ERROR", "找不到任何可快取的依賴目錄。")
+                return False
+
+            self._log_manager.log(f"正在建立快取檔案: {archive_path}")
+            with tarfile.open(archive_path, "w:gz") as tar:
+                for path in paths_to_cache:
+                    # arcname should be the path as it should be on extraction
+                    # For site-packages, it's an absolute path.
+                    # For node_modules, it's relative to the project dir.
+                    arcname = path.as_posix()
+                    self._log_manager.log(f"正在將 {path} (arcname: {arcname}) 加入快取...")
+                    tar.add(path, arcname=arcname)
+
+            self._log_manager.log("SUCCESS", f"✅ 成功建立依賴快取檔案: {archive_path.name}")
+            return True
+        except Exception as e:
+            self._log_manager.log("CRITICAL", f"建立依賴快取時發生錯誤: {e}", exc_info=True)
+            return False
+
+    def _build_frontend(self) -> bool:
+        """建置 Vue.js 前端應用。"""
+        self._log_manager.log("INFO", "正在建置前端應用...")
+        self._stats['status'] = "建置前端..."
+        vue_app_dir = self.project_path / "vue-app"
+        try:
+            # We assume bun is installed or part of the environment
+            log_msg = "使用 bun install 安裝前端依賴..."
+            self._log_manager.log("INFO", log_msg)
+            self.log_queue.put({"log": f"\\033[1;36m> {log_msg}\\033[0m"})
+            # In cache mode, node_modules exists, but bun install is safe to run
+            subprocess.run(["bun", "install"], cwd=vue_app_dir, check=True, capture_output=True, text=True, encoding='utf-8')
+
+            log_msg = "使用 bun run build 建置前端..."
+            self._log_manager.log("INFO", log_msg)
+            self.log_queue.put({"log": f"\\033[1;36m> {log_msg}\\033[0m"})
+            subprocess.run(["bun", "run", "build"], cwd=vue_app_dir, check=True, capture_output=True, text=True, encoding='utf-8')
+
+            self._log_manager.log("SUCCESS", "✅ 前端應用建置成功。")
+            return True
+        except FileNotFoundError:
+            self._log_manager.log("CRITICAL", "找不到 'bun' 指令。請確保 Bun.js 已安裝。")
+            return False
+        except subprocess.CalledProcessError as e:
+            self._log_manager.log("CRITICAL", f"前端建置失敗: {e.stderr}")
+            return False
+        except Exception as e:
+            self._log_manager.log("CRITICAL", f"前端建置時發生未預期錯誤: {e}", exc_info=True)
+            return False
+
     def _run(self):
         try:
-            if not self._install_dependencies("requirements-server.txt"): return
-            # 為實現完整模式，恢復 requirements-worker.txt 的安裝
-            if not self._install_dependencies("requirements-worker.txt"): return
+            # --- Pre-baking Cache Logic ---
+            # Use a persistent location outside the cloned project folder if possible,
+            # but for this implementation, we'll place it in the parent of the project folder
+            # to survive FORCE_REPO_REFRESH. A better location might be /content/
+            cache_archive = self.project_path.parent / "dependencies.tar.gz"
+
+            if cache_archive.is_file() and not FORCE_REPO_REFRESH:
+                self._log_manager.log("INFO", f"✅ 發現依賴快取檔案，將從快取中解壓縮...")
+                if not self._extract_dependencies(cache_archive):
+                    self._log_manager.log("CRITICAL", "從快取解壓縮依賴失敗，啟動中止。")
+                    return
+            else:
+                if FORCE_REPO_REFRESH:
+                    self._log_manager.log("INFO", "強制刷新已啟用，將執行完整安裝。")
+                else:
+                    self._log_manager.log("INFO", "未發現依賴快取，將執行完整安裝...")
+
+                # Install frontend dependencies (node_modules) first, so they can be cached
+                if not self._build_frontend():
+                    self._log_manager.log("CRITICAL", "前端準備失敗，啟動中止。")
+                    return
+
+                if not self._install_dependencies("requirements-server.txt"): return
+                if not self._install_dependencies("requirements-worker.txt"): return
+
+                # After successful install, create cache for next time
+                if not self._create_dependency_cache(cache_archive):
+                    # This is not a fatal error, we can still proceed
+                    self._log_manager.log("WARN", "建立依賴快取失敗，但將繼續啟動。")
+
+            # --- Now that deps are ready, stop temp server and launch orchestrator ---
             self.temp_server_manager.stop()
             time.sleep(1)
             self._log_manager.log("INFO", "🚀 所有依賴已備妥，正在啟動核心協調器...")

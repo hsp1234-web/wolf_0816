@@ -1000,6 +1000,7 @@ def trigger_transcription(task_id: str, file_path: str, model_size: str, languag
     在一個單獨的執行緒中執行轉錄，並透過 WebSocket 即時串流結果。
     """
     def _transcribe_in_thread():
+        start_time = time.monotonic()
         display_name = original_filename or file_path
         log.info(f"🧵 [執行緒] 開始處理轉錄任務: {task_id}，檔案: {display_name}")
 
@@ -1037,7 +1038,12 @@ def trigger_transcription(task_id: str, file_path: str, model_size: str, languag
             start_message_filename = original_filename or Path(file_path).name
             start_message = {
                 "type": "TRANSCRIPTION_STATUS",
-                "payload": {"task_id": task_id, "status": "starting", "filename": start_message_filename}
+                "payload": {
+                    "task_id": task_id,
+                    "status": "starting",
+                    "filename": start_message_filename,
+                    "elapsed_time": time.monotonic() - start_time
+                }
             }
             asyncio.run_coroutine_threadsafe(manager.broadcast_json(start_message), loop)
 
@@ -1051,7 +1057,11 @@ def trigger_transcription(task_id: str, file_path: str, model_size: str, languag
                         if data.get("type") == "segment":
                             message = {
                                 "type": "TRANSCRIPTION_UPDATE",
-                                "payload": {"task_id": task_id, **data}
+                                "payload": {
+                                    "task_id": task_id,
+                                    "elapsed_time": time.monotonic() - start_time,
+                                    **data
+                                }
                             }
                             asyncio.run_coroutine_threadsafe(manager.broadcast_json(message), loop)
                     except json.JSONDecodeError:
@@ -1074,7 +1084,13 @@ def trigger_transcription(task_id: str, file_path: str, model_size: str, languag
 
                 final_message = {
                     "type": "TRANSCRIPTION_STATUS",
-                    "payload": {"task_id": task_id, "status": "completed", "result": final_result_obj, "task_type": "transcribe"}
+                    "payload": {
+                        "task_id": task_id,
+                        "status": "completed",
+                        "result": final_result_obj,
+                        "task_type": "transcribe",
+                        "elapsed_time": time.monotonic() - start_time
+                    }
                 }
             else:
                 stderr_output = process.stderr.read() if process.stderr else "N/A"
@@ -1082,7 +1098,13 @@ def trigger_transcription(task_id: str, file_path: str, model_size: str, languag
                 db_client.update_task_status(task_id, 'failed', json.dumps({"error": stderr_output}))
                 final_message = {
                     "type": "TRANSCRIPTION_STATUS",
-                    "payload": {"task_id": task_id, "status": "failed", "error": stderr_output, "task_type": "transcribe"}
+                    "payload": {
+                        "task_id": task_id,
+                        "status": "failed",
+                        "error": stderr_output,
+                        "task_type": "transcribe",
+                        "elapsed_time": time.monotonic() - start_time
+                    }
                 }
 
             log.info(f"📢 [WebSocket] 正在廣播任務 '{task_id}' 的最終狀態: {final_message['payload']['status']}")
@@ -1092,7 +1114,12 @@ def trigger_transcription(task_id: str, file_path: str, model_size: str, languag
             log.error(f"❌ [執行緒] 轉錄執行緒中發生嚴重錯誤: {e}", exc_info=True)
             error_message = {
                 "type": "TRANSCRIPTION_STATUS",
-                "payload": {"task_id": task_id, "status": "failed", "error": str(e)}
+                "payload": {
+                    "task_id": task_id,
+                    "status": "failed",
+                    "error": str(e),
+                    "elapsed_time": time.monotonic() - start_time
+                }
             }
             asyncio.run_coroutine_threadsafe(manager.broadcast_json(error_message), loop)
 
@@ -1103,6 +1130,7 @@ def trigger_transcription(task_id: str, file_path: str, model_size: str, languag
 def trigger_youtube_processing(task_id: str, loop: asyncio.AbstractEventLoop):
     """在一個單獨的執行緒中執行 YouTube 處理流程（已更新為彈性模式）。"""
     def _process_in_thread():
+        start_time = time.monotonic()
         log.info(f"🧵 [執行緒] 開始處理 YouTube 任務鏈，起始 ID: {task_id}")
 
         task_info = db_client.get_task_status(task_id)
@@ -1121,7 +1149,13 @@ def trigger_youtube_processing(task_id: str, loop: asyncio.AbstractEventLoop):
 
             asyncio.run_coroutine_threadsafe(manager.broadcast_json({
                 "type": "YOUTUBE_STATUS",
-                "payload": {"task_id": task_id, "status": "downloading", "message": f"正在下載 ({download_type}): {url}", "task_type": task_type}
+                "payload": {
+                    "task_id": task_id,
+                    "status": "downloading",
+                    "message": f"正在下載 ({download_type}): {url}",
+                    "task_type": task_type,
+                    "elapsed_time": time.monotonic() - start_time
+                }
             }), loop)
 
             downloader_script_path = ROOT_DIR / "src" / "tools" / ("mock_youtube_downloader.py" if IS_MOCK_MODE else "youtube_downloader.py")
@@ -1147,7 +1181,14 @@ def trigger_youtube_processing(task_id: str, loop: asyncio.AbstractEventLoop):
                         if progress_data.get("type") == "progress":
                              asyncio.run_coroutine_threadsafe(manager.broadcast_json({
                                 "type": "YOUTUBE_STATUS",
-                                "payload": { "task_id": task_id, "status": "downloading", "message": progress_data.get("description", "下載中..."), "progress": progress_data.get("percent", 0), "task_type": task_type }
+                                "payload": {
+                                    "task_id": task_id,
+                                    "status": "downloading",
+                                    "message": progress_data.get("description", "下載中..."),
+                                    "progress": progress_data.get("percent", 0),
+                                    "task_type": task_type,
+                                    "elapsed_time": time.monotonic() - start_time
+                                }
                             }), loop)
                     except json.JSONDecodeError:
                         log.debug(f"[stderr from youtube_downloader]: {line}")
@@ -1170,7 +1211,13 @@ def trigger_youtube_processing(task_id: str, loop: asyncio.AbstractEventLoop):
                 log.info(f"✅ [執行緒] '僅下載媒體' 任務 {task_id} 完成。")
                 asyncio.run_coroutine_threadsafe(manager.broadcast_json({
                     "type": "YOUTUBE_STATUS",
-                    "payload": {"task_id": task_id, "status": "completed", "result": download_result, "task_type": "download_only"}
+                    "payload": {
+                        "task_id": task_id,
+                        "status": "completed",
+                        "result": download_result,
+                        "task_type": "download_only",
+                        "elapsed_time": time.monotonic() - start_time
+                    }
                 }), loop)
                 return
 
@@ -1213,7 +1260,13 @@ def trigger_youtube_processing(task_id: str, loop: asyncio.AbstractEventLoop):
             log.info(f"執行 Gemini 分析，任務: '{tasks_to_run}', 格式: '{output_format}'")
             asyncio.run_coroutine_threadsafe(manager.broadcast_json({
                 "type": "YOUTUBE_STATUS",
-                "payload": {"task_id": dependent_task_id, "status": "processing", "message": f"使用 {model} 進行 AI 分析...", "task_type": "gemini_process"}
+                "payload": {
+                    "task_id": dependent_task_id,
+                    "status": "processing",
+                    "message": f"使用 {model} 進行 AI 分析...",
+                    "task_type": "gemini_process",
+                    "elapsed_time": time.monotonic() - start_time
+                }
             }), loop)
 
             processor_script_path = ROOT_DIR / "src" / "tools" / ("mock_gemini_processor.py" if IS_MOCK_MODE else "gemini_processor.py")
@@ -1250,7 +1303,14 @@ def trigger_youtube_processing(task_id: str, loop: asyncio.AbstractEventLoop):
                         if progress_data.get("type") == "progress":
                             asyncio.run_coroutine_threadsafe(manager.broadcast_json({
                                 "type": "YOUTUBE_STATUS",
-                                "payload": { "task_id": dependent_task_id, "status": "processing", "message": progress_data.get("detail", "AI 分析中..."), "task_type": "gemini_process", "progress_code": progress_data.get("status") }
+                                "payload": {
+                                    "task_id": dependent_task_id,
+                                    "status": "processing",
+                                    "message": progress_data.get("detail", "AI 分析中..."),
+                                    "task_type": "gemini_process",
+                                    "progress_code": progress_data.get("status"),
+                                    "elapsed_time": time.monotonic() - start_time
+                                }
                             }), loop)
                     except json.JSONDecodeError:
                         log.debug(f"[stderr from gemini_processor]: {line}")
@@ -1270,7 +1330,13 @@ def trigger_youtube_processing(task_id: str, loop: asyncio.AbstractEventLoop):
 
             final_message = {
                 "type": "YOUTUBE_STATUS",
-                "payload": {"task_id": dependent_task_id, "status": "completed", "result": process_result, "task_type": "gemini_process"}
+                "payload": {
+                    "task_id": dependent_task_id,
+                    "status": "completed",
+                    "result": process_result,
+                    "task_type": "gemini_process",
+                    "elapsed_time": time.monotonic() - start_time
+                }
             }
             log.info(f"📢 [WebSocket] 正在廣播 YouTube 任務鏈 '{dependent_task_id}' 的最終狀態: completed")
             asyncio.run_coroutine_threadsafe(manager.broadcast_json(final_message), loop)
@@ -1291,7 +1357,12 @@ def trigger_youtube_processing(task_id: str, loop: asyncio.AbstractEventLoop):
 
             final_message = {
                 "type": "YOUTUBE_STATUS",
-                "payload": {"task_id": failed_task_id, "status": "failed", **error_payload}
+                "payload": {
+                    "task_id": failed_task_id,
+                    "status": "failed",
+                    "elapsed_time": time.monotonic() - start_time,
+                    **error_payload
+                }
             }
             log.info(f"📢 [WebSocket] 正在廣播 YouTube 任務鏈 '{failed_task_id}' 的最終狀態: failed")
             asyncio.run_coroutine_threadsafe(manager.broadcast_json(final_message), loop)

@@ -158,7 +158,7 @@ def test_full_transcription_workflow(live_server, tmp_path):
     assert payload.get("status") == "completed", "訊息的狀態應為 'completed'。"
     assert "result" in payload, "完成的訊息中應包含 'result' 欄位。"
     assert "transcript" in payload["result"], "結果中應包含 'transcript'。"
-    assert "Mock transcription" in payload["result"]["transcript"], "結果應為模擬轉錄器的輸出。"
+    assert "模擬的轉錄系統" in payload["result"]["transcript"], "結果應為模擬轉錄器的中文輸出。"
 
     # 6. 驗證最終的資料庫狀態
     # 在流程結束後，再次查詢 /api/tasks，確認該任務已被移至已完成列表
