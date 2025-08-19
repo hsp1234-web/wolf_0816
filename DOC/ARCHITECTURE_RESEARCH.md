@@ -1,152 +1,121 @@
-# 系統架構現況分析
+# 架構研究：優化啟動順序與工作者動態管理
 
-## 系統架構圖 (v5 - 多工作者架構)
+## 1. 總結 (Executive Summary)
+
+本文件旨在研究並提出一個優化的系統啟動架構，以解決當前啟動時間過長、資源利用率不高的問題。核心目標是讓使用者在 30 秒內看到可操作的前端介面，並能提交任務。
+
+**建議的核心方案**：採用「分階段啟動」結合「動態工作者管理者」的模式。先啟動資料庫、API 等核心服務，讓前端快速上線。然後由一個常駐的「管理者」程序，根據資料庫中的任務佇列，動態地為每個工作者建立獨立的虛擬環境，並在需要時才啟動它們。
+
+此方案能最大化提升使用者體驗、顯著降低閒置資源的消耗，並透過虛擬環境隔離來提高系統的穩定性與可維護性。
+
+## 2. 核心問題分析 (Core Problem Analysis)
+
+當前的 `localrun_new.py` 腳本在設計上存在以下幾個挑戰：
+
+1.  **啟動時間過長 (Long Startup Time)**：腳本需要在啟動時安裝 *所有* 服務的依賴、建置前端，並一次性啟動 *所有* 背景工作者。這導致使用者需要等待很長時間才能看到網頁。
+2.  **資源浪費 (Resource Waste)**：像 `run_transcription_worker.py` 這樣的工作者，即使在沒有任務時，也會因為載入了大型 AI 模型而持續佔用大量的記憶體 (RAM) 和 CPU 資源。
+3.  **潛在的依賴衝突 (Potential Dependency Conflicts)**：所有 Python 服務共享同一個虛擬環境。未來如果不同的工作者需要不同版本的函式庫，將會引發難以解決的依賴衝突。
+
+## 3. 建議架構：分階段啟動與動態工作者管理者
 
 ```mermaid
 graph TD
-    subgraph "使用者端 (Browser)"
-        A[Vue.js 前端應用<br>(vue-app)]
+    subgraph "使用者操作"
+        U[使用者執行 localrun_new.py]
     end
 
-    subgraph "核心服務 (Core Services)"
-        B[FastAPI 伺服器<br>(src/api/api_server.py)]
-        D[資料庫管理器<br>(src/db/manager.py)]
-        E[SQLite 資料庫<br>(database.db)]
+    subgraph "階段一：核心服務極速啟動"
+        R[runner/localrun_new.py]
+        R -- "啟動" --> DB[(資料庫)]
+        R -- "啟動" --> API[API 伺服器]
+        R -- "啟動" --> MGR[<font color=red><b>啟動管理者</b></font>]
+        R -- "提供網址" --> U
+        API -- "提供" --> FE[前端介面]
+        U -- "訪問" --> FE
+        FE -- "介面已可操作" --> UserCanSubmit{使用者可提交任務}
     end
 
-    subgraph "獨立工作者 (Standalone Workers)"
-        W_YT[YouTube 工作者<br>run_youtube_worker.py]
-        W_TS[轉錄工作者<br>run_transcription_worker.py]
-        W_AI[AI 報告工作者<br>run_ai_report_worker.py]
+    subgraph "階段二：依需求動態啟動工作者"
+        UserCanSubmit -- "提交 YouTube 網址" --> API
+        API -- "建立任務到" --> DB
+        MGR -- "1. 輪詢發現新任務" --> DB
+        MGR -- "2. 識別為 'youtube' 任務" --> T_YT(任務: YouTube)
+        MGR -- "3. 檢查/建立獨立虛擬環境" --> VENV_YT[youtube_venv]
+        MGR -- "4. 安裝專屬依賴" --> VENV_YT
+        MGR -- "5. 啟動工作者" --> W_YT[YouTube 工作者]
+        W_YT -- "處理任務" --> T_YT
+        W_YT -- "更新狀態到" --> DB
+        API -- "透過 WebSocket 通知" --> FE
     end
 
-    subgraph "開發與測試 (Dev & Test)"
-        F[Pytest/Playwright 測試套件<br>(e2e_tests)]
-        G[開發啟動器<br>(runner/localrun_new.py)]
-    end
-
-    A -- "REST API / WebSocket" --> B
-    B -- "任務排程/狀態查詢" --> D
-    D -- "讀/寫" --> E
-
-    %% Workers interact with the DB
-    W_YT -- "讀/寫任務" --> D
-    W_TS -- "讀/寫任務" --> D
-    W_AI -- "讀/寫任務" --> D
-
-    G -- "啟動/管理" --> B
-    G -- "啟動/管理" --> D
-    G -- "啟動/管理" --> W_YT
-    G -- "啟動/管理" --> W_TS
-    G -- "啟動/管理" --> W_AI
+    style MGR fill:#f9f,stroke:#333,stroke-width:2px
+    style VENV_YT fill:#ccf,stroke:#333,stroke-width:1px
+    style W_YT fill:#ccf,stroke:#333,stroke-width:1px
 ```
 
-**文件更新日期：** 2025年8月19日
-**作者:** Jules (AI Software Engineer)
-**狀態:** 現行架構描述 (v5) - 更新為多工作者架構
+為了應對上述挑戰，我們提出以下兩階段的啟動流程：
 
----
+### 階段一：核心服務啟動 (Core Service Startup)
 
-## 1. 摘要 (Executive Summary)
+此階段的目標是「極速呈現」。主啟動腳本 (`runner/localrun_new.py`) 的職責將大幅簡化，只負責啟動系統運作所必需的核心元件：
 
-本文件旨在描述「鳳凰音訊轉錄儀」專案當前的系統架構。在經歷了從靜態 HTML 到現代化 Web 應用的遷移後，系統已演進為一個職責清晰、前後端分離的架構。
+1.  **啟動資料庫** (例如 PostgreSQL)。
+2.  **啟動後端 API 伺服器** (`run_api_server.py`)。
+3.  **啟動前端服務** (透過 `bun run dev` 或類似指令)。
+4.  **啟動新的「啟動管理者工作者」** (`run_startup_manager_worker.py`)。
 
-目前的系統主要由三個核心部分組成：
-1.  **Vue.js 前端**：一個位於 `vue-app/` 的現代化單頁應用程式 (SPA)，為使用者提供互動介面。
-2.  **FastAPI 後端**：一個位於 `src/` 的 Python 後端，負責處理業務邏輯、任務管理以及與資料庫的通訊。
-3.  **多工作者系統**：一系列位於根目錄的獨立 `run_*.py` 程序，負責執行如影片下載、音訊轉錄等耗時的背景任務。
+在此階段完成後，前端網頁應已可用，使用者可以立即開始瀏覽頁面、提交任務。整個過程應可在 30 秒內完成。
 
-本文件將詳細闡述這幾個部分的設計與互動方式。
+### 階段二：依需求動態啟動工作者 (On-Demand Worker Startup)
 
----
+此階段由「啟動管理者工作者」全權負責，它是一個輕量級的常駐程序，持續監控任務佇列。
 
-## 2. 前端架構 (Frontend Architecture)
+1.  **監聽任務**: 管理者會定期查詢資料庫中的任務表 (可視為一個任務佇列)。
+2.  **環境準備**: 當一個新的、需要特定工作者 (例如 `transcription`) 的任務出現時，管理者會：
+    a. 檢查對應的獨立虛擬環境 (例如 `runner/venvs/transcription`) 是否存在。
+    b. 若不存在，則使用 `uv` 為其建立一個全新的虛擬環境：`uv venv runner/venvs/transcription`。
+    c. 接著，使用該環境的 `uv` 安裝專屬的依賴：`uv pip install -r requirements/requirements_transcription.txt`。
+3.  **啟動工作者**: 環境準備就緒後，管理者會使用該虛擬環境的 Python 解譯器來啟動工作者程序：`runner/venvs/transcription/bin/python workers/run_transcription_worker.py`。
+4.  **任務完成後**: 工作者可以設計成處理完單一任務後自動退出，或持續運行一段時間後因不活動而退出，以釋放資源。管理者會持續監控，並在下次需要時再次啟動它。
 
-前端是一個基於 **Vue.js 3** 的單頁應用程式（SPA），原始碼存放於 `vue-app/` 目錄。
+## 4. 技術方案選型 (Technology & Tooling Choices)
 
-- **核心技術棧**:
-    - **框架**: Vue.js 3 (Composition API)
-    - **建置工具**: Vite
-    - **套件管理**: Bun
-    - **狀態管理**: Pinia
-    - **HTTP 客戶端**: Axios
+### 工作者啟動與管理
 
-- **與後端通訊**:
-    - **REST API**: 用於執行獲取任務列表、建立新任務等操作。
-    - **WebSocket**: 用於接收任務狀態（如：進行中、已完成、失敗）的即時變更通知。
+*   **推薦方案：自定義 Python 腳本 (使用 `subprocess` 模組)**
+    *   **描述**：由我們自己編寫的 `run_startup_manager_worker.py`，使用 Python 內建的 `subprocess` 模組來呼叫 `uv` 指令並啟動其他工作者腳本。
+    *   **優點**：
+        *   **極致靈活**：可以完美實現我們所需的複雜 logique (檢查環境、安裝依賴、啟動程序)。
+        *   **無外部依賴**：除了 `uv` 本身，無需為管理者引入新的複雜套件。
+        *   **跨平台**：`subprocess` 在 Windows、Linux 和 macOS 上行為一致。
+        *   **輕量級**：方案本身非常簡單，不會增加系統負擔。
+    *   **結論**：最適合我們需求的方案。
 
-- **建置流程**:
-    - 開發者需在 `vue-app/` 目錄下執行 `bun install` 和 `bun run build`。
-    - 建置後的靜態檔案會被輸出到 `vue-app/dist/` 目錄，並由後端 FastAPI 伺服器直接提供服務。
+*   **備選方案：任務佇列套件 (如 `Celery`, `RQ`)**
+    *   **描述**：這些是功能強大的分佈式任務佇列系統。
+    *   **優點**：提供了許多進階功能，如重試、任務排程、結果追蹤等。
+    *   **缺點**：
+        *   **過於複雜 (Overkill)**：需要引入一個獨立的訊息中間件 (如 Redis)，增加了系統的部署和維護複雜度。
+        *   **不直接解決環境隔離**：它們主要管理 *任務* 的分發，而不是 *執行環境* 的建立。我們仍需自行處理虛擬環境的部分。
+    *   **結論**：對於目前的需求來說，殺雞用牛刀。
 
----
+### 虛擬環境隔離
 
-## 3. 後端架構 (Backend Architecture)
+*   **推薦工具：`uv`**
+    *   **描述**：一個用 Rust 編寫的極速 Python 套件安裝與解析器。
+    *   **優點**：
+        *   **速度極快**：建立環境和安裝依賴的速度遠超傳統的 `venv` + `pip`。
+        *   **現代化**：提供簡潔的 API 和優秀的使用者體驗。
+        *   **符合您的要求**：這是您明確指定的工具。
+    *   **結論**：最佳選擇。
 
-後端由**核心服務**與**獨立工作者**兩部分組成，共同構成一個完整的系統。
+## 5. 結論與後續步驟
 
-- **核心服務**:
-    - **服務入口 (`src/api/api_server.py`)**: 後端主應用，定義了所有 REST API 端點和 WebSocket 邏輯。在 `WORKER_MODE=new` 環境變數下，它負責將任務分派到佇列，而非親自執行。
-    - **資料庫管理器 (`src/db/manager.py`)**: 一個獨立的伺服器行程，作為資料庫的唯一寫入點，避免了多程序寫入 SQLite 時的鎖定問題。
+我們應採用**自定義 Python 管理者腳本**搭配 **`uv`** 和 **`subprocess`** 的組合來實現所述的動態架構。
 
-- **非同步任務 (獨立工作者)**:
-    - 專案的背景任務處理已演進為**多工作者模式**。
-    - 這些工作者是獨立的 Python 程序 (如 `run_youtube_worker.py`, `run_transcription_worker.py` 等)。
-    - 它們會各自監聽資料庫中的任務佇列，領取特定類型的任務（如 `youtube_download`, `transcription`），執行後將結果寫回資料庫。
-    - 這種架構提高了系統的模組化程度和可擴展性。
-    - 舊的整合式 Worker (`src/tasks/worker.py`) 已被棄用，僅在部分舊的測試腳本中可能被呼叫。
+**後續開發步驟建議**：
 
----
-
-## 4. 測試與開發環境
-
-### 4.1. 測試架構 (Testing Architecture)
-
-本專案的品質由位於 `e2e_tests/` 的端對端測試套件保證，其核心技術棧為 Pytest 與 Playwright。
-
-- **伺服器生命週期管理 (`conftest.py`)**: 測試框架的核心，負責在執行測試時，自動啟動一個**簡化的**後端服務（通常只包含 API 伺服器和資料庫管理器），並在測試結束後自動關閉。
-- **測試執行 (`runner/localtest.py`)**: 執行完整自動化測試套件的建議入口。
-
-### 4.2. 開發環境啟動流程 (`runner/localrun_new.py`)
-
-**本節由 AI (Jules) 於 2025年8月19日 補充**
-
-主要的開發環境是透過 `runner/localrun_new.py` 腳本啟動的，它代表了應用程式最完整、最新的多工作者架構。
-
-- **分段式啟動與網頁可用時機**:
-    1.  **臨時狀態頁**：執行腳本後，會立即提供一個網址，但初期只會顯示一個「系統啟動中」的頁面。
-    2.  **背景準備**：腳本會在背景執行安裝依賴、建置前端等耗時操作。
-    3.  **服務啟動**：準備工作完成後，才會依序啟動資料庫、API 伺服器，以及所有的獨立工作者。
-    4.  **健康檢查**：所有服務啟動後，啟動器會持續對 API 伺服器進行健康檢查。
-
-- **結論**: **網頁達到「完整可用」狀態的準確時機是**：當執行 `localrun_new.py` 的終端機視窗中，顯示 `✅ 後端健康檢查成功。` 或 `✅✅✅ 伺服器已成功啟動！ ✅✅✅` 訊息時。在此之前，即使前端介面已顯示，後端功能也尚未就緒。
-
----
-
-## 5. 主要依賴套件與資源分析
-
-**本節由 AI (Jules) 於 2025年8月19日 新增**
-
-專案的 `requirements-worker.txt` 中定義了幾個資源消耗較大的關鍵套件，主要由獨立工作者使用。
-
-### 5.1. 重量級機器學習核心
-
--   **`torch` (PyTorch)**:
-    -   **用途**: 深度學習框架，是 `faster-whisper` 的基礎。
-    -   **大小**: 非常龐大，安裝檔大小約在 **500MB 至 2GB** 之間。
-    -   **資源**: 執行時需要 **數 GB 的記憶體 (RAM)** 並會大量使用 **CPU 或 GPU**。
-
--   **`faster-whisper`**:
-    -   **用途**: 高效能的語音轉文字模型。
-    -   **大小**: 需要下載預訓練模型，大小可從數十 MB 至 **超過 1GB**。
-    -   **資源**: 執行時需要約 **1GB 至 1.7GB 的記憶體**，並會顯著佔用 CPU 資源。
-
-### 5.2. 通用工具與客戶端
-
--   **`yt-dlp`**:
-    -   **用途**: 下載 YouTube 影片。
-    -   **資源**: 主要消耗**網路頻寬**與**磁碟 I/O**。
-
--   **其他工具**: `pydub` (音訊處理), `google-generativeai` (API 客戶端), `opencc-python-reimplemented` (繁簡轉換), `WeasyPrint` (HTML 轉 PDF) 等，這些工具相對輕量，資源佔用較低。
-
-**總結**: `run_transcription_worker.py` 和 `run_ai_report_worker.py` 是系統中資源需求最高的程序。
+1.  **拆分依賴**：將主 `requirements.txt` 拆分為 `requirements_api.txt`, `requirements_youtube.txt`, `requirements_transcription.txt` 等多個檔案。
+2.  **開發管理者**：實作 `run_startup_manager_worker.py` 的核心邏輯。
+3.  **改造主啟動器**：修改 `runner/localrun_new.py`，讓它只啟動核心服務和管理者。
+4.  **調整測試**：修改 `test.py` 以適應新的啟動流程。
