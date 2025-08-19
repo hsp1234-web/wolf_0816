@@ -36,8 +36,8 @@ WORKER_TIMEOUT_SECONDS = 90
 # 工作者腳本的命名模式
 WORKER_GLOB_PATTERN = "run_*_worker.py"
 # 從工作者輸出中尋找的成功信號
-# 我們從 `run_youtube_worker.py` 的日誌中得知，當工作者準備就緒時，會輸出此訊息
-SUCCESS_SIGNAL = "工作者已啟動，開始監聽任務..."
+# 此信號設計為一個通用的前綴，以適應不同工作者可能存在的微小輸出差異
+SUCCESS_SIGNAL = "工作者已啟動，開始監聽"
 
 def get_venv_path(worker_path: Path) -> Path:
     """
