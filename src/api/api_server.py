@@ -127,6 +127,12 @@ VUE_APP_DIST_DIR = ROOT_DIR / "vue-app" / "dist"
 # 確保目錄存在
 UPLOADS_DIR.mkdir(exist_ok=True)
 
+# JULES'S FIX (2025-08-18): 掛載 Vue.js 應用程式的靜態資源目錄
+# 這解決了瀏覽器無法載入 JS/CSS 模組 (MIME 類型錯誤) 的問題，
+# 因為伺服器先前會對 /assets/* 的請求回傳 index.html。
+app.mount("/assets", StaticFiles(directory=VUE_APP_DIST_DIR / "assets"), name="vue-assets")
+
+
 # JULES'S FIX (2025-08-13): 根據計畫，新增此端點來處理複雜檔名
 from urllib.parse import unquote
 from fastapi.responses import FileResponse
@@ -208,21 +214,6 @@ def convert_to_media_url(absolute_path_str: str) -> str:
 
 
 # --- API 端點 ---
-
-# 這是 Vue.js SPA (單頁應用) 的 catch-all 路由。
-# 它確保任何非 API、非靜態檔案的請求都會回傳主 index.html，
-# 然後由 Vue Router 接管前端的路由。
-# 必須放在所有其他 @app.get("/") 路由的後面。
-@app.get("/{full_path:path}", response_class=HTMLResponse)
-async def serve_vue_app(request: Request, full_path: str):
-    """根端點，提供 Vue.js 前端操作介面。"""
-    vue_index_path = VUE_APP_DIST_DIR / "index.html"
-    if not vue_index_path.is_file():
-        log.error(f"找不到 Vue 前端入口檔案: {vue_index_path}")
-        # JULES: 提供一個更友善的錯誤訊息，方便除錯
-        return HTMLResponse(content="<h1>500: Frontend Not Built</h1><p>Vue app not found. Please run `bun install && bun run build` in the `vue-app` directory.</p>", status_code=500)
-    return HTMLResponse(content=vue_index_path.read_text(encoding="utf-8"), status_code=200)
-
 
 def check_model_exists(model_size: str) -> bool:
     """
@@ -1322,6 +1313,21 @@ async def notify_task_update(payload: Dict):
     }
     await manager.broadcast_json(message)
     return {"status": "notification_sent"}
+
+
+# 這是 Vue.js SPA (單頁應用) 的 catch-all 路由。
+# 它確保任何非 API、非靜態檔案的請求都會回傳主 index.html，
+# 然後由 Vue Router 接管前端的路由。
+# 必須放在所有其他 @app.get("/") 路由的後面。
+@app.get("/{full_path:path}", response_class=HTMLResponse)
+async def serve_vue_app(request: Request, full_path: str):
+    """根端點，提供 Vue.js 前端操作介面。"""
+    vue_index_path = VUE_APP_DIST_DIR / "index.html"
+    if not vue_index_path.is_file():
+        log.error(f"找不到 Vue 前端入口檔案: {vue_index_path}")
+        # JULES: 提供一個更友善的錯誤訊息，方便除錯
+        return HTMLResponse(content="<h1>500: Frontend Not Built</h1><p>Vue app not found. Please run `bun install && bun run build` in the `vue-app` directory.</p>", status_code=500)
+    return HTMLResponse(content=vue_index_path.read_text(encoding="utf-8"), status_code=200)
 
 
 # --- 主程式啟動 ---

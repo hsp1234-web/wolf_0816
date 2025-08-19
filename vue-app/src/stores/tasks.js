@@ -30,35 +30,39 @@ export const useTasksStore = defineStore('tasks', {
      */
     async fetchTasks() {
       try {
-        const response = await axios.get(`${API_BASE_URL}/tasks`)
-        const tasks = response.data
+        const response = await axios.get(`${API_BASE_URL}/tasks`);
+        const tasks = response.data;
 
         // 清空現有列表
-        this.pendingTasks = []
-        this.completedTasks = []
+        this.pendingTasks = [];
+        this.completedTasks = [];
 
-        // 遍歷 API 回傳的任務
-        tasks.forEach(task => {
-          // [JULES'S FIX 2025-08-17] 將標題複製邏輯也應用於初始載入
-          if (task.result) {
-            const newTitle = task.result.video_title || task.result.original_filename;
-            if (newTitle) {
-              if (!task.payload) task.payload = {};
-              task.payload.video_title = newTitle;
-              task.payload.original_filename = newTitle;
+        // JULES'S FIX (2025-08-18): 增加一個防禦性檢查，確保 tasks 是一個陣列。
+        if (Array.isArray(tasks)) {
+          // 遍歷 API 回傳的任務
+          tasks.forEach(task => {
+            // [JULES'S FIX 2025-08-17] 將標題複製邏輯也應用於初始載入
+            if (task.result) {
+              const newTitle = task.result.video_title || task.result.original_filename;
+              if (newTitle) {
+                if (!task.payload) task.payload = {};
+                task.payload.video_title = newTitle;
+                task.payload.original_filename = newTitle;
+              }
             }
-          }
 
-          if (task.status === 'completed' || task.status === 'failed') {
-            this.completedTasks.push(task)
-          } else {
-            this.pendingTasks.push(task)
-          }
-        })
+            if (task.status === 'completed' || task.status === 'failed') {
+              this.completedTasks.push(task);
+            } else {
+              this.pendingTasks.push(task);
+            }
+          });
+        } else {
+          console.warn('/api/tasks did not return an array, received:', tasks);
+        }
         console.log('任務歷史紀錄已載入:', { pending: this.pendingTasks.length, completed: this.completedTasks.length });
       } catch (error) {
-        console.error('獲取任務歷史紀錄時發生錯誤:', error)
-        // 在真實應用中，你可能會想在這裡設定一個錯誤狀態
+        console.error('獲取任務歷史紀錄時發生錯誤:', error);
       }
     },
 
