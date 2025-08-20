@@ -18,17 +18,12 @@ export const useTasksStore = defineStore('tasks', {
     systemStats: {},
     // 工作者狀態
     workerStatuses: {},
-    // JULES'S FIX: 新增模型下載狀態
-    modelDownloadStatus: {
-      model: null,
-      status: 'idle', // 'idle', 'starting', 'downloading', 'completed', 'failed'
-      progress: 0,
-      message: ''
-    },
-    // JULES'S FIX: 恢復 installationStatus 以避免 App.vue 中的 JS 錯誤
-    installationStatus: {
-      inProgress: false,
-      message: ''
+    // 重構：統一的全域操作狀態
+    // 用於顯示任何阻擋使用者互動的全域進度，例如：模型下載、工作者安裝等。
+    operationStatus: {
+      inProgress: false, // 是否有操作正在進行
+      message: '',      // 顯示給使用者的訊息
+      progress: 0,      // 進度百分比 (0-100)
     },
     // JULES'S NEW FEATURE: 新增日誌狀態
     logs: [],
@@ -101,6 +96,11 @@ export const useTasksStore = defineStore('tasks', {
 
       // --- All other message handling remains the same ---
 
+      if (type === 'SYSTEM_STATS_UPDATE') {
+        this.systemStats = payload;
+        return;
+      }
+
       if (type === 'LOCAL_MODELS_STATUS') {
         this.localModels.available = payload.models || [];
         this.localModels.checking = false;
@@ -122,18 +122,34 @@ export const useTasksStore = defineStore('tasks', {
           this.workerStatuses[worker] = { status, last_error };
         }
         console.log(`工作者狀態更新: ${worker} -> ${status}`);
+
+        // 同步更新全域操作狀態
+        if (status === 'INSTALLING') {
+          this.operationStatus.inProgress = true;
+          this.operationStatus.message = `正在準備 ${worker} 工作者...`;
+          this.operationStatus.progress = 0; // 安裝過程通常沒有精確進度
+        } else if (this.operationStatus.message.includes(worker)) {
+          // 如果當前操作是關於這個工作者的，且它已完成或失敗，則清除狀態
+          this.operationStatus.inProgress = false;
+          this.operationStatus.message = '';
+          this.operationStatus.progress = 0;
+        }
         return;
       }
 
       if (type === 'DOWNLOAD_STATUS') {
-        this.modelDownloadStatus.model = payload.model;
-        this.modelDownloadStatus.status = payload.status;
-        this.modelDownloadStatus.progress = payload.percent || payload.progress || 0;
-        this.modelDownloadStatus.message = payload.description || payload.error || payload.status;
-        if (payload.status === 'completed' || payload.status === 'failed') {
+        const { status, percent, progress, description, error, model } = payload;
+
+        this.operationStatus.inProgress = (status === 'starting' || status === 'downloading');
+        this.operationStatus.progress = percent || progress || 0;
+        this.operationStatus.message = description || error || `正在處理 '${model}'...`;
+
+        if (status === 'completed' || status === 'failed') {
+          // 完成或失敗後，短暫顯示訊息然後清除
           setTimeout(() => {
-            this.modelDownloadStatus.status = 'idle';
-            this.modelDownloadStatus.message = '';
+            this.operationStatus.inProgress = false;
+            this.operationStatus.message = '';
+            this.operationStatus.progress = 0;
           }, 5000);
         }
         return;
