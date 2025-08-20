@@ -13,6 +13,9 @@
             <option value="large-v2">Large-v2 (準確)</option>
             <option value="large-v3">Large-v3 (最準確)</option>
           </select>
+          <p style="font-size: 0.8em; color: #666; margin-top: 5px;">
+            注意：所需模型若本機不存在，將在開始處理時自動下載。
+          </p>
         </div>
         <div>
           <label for="language-select">轉錄語言</label>

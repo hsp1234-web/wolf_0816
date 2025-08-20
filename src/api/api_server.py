@@ -414,27 +414,43 @@ async def get_system_stats():
 
     # GPU (透過 nvidia-smi)
     gpu_usage = None
+    gpu_name = None
     gpu_detected = False
     try:
-        # 執行 nvidia-smi 命令
+        # 執行 nvidia-smi 命令，一次查詢多個屬性
         result = subprocess.run(
-            ['nvidia-smi', '--query-gpu=utilization.gpu', '--format=csv,noheader,nounits'],
-            capture_output=True, text=True, check=True
+            ['nvidia-smi', '--query-gpu=gpu_name,utilization.gpu', '--format=csv,noheader,nounits'],
+            capture_output=True, text=True, check=True, encoding='utf-8'
         )
-        # 解析輸出
-        gpu_usage = float(result.stdout.strip())
-        gpu_detected = True
+        # 解析輸出, e.g., "NVIDIA GeForce RTX 4090, 15"
+        output = result.stdout.strip().split(',')
+        if len(output) == 2:
+            gpu_name = output[0].strip()
+            gpu_usage = float(output[1].strip())
+            gpu_detected = True
     except (FileNotFoundError, subprocess.CalledProcessError) as e:
         # nvidia-smi 不存在或執行失敗
         log.debug(f"無法獲取 GPU 資訊: {e}")
         gpu_usage = None
+        gpu_name = None
+        gpu_detected = False
+    except (ValueError, IndexError) as e:
+        # 解析 nvidia-smi 輸出失敗
+        log.error(f"解析 nvidia-smi 輸出時出錯: {e}", exc_info=True)
+        gpu_usage = None
+        gpu_name = None
         gpu_detected = False
 
+    # TODO: 這裡應該要有動態邏輯來決定當前載入的模型
+    active_model = "Whisper-large-v3" # 暫時的佔位符
+
     return {
-        "cpu_usage": cpu_usage,
-        "ram_usage": ram_usage,
-        "gpu_usage": gpu_usage,
+        "cpu_usage": round(cpu_usage, 1) if cpu_usage is not None else None,
+        "ram_usage": round(ram_usage, 1) if ram_usage is not None else None,
+        "gpu_usage": round(gpu_usage, 1) if gpu_usage is not None else None,
         "gpu_detected": gpu_detected,
+        "gpu_name": gpu_name,
+        "active_model": active_model,
     }
 
 
@@ -867,11 +883,8 @@ def run_worker_in_background(worker_name: str, loop: asyncio.AbstractEventLoop):
         asyncio.run_coroutine_threadsafe(manager.broadcast_json(status_update), loop)
         log.info(f"🧵 [執行緒] 開始準備工作者 '{worker_name}'...")
 
-        # 2. 執行工作者腳本
-        # 根據 AGENTS.md，我們應使用 --test 模式來快速驗證，避免安裝重依賴。
-        # 這些獨立的工作者腳本被設計為在閒置時自動退出。
-        cmd = [sys.executable, str(script_path), "--test"]
-
+        # 2. 執行工作者腳本 (不再使用 --test，讓其持續運行)
+        cmd = [sys.executable, str(script_path)]
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -881,49 +894,37 @@ def run_worker_in_background(worker_name: str, loop: asyncio.AbstractEventLoop):
         )
         WORKER_STATUS[worker_name]["process"] = process
 
-        stdout, stderr = process.communicate(timeout=120) # 增加 120 秒超時
-        return_code = process.returncode
+        # 3. 立即更新狀態為準備就緒並廣播 (樂觀更新)
+        # 我們假設 Popen 成功後，工作者很快就會準備好。
+        # 工作者腳本自身的閒置邏輯會處理關閉。
+        WORKER_STATUS[worker_name]["status"] = "READY"
+        WORKER_STATUS[worker_name]["last_error"] = None
+        ready_update = {
+            "type": "WORKER_STATUS_UPDATE",
+            "payload": {
+                "worker": worker_name,
+                "status": "READY",
+                "last_error": None
+            }
+        }
+        asyncio.run_coroutine_threadsafe(manager.broadcast_json(ready_update), loop)
+        log.info(f"✅ [執行緒] 工作者 '{worker_name}' 已啟動並設定為準備就緒狀態。")
 
-        # 3. 根據執行結果更新最終狀態
-        if return_code == 0:
-            log.info(f"✅ [執行緒] 工作者 '{worker_name}' 準備就緒 (腳本成功執行完畢)。")
-            WORKER_STATUS[worker_name]["status"] = "READY"
-            final_status = "READY"
-        else:
-            log.error(f"❌ [執行緒] 工作者 '{worker_name}' 啟動失敗 (返回碼: {return_code})。")
-            log.error(f"   Stderr: {stderr}")
-            WORKER_STATUS[worker_name]["status"] = "FAILED"
-            WORKER_STATUS[worker_name]["last_error"] = stderr.strip()
-            final_status = "FAILED"
-
-    except subprocess.TimeoutExpired:
-        log.error(f"❌ [執行緒] 工作者 '{worker_name}' 執行超時。")
-        process.kill()
-        stdout, stderr = process.communicate()
-        WORKER_STATUS[worker_name]["status"] = "FAILED"
-        WORKER_STATUS[worker_name]["last_error"] = "執行超時 (120秒)"
-        final_status = "FAILED"
     except Exception as e:
         log.error(f"❌ [執行緒] 執行工作者 '{worker_name}' 時發生嚴重錯誤: {e}", exc_info=True)
         WORKER_STATUS[worker_name]["status"] = "FAILED"
         WORKER_STATUS[worker_name]["last_error"] = str(e)
-        final_status = "FAILED"
 
-    finally:
-        # 4. 廣播最終狀態
-        final_update = {
+        # 廣播失敗狀態
+        failed_update = {
             "type": "WORKER_STATUS_UPDATE",
             "payload": {
                 "worker": worker_name,
-                "status": final_status,
+                "status": "FAILED",
                 "last_error": WORKER_STATUS[worker_name].get("last_error")
             }
         }
-        log.info(f"📢 [執行緒] 準備廣播最終狀態: {final_update}")
-        asyncio.run_coroutine_threadsafe(manager.broadcast_json(final_update), loop)
-        log.info(f"📢 [執行緒] 已成功排程廣播任務。")
-        if worker_name in WORKER_STATUS:
-            WORKER_STATUS[worker_name]["process"] = None # 清理進程對象
+        asyncio.run_coroutine_threadsafe(manager.broadcast_json(failed_update), loop)
 
 
 def trigger_model_download(task_id: str, loop: asyncio.AbstractEventLoop):
