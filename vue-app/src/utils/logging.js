@@ -18,3 +18,26 @@ export function logAction(action, value = null) {
     // console.error('logAction failed:', err);
   });
 }
+
+/**
+ * 記錄一個全域點擊事件。
+ * @param {MouseEvent} event - 瀏覽器觸發的點擊事件。
+ */
+export function logClickEvent(event) {
+  const element = event.target;
+  let identifier = '';
+
+  // 依序嘗試尋找最有意義的識別碼
+  if (element.dataset.testid) {
+    identifier = `testid=${element.dataset.testid}`;
+  } else if (element.id) {
+    identifier = `id=${element.id}`;
+  } else if (element.className) {
+    identifier = `class=${element.className}`;
+  } else {
+    identifier = `tag=${element.tagName.toLowerCase()}`;
+  }
+
+  const description = `${element.tagName.toLowerCase()} with ${identifier}`;
+  logAction('click-event', description);
+}

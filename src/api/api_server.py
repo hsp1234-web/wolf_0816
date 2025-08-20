@@ -131,10 +131,19 @@ log.info(f"工作者管理器已初始化，將追蹤: {list(WORKER_STATUS.keys(
 
 from contextlib import asynccontextmanager
 
-# --- DB 客戶端 ---
-# 在模組加載時獲取客戶端單例
-# 客戶端內部有重試機制，會等待 DB 管理者服務就緒
-db_client = get_client()
+# --- DB 客戶端 (延遲初始化代理) ---
+# 為了避免在應用程式啟動時因等待 DB 管理者而阻塞，
+# 我們使用一個代理類別來延遲 DBClient 的實例化，直到它第一次被使用。
+class DBClientProxy:
+    _client = None
+    def __getattr__(self, name):
+        if self._client is None:
+            log.info("DBClientProxy: 首次使用，正在初始化真實的 DBClient...")
+            self._client = get_client()
+        return getattr(self._client, name)
+
+db_client = DBClientProxy()
+
 
 # --- FastAPI Lifespan Manager ---
 @asynccontextmanager
