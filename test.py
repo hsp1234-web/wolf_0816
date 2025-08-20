@@ -58,7 +58,7 @@ def run_server_and_get_url():
 
     url_pattern = re.compile(r"FINAL_URL:\s*(https?://[^\s]+)")
     server_url = None
-    timeout = 120  # 給予更長的超時時間
+    timeout = 60  # 根據使用者要求，設定為 60 秒超時
     start_time = time.time()
 
     # 使用執行緒非阻塞地讀取 stderr

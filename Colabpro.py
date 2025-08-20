@@ -25,6 +25,9 @@ LOG_DISPLAY_LINES = 15 #@param {type:"integer"}
 LOG_COPY_MAX_LINES = 1500 #@param {type:"integer"}
 #@markdown **時區設定**
 TIMEZONE = "Asia/Taipei" #@param {type:"string"}
+#@markdown **自動清理畫面 (ENABLE_CLEAR_OUTPUT)**
+#@markdown > **勾選後，儀表板會自動刷新，介面較為清爽。取消勾選則會保留所有日誌，方便除錯。**
+ENABLE_CLEAR_OUTPUT = True #@param {type:"boolean"}
 #@markdown ---
 #@markdown > **確認所有設定無誤後，點擊此儲存格左側的「執行」按鈕來啟動所有程序。**
 #@markdown ---
@@ -44,6 +47,8 @@ from collections import deque
 import re
 from pathlib import Path
 import html
+import queue
+import traceback
 
 try:
     import pytz
@@ -162,7 +167,9 @@ class DisplayManager:
     def _run(self):
         while not self._stop_event.is_set():
             try:
-                clear_output(wait=True); print("\n".join(self._build_output_buffer()), flush=True)
+                if ENABLE_CLEAR_OUTPUT:
+                    clear_output(wait=True)
+                print("\n".join(self._build_output_buffer()), flush=True)
                 time.sleep(self._refresh_rate)
             except Exception as e: print(f"\nDisplayManager 執行緒發生錯誤: {e}")
     def start(self): self._thread.start()
@@ -197,7 +204,10 @@ def create_log_viewer_html(log_manager):
     """產生一個包含頂部和底部複製按鈕的可收合日誌檢視器 HTML。"""
     try:
         log_history = log_manager.get_full_history(limit=LOG_COPY_MAX_LINES)
-        escaped_log_content = html.escape("\n".join(log_history))
+        # 修復 (2025-08-20): 採用舊版的日誌處理邏輯，先逸出每一行再組合。
+        # 這可以避免一次性逸出整個文字區塊可能導致的換行符問題，確保複製功能正常。
+        escaped_lines = [html.escape(line) for line in log_history]
+        escaped_log_content = "\n".join(escaped_lines)
         num_logs = len(log_history)
         unique_log_id = f"log-area-{int(time.time() * 1000)}"
         onclick_js = f'''(async () => {{ try {{ const textToCopy = document.getElementById("{unique_log_id}").innerText; await navigator.clipboard.writeText(textToCopy); this.innerText="✅ 已複製!"; }} catch (err) {{ this.innerText="❌ 複製失敗"; }} finally {{ setTimeout(() => {{ this.innerText="📋 複製這 {num_logs} 條日誌"; }}, 2000); }} }})()'''.replace("\n", " ")
@@ -206,47 +216,191 @@ def create_log_viewer_html(log_manager):
         return f'<details style="margin-top: 15px; margin-bottom: 15px; border: 1px solid #e0e0e0; padding: 12px; border-radius: 8px; background-color: #f9f9f9;"><summary style="cursor: pointer; font-weight: bold; color: #333;">點此展開/收合最近 {num_logs} 條詳細日誌</summary><div style="margin-top: 12px;">{top_button_html}<pre id="{unique_log_id}" style="background-color: #fff; padding: 12px; border: 1px solid #e0e0e0; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; font-family: monospace; font-size: 13px; color: #444;"><code>{escaped_log_content}</code></pre>{bottom_button_html}</div></details>'
     except Exception as e: return f"<p>❌ 產生最終日誌報告時發生錯誤: {e}</p>"
 
+class BackgroundRunner(threading.Thread):
+    """在背景執行緒中運行後端服務，避免阻塞主執行緒。"""
+    def __init__(self, project_path_str, log_manager, shared_stats, port_queue):
+        super().__init__(daemon=True)
+        self.project_path = Path(project_path_str)
+        self.log_manager = log_manager
+        self.shared_stats = shared_stats
+        self.port_queue = port_queue
+        self.runner_proc = None
+        self._stop_event = threading.Event()
+
+    def run(self):
+        try:
+            self.log_manager.log("INFO", "準備執行模組化啟動器 (runner)...")
+            runner_script_path = self.project_path / "runner" / "main_runner.py"
+            if not runner_script_path.exists():
+                raise FileNotFoundError(f"找不到啟動器腳本: {runner_script_path}。")
+
+            command = [sys.executable, str(runner_script_path)]
+            self.runner_proc = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding='utf-8',
+                bufsize=1
+            )
+
+            url_pattern = re.compile(r"FINAL_URL:\s*(https?://[^\s]+)")
+            for line in iter(self.runner_proc.stdout.readline, ''):
+                if self._stop_event.is_set(): break
+                clean_line = line.strip()
+                if not clean_line: continue
+
+                self.log_manager.log("RUNNER", clean_line)
+
+                if "安裝伺服器依賴" in clean_line: self.shared_stats['status'] = "安裝依賴..."
+                elif "啟動核心協調器" in clean_line: self.shared_stats['status'] = "啟動服務..."
+                elif "前端建置成功" in clean_line: self.shared_stats['status'] = "服務已啟動..."
+
+                match = url_pattern.search(clean_line)
+                if match:
+                    self.log_manager.log("SUCCESS", f"內部服務 URL 已獲取: {match.group(1)}")
+                    port = int(match.group(1).split(':')[-1])
+                    self.port_queue.put(port) # 將埠號發送回主執行緒
+
+            if self.runner_proc.wait() != 0:
+                 self.shared_stats['status'] = "❌ 後端啟動失敗"
+                 self.port_queue.put(None) # 發送失敗信號
+
+        except Exception as e:
+            self.log_manager.log("CRITICAL", f"❌ 背景執行緒發生未預期的致命錯誤: {e}")
+            self.shared_stats['status'] = f"❌ 啟動失敗: {e}"
+            self.port_queue.put(None) # 發送失敗信號
+
+    def stop(self):
+        self._stop_event.set()
+        if self.runner_proc and self.runner_proc.poll() is None:
+            self.log_manager.log("INFO", "正在終止後端 runner 程序...")
+            try:
+                self.runner_proc.terminate()
+                self.runner_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.runner_proc.kill()
+
 def launch_application(project_path_str: str, log_manager: LogManager):
-    """主執行函式，呼叫模組化 runner 來啟動應用。"""
-    project_path = Path(project_path_str)
+    """主執行函式，使用背景執行緒模型來啟動應用。"""
     shared_stats = {"start_time_monotonic": time.monotonic(), "status": "啟動中...", "proxy_url": None}
     display_manager = DisplayManager(log_manager=log_manager, stats_dict=shared_stats, refresh_rate=UI_REFRESH_SECONDS)
     display_manager.start()
-    runner_proc = None
+
+    port_queue = queue.Queue()
+    background_runner = BackgroundRunner(project_path_str, log_manager, shared_stats, port_queue)
+
     try:
-        log_manager.log("INFO", "準備執行模組化啟動器 (runner)...")
-        runner_script_path = project_path / "runner" / "main_runner.py"
-        if not runner_script_path.exists(): raise FileNotFoundError(f"找不到啟動器腳本: {runner_script_path}。請確保此檔案已存在於您下載的 Git 分支中。")
-        command = [sys.executable, str(runner_script_path)]
-        runner_proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', bufsize=1)
-        url_pattern = re.compile(r"FINAL_URL:\s*(https?://[^\s]+)")
-        final_url_found = False
-        for line in iter(runner_proc.stdout.readline, ''):
-            clean_line = line.strip()
-            if not clean_line: continue
-            log_manager.log("RUNNER", clean_line)
-            if "安裝伺服器依賴" in clean_line: shared_stats['status'] = "安裝依賴..."
-            elif "啟動核心協調器" in clean_line: shared_stats['status'] = "啟動服務..."
-            elif "前端建置成功" in clean_line: shared_stats['status'] = "服務已啟動..."
-            match = url_pattern.search(clean_line)
-            if match and not final_url_found:
-                final_url_found = True
-                port = match.group(1).split(':')[-1]
-                log_manager.log("SUCCESS", f"內部服務 URL 已獲取: {match.group(1)}")
-                shared_stats['status'] = "正在生成 Colab 代理連結..."
-                js_script = f"google.colab.kernel.proxyPort({port}, {{'cache': false}})"
-                proxy_url = colab_output.eval_js(f"(async () => await {js_script})()")
-                shared_stats['proxy_url'] = proxy_url
-                shared_stats['status'] = "✅ 應用程式已就緒"
-                log_manager.log("SUCCESS", f"成功獲取代理連結: {proxy_url}")
-        if runner_proc.wait() != 0: shared_stats['status'] = "❌ 啟動失敗"
-    except Exception as e:
-        log_manager.log("CRITICAL", f"❌ 發生未預期的致命錯誤: {e}")
-        shared_stats['status'] = f"❌ 啟動失敗: {e}"
+        background_runner.start()
+
+        port = None
+        try:
+            log_manager.log("INFO", "等待後端服務啟動並回傳埠號...")
+            port = port_queue.get(timeout=180)
+        except queue.Empty:
+            log_manager.log("CRITICAL", "等待後端服務啟動超時 (180秒)。")
+            shared_stats['status'] = "❌ 後端啟動超時"
+            return
+
+        if port is None:
+            log_manager.log("ERROR", "背景執行緒未能成功獲取埠號，啟動中止。")
+            return
+
+        # --- 增強診斷 (2025-08-20) ---
+        # 1. 心跳探測
+        log_manager.log("INFO", "執行 Colab 前後端通訊心跳探測...")
+        try:
+            ping_result = colab_output.eval_js("'ping'")
+            if ping_result == 'ping':
+                log_manager.log("SUCCESS", "✅ Colab 前後端通訊正常。")
+            else:
+                log_manager.log("WARN", f"⚠️ Colab 前後端通訊異常，收到非預期的回應: {ping_result}")
+        except Exception as e:
+            log_manager.log("CRITICAL", f"❌ Colab 前後端通訊探測失敗: {e}")
+            log_manager.log("CRITICAL", "這通常表示 Colab 執行個體本身不穩定。請嘗試重新啟動執行階段。")
+            shared_stats['status'] = "❌ Colab 通訊失敗"
+            return
+
+        # 2. 健壯的代理連結獲取邏輯
+        max_retries, retry_delay, js_timeout_ms, py_timeout_sec = 20, 1, 7000, 10
+        js_get_url_script = f'''
+        (async () => {{
+            const proxyPromise = google.colab.kernel.proxyPort({port}, {{'cache': false}});
+            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error(`proxyPort call timed out after {js_timeout_ms}ms`)), {js_timeout_ms}));
+            try {{ const url = await Promise.race([proxyPromise, timeoutPromise]); return {{'url': url, 'error': null}}; }}
+            catch (e) {{ return {{'url': null, 'error': e.toString()}}; }}
+        }})()
+        '''
+
+        for attempt in range(max_retries):
+            shared_stats['status'] = f"正在嘗試取得代理連結... (第 {attempt + 1}/{max_retries} 次)"
+            result_queue = queue.Queue()
+            def _eval_js_in_thread(q, script):
+                try:
+                    q.put({'result': colab_output.eval_js(script), 'error': None})
+                except Exception as e:
+                    # 在執行緒內捕獲異常並放入佇列
+                    q.put({'result': None, 'error': e, 'traceback': traceback.format_exc()})
+
+            eval_thread = threading.Thread(target=_eval_js_in_thread, args=(result_queue, js_get_url_script))
+            eval_thread.daemon = True
+            eval_thread.start()
+
+            try:
+                output = result_queue.get(timeout=py_timeout_sec)
+                if output.get('error'):
+                    error_msg = str(output['error'])
+                    tb_msg = output.get('traceback', '無堆疊追蹤資訊。')
+                    shared_stats['status'] = f"嘗試失敗 ({error_msg[:50]}...)，{retry_delay}秒後重試。"
+                    log_manager.log("WARN", f"獲取代理連結的背景執行緒發生錯誤: {error_msg}")
+                    log_manager.log("DEBUG", f"詳細堆疊追蹤:\n{tb_msg}")
+                else:
+                    result = output.get('result')
+                    if result and result.get('error'):
+                        error_msg = str(result['error'])
+                        shared_stats['status'] = f"JS錯誤 ({error_msg[:50]}...)，{retry_delay}秒後重試。"
+                        log_manager.log("WARN", f"獲取代理連結時發生 JS 錯誤: {error_msg}")
+                    elif result and result.get('url') and result['url'].strip().startswith('http'):
+                        candidate_url = result['url'].strip()
+                        shared_stats['proxy_url'] = candidate_url
+                        shared_stats['status'] = "✅ 應用程式已就緒"
+                        log_manager.log("SUCCESS", f"成功取得並驗證代理連結: {candidate_url}")
+                        break
+                    else:
+                        shared_stats['status'] = f"收到無效的回傳值，{retry_delay}秒後重試。"
+                        log_manager.log("WARN", f"收到無效的代理回傳值: '{str(result)[:100]}...'")
+            except queue.Empty:
+                shared_stats['status'] = f"操作超時 ({py_timeout_sec}秒)，{retry_delay}秒後重試。"
+                log_manager.log("WARN", f"獲取代理連結操作超時 ({py_timeout_sec}秒)。")
+            except Exception:
+                # 記錄主執行緒中的任何其他異常
+                log_manager.log("ERROR", "獲取代理連結迴圈發生未預期的主執行緒錯誤。")
+                log_manager.log("ERROR", f"詳細堆疊追蹤:\n{traceback.format_exc()}")
+
+            time.sleep(retry_delay)
+
+        if not shared_stats.get('proxy_url'):
+            shared_stats['status'] = "❌ 取得代理連結失敗"
+            log_manager.log("CRITICAL", "無法取得 Colab 代理連結。")
+
+        log_manager.log("INFO", "應用程式正在運行中。請使用 Colab 的「中斷執行」按鈕來停止。")
+        while background_runner.is_alive():
+            background_runner.join(timeout=1.0)
+
+    except KeyboardInterrupt:
+        log_manager.log("WARN", "🛑 偵測到使用者手動中斷...")
+    except Exception:
+        log_manager.log("CRITICAL", f"❌ launch_application 發生未預期的致命錯誤:")
+        log_manager.log("CRITICAL", traceback.format_exc())
+        shared_stats['status'] = "❌ 致命錯誤"
     finally:
-        if runner_proc and runner_proc.poll() is None: runner_proc.terminate()
+        background_runner.stop()
         display_manager.stop()
-        clear_output(wait=True)
+        # 最終修復 (2025-08-20): 移除此處的 clear_output。
+        # DisplayManager 的迴圈已停止，且最後一幀的狀態可能還未被印出。
+        # 在此處清理會將最終結果（特別是代理連結）清除，導致使用者看不到。
+        # 下方的 print 會確保印出包含代理連結的最終狀態。
+        # clear_output(wait=True)
         print("\n".join(display_manager._build_output_buffer()))
         print("\n--- 🏁 啟動程序結束 ---")
         display(HTML(create_log_viewer_html(log_manager)))
