@@ -9,6 +9,14 @@
     <!-- 全域通知組件 -->
     <NotificationHost />
 
+    <!-- 初始自動下載提示 -->
+    <div v-if="!initialSetup.completed" class="initial-setup-banner card">
+      <p>
+        為了優化您的初次使用體驗，系統將在 <strong>{{ initialSetup.countdown }}</strong> 秒後自動下載基礎模型 (tiny)。
+      </p>
+      <button @click="tasksStore.cancelInitialCountdown()">取消自動下載</button>
+    </div>
+
     <!-- 標題 -->
     <header class="card" style="display: flex; justify-content: space-between; align-items: center;">
       <h1>音訊轉錄儀 (Vue)</h1>
@@ -119,6 +127,7 @@ const tasksStore = useTasksStore()
 const activeTab = ref('transcribe')
 const workerStatuses = computed(() => tasksStore.workerStatuses)
 const installationStatus = computed(() => tasksStore.installationStatus)
+const initialSetup = computed(() => tasksStore.initialSetup)
 
 // --- 方法 ---
 
@@ -204,5 +213,22 @@ main {
   display: flex;
   flex-direction: column;
   gap: 24px;
+}
+
+.initial-setup-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 24px;
+  background-color: #eef2ff;
+  border-color: #c7d2fe;
+}
+.initial-setup-banner p {
+  margin: 0;
+  font-weight: 500;
+}
+.initial-setup-banner button {
+  background-color: #6c757d;
+  flex-shrink: 0;
 }
 </style>

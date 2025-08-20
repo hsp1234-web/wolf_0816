@@ -32,12 +32,25 @@ export const useTasksStore = defineStore('tasks', {
     },
     // JULES'S NEW FEATURE: 新增日誌狀態
     logs: [],
-    logSourceFilter: 'all' // 'all', 'frontend_action', 'api_server', etc.
+    logSourceFilter: 'all', // 'all', 'frontend_action', 'api_server', etc.
+    // JULES'S NEW FEATURE: 本地 Whisper 模型狀態
+    localModels: {
+      available: [],
+      checking: true,
+    },
+    // JULES'S NEW FEATURE: 初始設定倒數計時
+    initialSetup: {
+      countdown: 60,
+      timerId: null,
+      completed: false,
+      cancelled: false,
+    }
   }),
   actions: {
     // 初始化 WebSocket 連線
     initializeSystem() {
       this.connectToWebSocket('/api/ws');
+      this.startInitialCountdown();
     },
 
     connectToWebSocket(endpoint) {
@@ -87,6 +100,12 @@ export const useTasksStore = defineStore('tasks', {
       const { type, payload } = message;
 
       // --- All other message handling remains the same ---
+
+      if (type === 'LOCAL_MODELS_STATUS') {
+        this.localModels.available = payload.models || [];
+        this.localModels.checking = false;
+        return;
+      }
 
       if (type === 'ALL_WORKERS_STATUS_UPDATE') {
         this.workerStatuses = payload;
@@ -312,6 +331,47 @@ export const useTasksStore = defineStore('tasks', {
         console.error('獲取系統日誌時發生錯誤:', error);
         // 可選：使用 notification store 顯示錯誤
       }
+    },
+    checkLocalModels() {
+      this.localModels.checking = true;
+      this.sendSocketMessage({ type: 'CHECK_LOCAL_MODELS' });
+    },
+    downloadModel(modelName) {
+      this.sendSocketMessage({ type: 'DOWNLOAD_MODEL', payload: { model: modelName } });
+    },
+    startInitialCountdown() {
+      if (this.initialSetup.timerId || this.initialSetup.completed) return;
+
+      this.initialSetup.timerId = setInterval(() => {
+        if (this.initialSetup.countdown > 0) {
+          this.initialSetup.countdown--;
+        } else {
+          clearInterval(this.initialSetup.timerId);
+        }
+      }, 1000);
+
+      setTimeout(() => {
+        if (this.initialSetup.cancelled) return;
+
+        clearInterval(this.initialSetup.timerId);
+        this.initialSetup.completed = true;
+
+        // 檢查 'tiny' 模型是否已存在
+        if (!this.localModels.available.includes('tiny')) {
+          console.log("自動下載 'tiny' 模型...");
+          this.downloadModel('tiny');
+        } else {
+          console.log("'tiny' 模型已存在，無需自動下載。");
+        }
+      }, 60000);
+    },
+    cancelInitialCountdown() {
+      if (this.initialSetup.timerId) {
+        clearInterval(this.initialSetup.timerId);
+      }
+      this.initialSetup.cancelled = true;
+      this.initialSetup.completed = true; // 將其視為已完成，以隱藏 UI
+      console.log("使用者已取消自動下載。");
     },
   }
 })

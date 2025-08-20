@@ -26,11 +26,11 @@
 
   <div class="card worker-status-card">
     <h2>🛠️ 工作者狀態</h2>
-    <div v-if="Object.keys(workerStatuses).length > 0" class="dashboard-grid">
-      <div v-for="(status, name) in workerStatuses" :key="name" class="stat-item">
+    <div v-if="Object.keys(workerStatuses).length > 0" class="worker-status-container">
+      <div v-for="(status, name) in workerStatuses" :key="name" class="worker-stat-item">
         <span class="status-light" :class="getWorkerStatusClass(status.status)"></span>
-        <strong style="text-transform: capitalize;">{{ name }}:</strong>
-        <span>{{ translateWorkerStatus(status.status) }}</span>
+        <strong class="worker-name">{{ name }}:</strong>
+        <span class="worker-status-text">{{ translateWorkerStatus(status.status) }}</span>
       </div>
     </div>
     <div v-else>
@@ -115,5 +115,28 @@ onUnmounted(() => {
 <style scoped>
 .worker-status-card {
   margin-top: 24px;
+}
+.worker-status-container {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.worker-stat-item {
+  display: flex;
+  align-items: center;
+  background-color: #f5f5f5;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+  flex-basis: 220px;
+  /* JULES'S FIX (2025-08-20): 解決痛點 4 - 狀態顯示排版混亂 */
+  /* 移除 flex-grow: 1，避免項目在換行後不自然地拉伸填滿整個寬度， */
+  /* 讓排版在窄螢幕上更加整齊、優雅。 */
+  flex-grow: 0;
+}
+.worker-name {
+  text-transform: capitalize;
+  margin-right: 8px;
+  font-weight: 600;
 }
 </style>

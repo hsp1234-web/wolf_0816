@@ -116,6 +116,7 @@ WORKER_SCRIPTS = {
     "youtube": ROOT_DIR / "run_youtube_worker.py",
     "transcription": ROOT_DIR / "run_transcription_worker.py",
     "ai_report": ROOT_DIR / "run_ai_report_worker.py",
+    "model_management": ROOT_DIR / "run_model_management_worker.py",
 }
 
 # 全域工作者狀態註冊表
@@ -284,6 +285,9 @@ def check_model_exists(model_size: str) -> bool:
         log.error(f"檢查模型 '{model_size}' 時發生錯誤: {e}")
         return False
 
+KNOWN_WHISPER_MODELS = ["tiny", "base", "small", "medium", "large-v2", "large-v3"]
+
+
 @app.post("/api/transcribe", status_code=202)
 async def create_transcription_task(
     file: UploadFile = File(...),
@@ -320,27 +324,11 @@ async def create_transcription_task(
         "beam_size": beam_size
     }
 
-    # 3. 檢查模型是否存在
-    if check_model_exists(model_size):
-        # 模型已存在，直接建立並返回轉錄任務
-        log.info(f"✅ 模型 '{model_size}' 已存在，直接建立轉錄任務: {transcribe_task_id}")
-        db_client.add_task(transcribe_task_id, json.dumps(transcription_payload), task_type='transcribe')
-        return {"task_id": transcribe_task_id, "type": "transcribe", "message": "任務已建立，將透過 WebSocket 觸發執行。"}
-    else:
-        # 模型不存在，建立下載任務和依賴的轉錄任務
-        download_task_id = str(uuid.uuid4())
-        log.warning(f"⚠️ 模型 '{model_size}' 不存在。建立下載任務 '{download_task_id}' 和依賴的轉錄任務 '{transcribe_task_id}'")
-
-        download_payload = {"model_size": model_size}
-        db_client.add_task(download_task_id, json.dumps(download_payload), task_type='download')
-
-        db_client.add_task(transcribe_task_id, json.dumps(transcription_payload), task_type='transcribe', depends_on=download_task_id)
-
-        # 我們回傳兩個任務的 ID，讓前端可以追蹤整個鏈
-        return JSONResponse(content={"tasks": [
-            {"task_id": download_task_id, "type": "download"},
-            {"task_id": transcribe_task_id, "type": "transcribe"}
-        ]})
+    # 3. 根據新的手動下載流程，我們不再自動建立下載任務。
+    #    我們假設模型已經存在，如果不存在，轉錄工作者會在執行時失敗。
+    log.info(f"✅ 建立轉錄任務: {transcribe_task_id} (模型: {model_size})")
+    db_client.add_task(transcribe_task_id, json.dumps(transcription_payload), task_type='transcribe')
+    return {"task_id": transcribe_task_id, "type": "transcribe", "message": "任務已建立，將透過 WebSocket 觸發執行。"}
 
 
 @app.get("/api/status/{task_id}")
@@ -469,26 +457,17 @@ async def get_workers_status():
     }
     return JSONResponse(content=status_copy)
 
-@app.post("/api/workers/launch/{worker_name}", status_code=202)
+@app.post("/api/workers/launch/{worker_name}", status_code=200)
 async def launch_worker(worker_name: str):
     """
     按需啟動一個指定的工作者。
+    [JULES'S REFACTOR]: 此功能現已由系統協調器自動管理。此端點僅為保留。
     """
     if worker_name not in WORKER_SCRIPTS:
         raise HTTPException(status_code=404, detail=f"找不到名為 '{worker_name}' 的工作者。")
 
-    current_status = WORKER_STATUS[worker_name]["status"]
-    if current_status in ["INSTALLING", "RUNNING", "READY"]:
-        log.info(f"工作者 '{worker_name}' 的狀態為 {current_status}，跳過啟動。")
-        return {"status": "skipped", "message": f"工作者 '{worker_name}' 已在運行或準備就緒 ({current_status})，無需重新啟動。"}
-
-    log.info(f"收到啟動工作者 '{worker_name}' 的請求。")
-    # 在背景執行緒中啟動工作者，以避免阻塞 API 伺服器
-    loop = asyncio.get_running_loop()
-    thread = threading.Thread(target=run_worker_in_background, args=(worker_name, loop))
-    thread.start()
-
-    return {"status": "accepted", "message": f"已接受啟動工作者 '{worker_name}' 的請求。"}
+    log.info(f"收到對工作者 '{worker_name}' 的啟動請求，但此操作現由協調器自動管理。")
+    return {"status": "managed_by_orchestrator", "message": f"工作者 '{worker_name}' 的生命週期由系統自動管理，無需手動啟動。"}
 
 
 @app.get("/api/tasks")
@@ -754,43 +733,46 @@ async def validate_api_key(request: Request):
 @app.post("/api/youtube/models")
 async def get_youtube_models(request: Request):
     """獲取可用的 Gemini 模型列表。"""
-    # 在模擬模式下，回傳一個固定的假列表
-    if IS_MOCK_MODE:
-        return {
-            "models": [
-                {"id": "gemini-pro-mock", "name": "Gemini Pro (模擬)"},
-                {"id": "gemini-1.5-flash-mock", "name": "Gemini 1.5 Flash (模擬)"}
-            ]
-        }
-
-    # 真實模式下，從 gemini_processor.py 獲取
+    # JULES'S FIX (2025-08-20): 移除模擬模式檢查，強制此端點一律嘗試呼叫真實的 Gemini API。
+    # 這是為了解決痛點 1：模型列表功能失效的問題。
     try:
-        # 從請求主體中獲取 API 金鑰
         payload = await request.json()
         api_key = payload.get("api_key")
+        if not api_key:
+            raise HTTPException(status_code=400, detail="請求中未提供 API 金鑰。")
 
-        # 建立一個安全的環境變數副本，用於執行子程序
+        log.info("收到獲取 Gemini 模型列表的請求，正在準備執行工具腳本...")
+
         env = os.environ.copy()
-        if api_key:
-            env["GOOGLE_API_KEY"] = api_key
-
-        # 如果請求中或環境變數中都沒有金鑰，則回傳錯誤
-        if not env.get("GOOGLE_API_KEY"):
-            raise HTTPException(status_code=401, detail="請求中或環境變數中均未提供有效的 Google API 金鑰。")
+        env["GOOGLE_API_KEY"] = api_key
 
         tool_script_path = ROOT_DIR / "src" / "tools" / "gemini_processor.py"
         cmd = [sys.executable, str(tool_script_path), "--command=list_models"]
 
-        # 將包含金鑰的環境變數傳遞給子程序
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True, encoding='utf-8', env=env)
+        log.info(f"正在執行指令: {' '.join(cmd)}")
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+            encoding='utf-8',
+            env=env
+        )
+
         models = json.loads(result.stdout)
+        log.info(f"成功從工具腳本獲取到 {len(models)} 個模型。")
         return {"models": models}
+
     except subprocess.CalledProcessError as e:
-        log.error(f"獲取 Gemini 模型列表失敗，可能是因為 API 金鑰無效。Stderr: {e.stderr}")
-        raise HTTPException(status_code=401, detail="無法使用提供的 API 金鑰獲取模型列表。")
+        log.error(f"執行 gemini_processor.py 失敗。返回碼: {e.returncode}")
+        log.error(f"Stderr: {e.stderr.strip()}")
+        raise HTTPException(status_code=401, detail=f"無法使用提供的 API 金鑰獲取模型列表: {e.stderr.strip()}")
+    except json.JSONDecodeError as e:
+        log.error(f"解析來自 gemini_processor.py 的輸出時出錯: {e}")
+        raise HTTPException(status_code=500, detail="無法解析來自模型工具的輸出。")
     except Exception as e:
-        log.error(f"獲取 Gemini 模型列表時發生錯誤: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="無法獲取 Gemini 模型列表。")
+        log.error(f"獲取 Gemini 模型列表時發生未預期錯誤: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="獲取 Gemini 模型列表時發生內部錯誤。")
 
 
 @app.post("/api/youtube/process", status_code=202)
@@ -867,519 +849,10 @@ async def process_youtube_urls(request: Request):
     return JSONResponse(content={"message": f"已為 {len(tasks)} 個 URL 建立處理任務。", "tasks": tasks})
 
 
-def run_worker_in_background(worker_name: str, loop: asyncio.AbstractEventLoop):
-    """
-    在背景執行緒中安全地執行並監控一個工作者腳本。
-    """
-    script_path = WORKER_SCRIPTS.get(worker_name)
-    if not script_path or not script_path.exists():
-        log.error(f"❌ [執行緒] 找不到工作者 '{worker_name}' 的腳本: {script_path}")
-        return
-
-    try:
-        # 1. 更新狀態為安裝中並廣播
-        WORKER_STATUS[worker_name] = {"status": "INSTALLING", "process": None, "last_error": None}
-        status_update = {"type": "WORKER_STATUS_UPDATE", "payload": {"worker": worker_name, "status": "INSTALLING"}}
-        asyncio.run_coroutine_threadsafe(manager.broadcast_json(status_update), loop)
-        log.info(f"🧵 [執行緒] 開始準備工作者 '{worker_name}'...")
-
-        # 2. 執行工作者腳本 (不再使用 --test，讓其持續運行)
-        cmd = [sys.executable, str(script_path)]
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding='utf-8'
-        )
-        WORKER_STATUS[worker_name]["process"] = process
-
-        # 3. 立即更新狀態為準備就緒並廣播 (樂觀更新)
-        # 我們假設 Popen 成功後，工作者很快就會準備好。
-        # 工作者腳本自身的閒置邏輯會處理關閉。
-        WORKER_STATUS[worker_name]["status"] = "READY"
-        WORKER_STATUS[worker_name]["last_error"] = None
-        ready_update = {
-            "type": "WORKER_STATUS_UPDATE",
-            "payload": {
-                "worker": worker_name,
-                "status": "READY",
-                "last_error": None
-            }
-        }
-        asyncio.run_coroutine_threadsafe(manager.broadcast_json(ready_update), loop)
-        log.info(f"✅ [執行緒] 工作者 '{worker_name}' 已啟動並設定為準備就緒狀態。")
-
-    except Exception as e:
-        log.error(f"❌ [執行緒] 執行工作者 '{worker_name}' 時發生嚴重錯誤: {e}", exc_info=True)
-        WORKER_STATUS[worker_name]["status"] = "FAILED"
-        WORKER_STATUS[worker_name]["last_error"] = str(e)
-
-        # 廣播失敗狀態
-        failed_update = {
-            "type": "WORKER_STATUS_UPDATE",
-            "payload": {
-                "worker": worker_name,
-                "status": "FAILED",
-                "last_error": WORKER_STATUS[worker_name].get("last_error")
-            }
-        }
-        asyncio.run_coroutine_threadsafe(manager.broadcast_json(failed_update), loop)
-
-
-def trigger_model_download(task_id: str, loop: asyncio.AbstractEventLoop):
-    """
-    在一個單獨的執行緒中執行模型下載。
-    如果成功，會自動建立並觸發後續的轉錄任務。
-    """
-    def _download_in_thread():
-        task_info = db_client.get_task_status(task_id)
-        if not task_info:
-            log.error(f"❌ [執行緒] 找不到下載任務 {task_id}，無法開始。")
-            return
-
-        try:
-            payload = json.loads(task_info['payload'])
-            model_size = payload['model_size']
-        except (json.JSONDecodeError, KeyError) as e:
-            log.error(f"❌ [執行緒] 下載任務 {task_id} 的 payload 格式錯誤: {e}", exc_info=True)
-            db_client.update_task_status(task_id, 'failed', json.dumps({"error": "無效的任務 payload"}))
-            return
-
-        log.info(f"🧵 [執行緒] 開始下載模型: {model_size} (任務 ID: {task_id})")
-        try:
-            tool_script_path = ROOT_DIR / "src" / "tools" / ("mock_transcriber.py" if IS_MOCK_MODE else "transcriber.py")
-            cmd = [sys.executable, str(tool_script_path), "--command=download", f"--model_size={model_size}"]
-
-            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', bufsize=1)
-
-            if process.stdout:
-                for line in iter(process.stdout.readline, ''):
-                    # ... (省略進度廣播邏輯以求簡潔，可根據需要加回)
-                    pass
-
-            process.wait()
-
-            if process.returncode == 0:
-                log.info(f"✅ [執行緒] 模型 '{model_size}' 下載成功。")
-                db_client.update_task_status(task_id, 'completed', json.dumps({"model_size": model_size}))
-
-                # JULES'S FIX: 採用與 YouTube 處理鏈相同的穩健模式來觸發依賴任務
-                # 1. 確認父任務狀態更新
-                max_retries = 10
-                retry_delay_seconds = 0.5
-                parent_task_confirmed = False
-                for i in range(max_retries):
-                    parent_status_info = db_client.get_task_status(task_id)
-                    if parent_status_info and parent_status_info.get('status') == 'completed':
-                        parent_task_confirmed = True
-                        log.info(f"✅ 父任務(下載) {task_id} 狀態已在資料庫中確認為 'completed'。")
-                        break
-                    time.sleep(retry_delay_seconds)
-
-                if not parent_task_confirmed:
-                    log.error(f"❌ 無法在資料庫中確認父任務 {task_id} 的完成狀態。後續任務可能無法啟動。")
-                    return
-
-                # 2. 尋找並觸發依賴任務
-                dependent_task_id = db_client.find_dependent_task(task_id)
-                if dependent_task_id:
-                    log.info(f"✅ 發現依賴的轉錄任務 {dependent_task_id}，正在透過 WebSocket 觸發。")
-                    start_message = {
-                        "type": "START_TRANSCRIPTION",
-                        "payload": {"task_id": dependent_task_id}
-                    }
-                    asyncio.run_coroutine_threadsafe(manager.broadcast_json(start_message), loop)
-                else:
-                    log.info(f"ℹ️ 模型下載任務 {task_id} 完成，沒有發現依賴任務。")
-            else:
-                stderr_output = process.stderr.read() if process.stderr else "N/A"
-                log.error(f"❌ [執行緒] 模型 '{model_size}' 下載失敗。 Stderr: {stderr_output}")
-                db_client.update_task_status(task_id, 'failed', json.dumps({"error": stderr_output}))
-
-        except Exception as e:
-            log.error(f"❌ [執行緒] 下載執行緒中發生嚴重錯誤: {e}", exc_info=True)
-            db_client.update_task_status(task_id, 'failed', json.dumps({"error": str(e)}))
-
-    thread = threading.Thread(target=_download_in_thread)
-    thread.start()
-
-
-def trigger_transcription(task_id: str, file_path: str, model_size: str, language: Optional[str], beam_size: int, loop: asyncio.AbstractEventLoop, original_filename: Optional[str] = None):
-    """
-    在一個單獨的執行緒中執行轉錄，並透過 WebSocket 即時串流結果。
-    """
-    def _transcribe_in_thread():
-        start_time = time.monotonic()
-        display_name = original_filename or file_path
-        log.info(f"🧵 [執行緒] 開始處理轉錄任務: {task_id}，檔案: {display_name}")
-
-        # 問題二：將所有輸出統一到 uploads 目錄下，以便提供靜態檔案服務
-        output_dir = UPLOADS_DIR / "transcripts"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_file_path = output_dir / f"{task_id}.txt"
-
-        try:
-            force_mock = os.environ.get("FORCE_MOCK_TRANSCRIBER") == "true"
-            tool_script_path = ROOT_DIR / "src" / "tools" / ("mock_transcriber.py" if IS_MOCK_MODE or force_mock else "transcriber.py")
-            cmd = [
-                sys.executable,
-                str(tool_script_path),
-                "--command=transcribe",
-                f"--audio_file={file_path}",
-                f"--output_file={output_file_path}", # 使用新的路徑
-                f"--model_size={model_size}",
-            ]
-            if language:
-                cmd.append(f"--language={language}")
-            cmd.append(f"--beam_size={beam_size}")
-
-            log.info(f"執行轉錄指令: {' '.join(map(str, cmd))}")
-
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding='utf-8',
-                bufsize=1
-            )
-
-            start_message_filename = original_filename or Path(file_path).name
-            start_message = {
-                "type": "TRANSCRIPTION_STATUS",
-                "payload": {
-                    "task_id": task_id,
-                    "status": "starting",
-                    "filename": start_message_filename,
-                    "elapsed_time": time.monotonic() - start_time
-                }
-            }
-            asyncio.run_coroutine_threadsafe(manager.broadcast_json(start_message), loop)
-
-            if process.stdout:
-                for line in iter(process.stdout.readline, ''):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        data = json.loads(line)
-                        if data.get("type") == "segment":
-                            message = {
-                                "type": "TRANSCRIPTION_UPDATE",
-                                "payload": {
-                                    "task_id": task_id,
-                                    "elapsed_time": time.monotonic() - start_time,
-                                    **data
-                                }
-                            }
-                            asyncio.run_coroutine_threadsafe(manager.broadcast_json(message), loop)
-                    except json.JSONDecodeError:
-                        log.warning(f"[執行緒] 無法解析來自 transcriber 的 JSON 行: {line}")
-
-            process.wait()
-
-            if process.returncode == 0:
-                log.info(f"✅ [執行緒] 轉錄任務 '{task_id}' 成功完成。")
-                final_transcript = output_file_path.read_text(encoding='utf-8').strip()
-
-                # 問題二：將檔案系統路徑轉換為可存取的 URL
-                final_result_obj = {
-                    "transcript": final_transcript,
-                    "transcript_path": convert_to_media_url(str(output_file_path)),
-                    "output_path": convert_to_media_url(str(output_file_path)) # 增加一個通用的 output_path
-                }
-                db_client.update_task_status(task_id, 'completed', json.dumps(final_result_obj))
-                log.info(f"✅ [執行緒] 已將任務 {task_id} 的狀態和結果更新至資料庫。")
-
-                final_message = {
-                    "type": "TRANSCRIPTION_STATUS",
-                    "payload": {
-                        "task_id": task_id,
-                        "status": "completed",
-                        "result": final_result_obj,
-                        "task_type": "transcribe",
-                        "elapsed_time": time.monotonic() - start_time
-                    }
-                }
-            else:
-                stderr_output = process.stderr.read() if process.stderr else "N/A"
-                log.error(f"❌ [執行緒] 轉錄任務 '{task_id}' 失敗。返回碼: {process.returncode}。Stderr: {stderr_output}")
-                db_client.update_task_status(task_id, 'failed', json.dumps({"error": stderr_output}))
-                final_message = {
-                    "type": "TRANSCRIPTION_STATUS",
-                    "payload": {
-                        "task_id": task_id,
-                        "status": "failed",
-                        "error": stderr_output,
-                        "task_type": "transcribe",
-                        "elapsed_time": time.monotonic() - start_time
-                    }
-                }
-
-            log.info(f"📢 [WebSocket] 正在廣播任務 '{task_id}' 的最終狀態: {final_message['payload']['status']}")
-            asyncio.run_coroutine_threadsafe(manager.broadcast_json(final_message), loop)
-
-        except Exception as e:
-            log.error(f"❌ [執行緒] 轉錄執行緒中發生嚴重錯誤: {e}", exc_info=True)
-            error_message = {
-                "type": "TRANSCRIPTION_STATUS",
-                "payload": {
-                    "task_id": task_id,
-                    "status": "failed",
-                    "error": str(e),
-                    "elapsed_time": time.monotonic() - start_time
-                }
-            }
-            asyncio.run_coroutine_threadsafe(manager.broadcast_json(error_message), loop)
-
-    thread = threading.Thread(target=_transcribe_in_thread)
-    thread.start()
-
-
-def trigger_youtube_processing(task_id: str, loop: asyncio.AbstractEventLoop):
-    """在一個單獨的執行緒中執行 YouTube 處理流程（已更新為彈性模式）。"""
-    def _process_in_thread():
-        start_time = time.monotonic()
-        log.info(f"🧵 [執行緒] 開始處理 YouTube 任務鏈，起始 ID: {task_id}")
-
-        task_info = db_client.get_task_status(task_id)
-        if not task_info:
-            log.error(f"❌ [執行緒] 找不到起始任務 {task_id}")
-            return
-
-        task_type = task_info.get('type')
-        dependent_task_id = None
-
-        try:
-            payload = json.loads(task_info['payload'])
-            url = payload['url']
-            custom_filename = payload.get("custom_filename")
-            download_type = payload.get("download_type", "audio")
-
-            asyncio.run_coroutine_threadsafe(manager.broadcast_json({
-                "type": "YOUTUBE_STATUS",
-                "payload": {
-                    "task_id": task_id,
-                    "status": "downloading",
-                    "message": f"正在下載 ({download_type}): {url}",
-                    "task_type": task_type,
-                    "elapsed_time": time.monotonic() - start_time
-                }
-            }), loop)
-
-            downloader_script_path = ROOT_DIR / "src" / "tools" / ("mock_youtube_downloader.py" if IS_MOCK_MODE else "youtube_downloader.py")
-            cmd_dl = [sys.executable, str(downloader_script_path), "--url", url, "--output-dir", str(UPLOADS_DIR), "--download-type", download_type]
-            if custom_filename:
-                cmd_dl.extend(["--custom-filename", custom_filename])
-
-            cookies_path = UPLOADS_DIR / "cookies.txt"
-            if cookies_path.is_file():
-                log.info(f"發現 cookies.txt，將其用於下載。")
-                cmd_dl.extend(["--cookies-file", str(cookies_path)])
-
-            proc_env = os.environ.copy()
-            process_dl = subprocess.Popen(cmd_dl, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', env=proc_env)
-
-            # JULES'S FIX: 讀取 stderr 以獲取即時進度更新，與 Gemini 處理器保持一致
-            if process_dl.stderr:
-                for line in iter(process_dl.stderr.readline, ''):
-                    line = line.strip()
-                    if not line: continue
-                    try:
-                        progress_data = json.loads(line)
-                        if progress_data.get("type") == "progress":
-                             asyncio.run_coroutine_threadsafe(manager.broadcast_json({
-                                "type": "YOUTUBE_STATUS",
-                                "payload": {
-                                    "task_id": task_id,
-                                    "status": "downloading",
-                                    "message": progress_data.get("description", "下載中..."),
-                                    "progress": progress_data.get("percent", 0),
-                                    "task_type": task_type,
-                                    "elapsed_time": time.monotonic() - start_time
-                                }
-                            }), loop)
-                    except json.JSONDecodeError:
-                        log.debug(f"[stderr from youtube_downloader]: {line}")
-
-
-            stdout_output, stderr_output = process_dl.communicate()
-
-            if process_dl.returncode != 0:
-                raise RuntimeError(f"YouTube downloader failed. stderr: {stderr_output}")
-
-            download_result = json.loads(stdout_output)
-            media_file_path = download_result['output_path'] # This is an absolute path
-            video_title = download_result.get('video_title', '無標題影片')
-            log.info(f"✅ [執行緒] YouTube 媒體下載完成: {media_file_path}")
-
-            if task_type == 'youtube_download_only':
-                # 問題二：將檔案系統路徑轉換為可存取的 URL
-                download_result['output_path'] = convert_to_media_url(download_result['output_path'])
-                db_client.update_task_status(task_id, 'completed', json.dumps(download_result))
-                log.info(f"✅ [執行緒] '僅下載媒體' 任務 {task_id} 完成。")
-                asyncio.run_coroutine_threadsafe(manager.broadcast_json({
-                    "type": "YOUTUBE_STATUS",
-                    "payload": {
-                        "task_id": task_id,
-                        "status": "completed",
-                        "result": download_result,
-                        "task_type": "download_only",
-                        "elapsed_time": time.monotonic() - start_time
-                    }
-                }), loop)
-                return
-
-            # JULES'S FIX (2025-08-17): 為鏈式任務的下載步驟更新資料庫時，也必須轉換路徑
-            # 這樣前端在輪詢此下載任務的狀態時，才能獲得可預覽的 URL。
-            # 我們建立一個副本，這樣原始的絕對路徑 media_file_path 仍可用於後續步驟。
-            db_update_payload = download_result.copy()
-            db_update_payload['output_path'] = convert_to_media_url(db_update_payload['output_path'])
-            db_client.update_task_status(task_id, 'completed', json.dumps(db_update_payload))
-
-            # JULES'S FIX (2025-08-17): 解決競爭條件 (Race Condition)
-            # 在啟動子任務前，增加一個輪詢迴圈來確認父任務的狀態已在資料庫中確實更新為 'completed'。
-            # 這避免了因資料庫寫入延遲，導致子任務啟動時找不到已完成的父任務而失敗的問題。
-            max_retries = 10
-            retry_delay_seconds = 0.5
-            parent_task_confirmed = False
-            for i in range(max_retries):
-                log.info(f"正在驗證父任務 {task_id} 的狀態... (嘗試 {i+1}/{max_retries})")
-                parent_status_info = db_client.get_task_status(task_id)
-                if parent_status_info and parent_status_info.get('status') == 'completed':
-                    parent_task_confirmed = True
-                    log.info(f"✅ 父任務 {task_id} 狀態已在資料庫中確認為 'completed'。")
-                    break
-                time.sleep(retry_delay_seconds)
-
-            if not parent_task_confirmed:
-                raise RuntimeError(f"在更新父任務 {task_id} 狀態後，未能及時從資料庫確認，啟動中止。")
-
-            dependent_task_id = db_client.find_dependent_task(task_id)
-            if not dependent_task_id:
-                raise ValueError(f"找不到依賴於下載任務 {task_id} 的 gemini_process 任務")
-
-            process_task_info = db_client.get_task_status(dependent_task_id)
-            process_payload = json.loads(process_task_info['payload'])
-            model = process_payload['model']
-            api_key = process_payload.get('api_key') # 從 payload 讀取 API 金鑰
-            tasks_to_run = process_payload.get('tasks', 'summary,transcript')
-            output_format = process_payload.get('output_format', 'html')
-
-            log.info(f"執行 Gemini 分析，任務: '{tasks_to_run}', 格式: '{output_format}'")
-            asyncio.run_coroutine_threadsafe(manager.broadcast_json({
-                "type": "YOUTUBE_STATUS",
-                "payload": {
-                    "task_id": dependent_task_id,
-                    "status": "processing",
-                    "message": f"使用 {model} 進行 AI 分析...",
-                    "task_type": "gemini_process",
-                    "elapsed_time": time.monotonic() - start_time
-                }
-            }), loop)
-
-            processor_script_path = ROOT_DIR / "src" / "tools" / ("mock_gemini_processor.py" if IS_MOCK_MODE else "gemini_processor.py")
-            # 問題二：將報告也輸出到 uploads 目錄下
-            report_output_dir = UPLOADS_DIR / "reports"
-            report_output_dir.mkdir(parents=True, exist_ok=True)
-
-            cmd_process = [
-                sys.executable, str(processor_script_path),
-                "--command=process",
-                "--audio-file", media_file_path,
-                "--model", model,
-                "--output-dir", str(report_output_dir),
-                "--video-title", video_title,
-                "--tasks", tasks_to_run,
-                "--output-format", output_format
-            ]
-
-            proc_env = os.environ.copy()
-            # 將從任務 payload 中讀取的 API 金鑰設定到環境變數
-            if api_key:
-                proc_env["GOOGLE_API_KEY"] = api_key
-
-            process_gemini = subprocess.Popen(
-                cmd_process, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', env=proc_env
-            )
-
-            if process_gemini.stderr:
-                for line in iter(process_gemini.stderr.readline, ''):
-                    line = line.strip()
-                    if not line: continue
-                    try:
-                        progress_data = json.loads(line)
-                        if progress_data.get("type") == "progress":
-                            asyncio.run_coroutine_threadsafe(manager.broadcast_json({
-                                "type": "YOUTUBE_STATUS",
-                                "payload": {
-                                    "task_id": dependent_task_id,
-                                    "status": "processing",
-                                    "message": progress_data.get("detail", "AI 分析中..."),
-                                    "task_type": "gemini_process",
-                                    "progress_code": progress_data.get("status"),
-                                    "elapsed_time": time.monotonic() - start_time
-                                }
-                            }), loop)
-                    except json.JSONDecodeError:
-                        log.debug(f"[stderr from gemini_processor]: {line}")
-
-            stdout_output, _ = process_gemini.communicate()
-            if process_gemini.returncode != 0:
-                raise RuntimeError(f"Gemini processor failed with exit code {process_gemini.returncode}. Stderr: {stdout_output}")
-
-            process_result = json.loads(stdout_output)
-            # 問題二：將結果中的所有檔案路徑轉換為 URL
-            for key in ["output_path", "html_report_path", "pdf_report_path"]:
-                 if key in process_result and process_result[key]:
-                    process_result[key] = convert_to_media_url(process_result[key])
-
-            db_client.update_task_status(dependent_task_id, 'completed', json.dumps(process_result))
-            log.info(f"✅ [執行緒] Gemini AI 處理完成。")
-
-            final_message = {
-                "type": "YOUTUBE_STATUS",
-                "payload": {
-                    "task_id": dependent_task_id,
-                    "status": "completed",
-                    "result": process_result,
-                    "task_type": "gemini_process",
-                    "elapsed_time": time.monotonic() - start_time
-                }
-            }
-            log.info(f"📢 [WebSocket] 正在廣播 YouTube 任務鏈 '{dependent_task_id}' 的最終狀態: completed")
-            asyncio.run_coroutine_threadsafe(manager.broadcast_json(final_message), loop)
-
-        except Exception as e:
-            log.error(f"❌ [執行緒] YouTube 處理鏈中發生錯誤: {e}", exc_info=True)
-            failed_task_id = dependent_task_id if dependent_task_id else task_id
-            error_payload = {"error": str(e)}
-            try:
-                error_json = json.loads(str(e))
-                if isinstance(error_json, dict):
-                    error_payload["error"] = error_json.get("error", str(e))
-                    if error_json.get("error_code") == "AUTH_REQUIRED":
-                        error_payload["error_type"] = "AUTH_REQUIRED"
-            except (json.JSONDecodeError, TypeError):
-                pass
-            db_client.update_task_status(failed_task_id, 'failed', json.dumps(error_payload))
-
-            final_message = {
-                "type": "YOUTUBE_STATUS",
-                "payload": {
-                    "task_id": failed_task_id,
-                    "status": "failed",
-                    "elapsed_time": time.monotonic() - start_time,
-                    **error_payload
-                }
-            }
-            log.info(f"📢 [WebSocket] 正在廣播 YouTube 任務鏈 '{failed_task_id}' 的最終狀態: failed")
-            asyncio.run_coroutine_threadsafe(manager.broadcast_json(final_message), loop)
-
-    thread = threading.Thread(target=_process_in_thread)
-    thread.start()
-
+# JULES'S REFACTOR (2025-08-20): 根據計畫，移除所有基於執行緒的任務觸發器。
+# 這些 `trigger_*` 和 `run_*_in_background` 函式已被新的 Huey Worker 架構取代。
+# 移除這些函式可以確保所有背景任務都透過一致的任務佇列機制來處理，
+# 避免了舊的執行緒模式與新 Worker 模式之間的衝突。
 
 @app.get("/api/debug/all_frontend_action_logs")
 async def get_all_frontend_action_logs():
@@ -1411,69 +884,43 @@ async def websocket_endpoint(websocket: WebSocket):
                 msg_type = message.get("type")
                 payload = message.get("payload", {})
 
-                # --- MODIFICATION FOR DUAL WORKER ARCHITECTURE ---
-                # Check if we are in the new worker mode. If so, the standalone workers
-                # will poll the database, so we should not trigger tasks from here.
-                if os.environ.get("WORKER_MODE") == "new":
-                    log.info(f"WORKER_MODE=new, 跳過來自 WebSocket 的任務觸發: {msg_type}")
-                    # In the new mode, we do nothing and let the workers handle it.
-                    # We can send an acknowledgement back to the client if needed.
-                    await manager.broadcast_json({
-                        "type": "ACK",
-                        "payload": f"已收到 {msg_type}，將由獨立工作者處理。"
+                # JULES'S REFACTOR (2025-08-20): 根據新的 Huey Worker 架構，API Server 不再負責觸發任務。
+                # Worker 會自行從資料庫拉取任務。因此，所有 `START_*` 類型的 WebSocket 訊息都將被忽略。
+                # 這樣可以確保任務處理的唯一來源是 Worker，避免了雙重執行的風險。
+
+                if msg_type == "CHECK_LOCAL_MODELS":
+                    log.info("收到檢查本地模型的請求。")
+                    available_models = [
+                        model for model in KNOWN_WHISPER_MODELS if check_model_exists(model)
+                    ]
+                    await websocket.send_json({
+                        "type": "LOCAL_MODELS_STATUS",
+                        "payload": {"models": available_models}
                     })
-                    continue
-                # --- END MODIFICATION ---
 
-
-                if msg_type == "START_DOWNLOAD":
-                    task_id = payload.get("task_id")
-                    if task_id:
-                        log.info(f"收到開始下載任務 '{task_id}' 的請求。")
-                        loop = asyncio.get_running_loop()
-                        trigger_model_download(task_id, loop)
+                elif msg_type == "DOWNLOAD_MODEL":
+                    model_size = payload.get("model")
+                    if model_size and model_size in KNOWN_WHISPER_MODELS:
+                        log.info(f"收到手動下載模型 '{model_size}' 的請求，正在建立任務...")
+                        # 建立一個下載任務，讓 Huey Worker 來處理
+                        download_task_id = str(uuid.uuid4())
+                        download_payload = {"model_size": model_size}
+                        db_client.add_task(
+                            download_task_id,
+                            json.dumps(download_payload),
+                            task_type='download_model' # JULES'S FIX: 使用更精確的任務類型
+                        )
+                        await websocket.send_json({"type": "ACK", "payload": f"已為模型 '{model_size}' 建立下載任務。"})
                     else:
-                        await manager.broadcast_json({"type": "ERROR", "payload": "缺少 task_id 參數"})
+                        await manager.broadcast_json({"type": "ERROR", "payload": "無效或未提供的模型大小參數"})
 
-                elif msg_type == "START_TRANSCRIPTION":
-                    task_id = payload.get("task_id")
-                    if not task_id:
-                        await manager.broadcast_json({"type": "ERROR", "payload": "缺少 task_id 參數"})
-                        continue
-
-                    task_info = db_client.get_task_status(task_id)
-                    if not task_info:
-                        await manager.broadcast_json({"type": "ERROR", "payload": f"找不到任務 {task_id}"})
-                        continue
-
-                    try:
-                        task_payload = json.loads(task_info['payload'])
-                        file_path = task_payload.get("input_file")
-                        model_size = task_payload.get("model_size", "tiny")
-                        language = task_payload.get("language")
-                        beam_size = task_payload.get("beam_size", 5)
-                        original_filename = task_payload.get("original_filename") # JULES'S FIX
-                    except (json.JSONDecodeError, KeyError) as e:
-                        await manager.broadcast_json({"type": "ERROR", "payload": f"解析任務 {task_id} 的 payload 失敗: {e}"})
-                        continue
-
-                    if not file_path:
-                        await manager.broadcast_json({"type": "ERROR", "payload": "任務 payload 中缺少檔案路徑"})
-                    else:
-                        display_name = original_filename or file_path
-                        log.info(f"收到開始轉錄 '{display_name}' 的請求 (來自任務 {task_id})。")
-                        loop = asyncio.get_running_loop()
-                        trigger_transcription(task_id, file_path, model_size, language, beam_size, loop, original_filename=original_filename)
-
-                elif msg_type == "START_YOUTUBE_PROCESSING":
-                    task_id = payload.get("task_id") # This is the download_task_id
-                    if not task_id:
-                        await manager.broadcast_json({"type": "ERROR", "payload": "缺少 task_id 參數"})
-                        continue
-
-                    log.info(f"收到開始處理 YouTube 任務鏈的請求 (起始任務 ID: {task_id})。")
-                    loop = asyncio.get_running_loop()
-                    trigger_youtube_processing(task_id, loop)
+                elif msg_type in ["START_TRANSCRIPTION", "START_YOUTUBE_PROCESSING"]:
+                    task_id = payload.get("task_id", "N/A")
+                    log.info(f"收到舊的任務觸發訊息 '{msg_type}' (任務 ID: {task_id})，將予以忽略。任務將由 Huey Worker 自動處理。")
+                    await websocket.send_json({
+                        "type": "ACK",
+                        "payload": f"已收到 '{msg_type}' 請求，但此操作現由背景工作者自動處理，無需手動觸發。"
+                    })
 
                 else:
                     await manager.broadcast_json({

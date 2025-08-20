@@ -120,7 +120,14 @@ def wait_for_ready_file(ready_file_path: Path, timeout: int = 45) -> bool:
 def build_frontend(vue_app_dir: Path):
     """
     在指定的目錄下建置 Vue.js 前端應用。
+    如果 'dist' 目錄已存在，則跳過建置以加快啟動速度。
     """
+    # JULES'S FIX (2025-08-20): 解決痛點 3 - 系統啟動速度過於緩慢
+    dist_dir = vue_app_dir / "dist"
+    if dist_dir.exists() and any(dist_dir.iterdir()):
+        log.info(f"✅ 前端 'dist' 目錄已存在，跳過建置步驟。")
+        return
+
     log.info("--- [前端建置開始] ---")
     if not vue_app_dir.is_dir():
         log.error(f"❌ 前端應用程式目錄不存在: {vue_app_dir}")
@@ -328,18 +335,36 @@ def main():
 
 
         # 4. 根據旗標決定是否啟動背景工作處理器
-        # --- JULES 於 2025-08-09 的修改 ---
-        # 註解：
-        # 根據最新的架構審查，系統已全面轉向由 api_server.py 透過 WebSocket
-        # 觸發並在執行緒中處理轉錄任務的模式。舊的 worker.py 程序會與此新模式
-        # 產生衝突（例如，搶佔任務），導致前端出現 WebSocket 連線錯誤和不一致的行為。
-        #
-        # 解決方案：
-        # 因此，我們在此處永久性地停用 worker 程序，以確保只有 api_server
-        # 一個服務在處理任務。--no-worker 旗標雖然保留，但此處的程式碼將不再理會它。
-        log.info("🚫 [架構性決策] Worker 程序已被永久停用，以支援 WebSocket 驅動的新架構。")
         worker_proc = None
-        # (Worker launch code remains commented out)
+        if not args.no_worker:
+            log.info("🔧 正在啟動主要背景任務工作者...")
+            # JULES'S REFACTOR (2025-08-20): 啟用新的整合式 main_worker.py
+            worker_cmd = [sys.executable, str(ROOT_DIR / "src" / "tasks" / "main_worker.py")]
+
+            # 使用與 API Server 相同的環境，以確保 PYTHONPATH 和 API_MODE 正確
+            worker_env = api_env.copy()
+
+            worker_proc = subprocess.Popen(
+                worker_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding='utf-8',
+                env=worker_env
+            )
+            processes.append(worker_proc)
+            log.info(f"✅ 主要背景任務工作者已啟動，PID: {worker_proc.pid}")
+
+            # 為 worker 的輸出建立日誌流式讀取執行緒
+            worker_stdout_thread = threading.Thread(target=stream_reader, args=(worker_proc.stdout, 'main_worker'))
+            worker_stderr_thread = threading.Thread(target=stream_reader, args=(worker_proc.stderr, 'main_worker_stderr'))
+            worker_stdout_thread.daemon = True
+            worker_stderr_thread.daemon = True
+            worker_stdout_thread.start()
+            worker_stderr_thread.start()
+            threads.extend([worker_stdout_thread, worker_stderr_thread])
+        else:
+            log.warning("⚠️ --no-worker 旗標已設定，將不啟動背景任務工作者。")
 
         # 5. 啟動 api_server 的日誌流式讀取執行緒
         api_stdout_thread = threading.Thread(target=stream_reader, args=(api_proc.stdout, 'api_server'))
