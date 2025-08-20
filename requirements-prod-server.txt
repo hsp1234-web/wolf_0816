@@ -1,0 +1,9 @@
+# Server Core Dependencies (Production)
+fastapi
+uvicorn[standard]
+python-multipart
+psutil
+circus
+websocket-client
+requests
+opencc-python-reimplemented
