@@ -1,13 +1,12 @@
 # db/log_handler.py
 import logging
-import sqlite3
 import sys
-from pathlib import Path
+import queue
 import threading
 import time
+from .client import get_client
 
 # 避免在日誌處理器中再次觸發日誌，導致無限迴圈
-# 我們為這個模組建立一個獨立的、只輸出到控制台的日誌器
 handler_log = logging.getLogger('db_log_handler')
 handler_log.propagate = False
 if not handler_log.handlers:
@@ -16,75 +15,57 @@ if not handler_log.handlers:
     console_handler.setFormatter(formatter)
     handler_log.addHandler(console_handler)
 
-# JULES'S FIX (2025-08-17): 修正資料庫路徑
-# 錯誤根源：日誌處理器之前指向了一個錯誤的資料庫檔案 (queue.db)，
-# 而非由 database.py 初始化的主資料庫檔案 (tasks.db)。
-# 這導致日誌處理器永遠找不到 `system_logs` 表格。
-DB_FILE = Path(__file__).parent / "tasks.db"
+log_queue = queue.Queue()
+
+def _log_worker():
+    """
+    一個在背景執行的工作者，從佇列中獲取日誌並透過 DBClient 發送。
+    """
+    while True:
+        record = log_queue.get()
+        if record is None:  # A sentinel to stop the thread
+            break
+        try:
+            # 獲取客戶端實例。因為這是在一個單獨的執行緒中，
+            # 它會安全地等待 DBManager 準備就緒，而不會阻塞主應用程式。
+            db_client = get_client()
+
+            log_source = record.name
+            log_level = record.levelname
+
+            # 我們需要手動格式化訊息，因為我們繞過了標準的 format() 流程
+            message = logging.Formatter().format(record)
+
+            db_client.add_system_log(log_source, log_level, message)
+        except Exception as e:
+            handler_log.error(f"日誌工作者執行緒無法將日誌寫入資料庫: {e}", exc_info=True)
+        finally:
+            log_queue.task_done()
+
+# 啟動單一的背景工作者執行緒
+# 將其設定為 daemon，這樣主程式退出時它也會自動退出
+log_worker_thread = threading.Thread(target=_log_worker, daemon=True)
+log_worker_thread.start()
 
 class DatabaseLogHandler(logging.Handler):
     """
-    一個自訂的日誌處理器，將日誌記錄寫入 SQLite 資料庫。
-    為確保執行緒安全，它為每個執行緒維護一個獨立的資料庫連線。
+    一個自訂的非阻塞日誌處理器。
+    它將日誌記錄放入一個佇列，由一個專門的背景執行緒來處理資料庫寫入，
+    從而避免阻塞主應用程式的執行緒。
     """
     def __init__(self, source: str):
         super().__init__()
         self.source = source
-        self.local = threading.local()
-
-    def get_conn(self):
-        """為每個執行緒建立或取得資料庫連線。"""
-        if not hasattr(self.local, 'conn') or self.local.conn is None:
-            try:
-                # 使用較長的超時並啟用 autocommit
-                conn = sqlite3.connect(DB_FILE, timeout=10, isolation_level=None)
-                # 啟用 WAL (Write-Ahead Logging) 模式以提高併發性
-                conn.execute("PRAGMA journal_mode=WAL")
-                self.local.conn = conn
-            except sqlite3.Error as e:
-                handler_log.error(f"無法建立資料庫連線: {e}")
-                self.local.conn = None
-        return self.local.conn
 
     def emit(self, record: logging.LogRecord):
         """
-        將日誌記錄寫入資料庫。
+        將日誌記錄放入佇列，立即返回。
         """
         if record.name == 'db_log_handler':
             return
+        log_queue.put(record)
 
-        conn = self.get_conn()
-        if not conn:
-            print(f"DBLogHandler Error: Cannot get DB connection. Log from {self.source} lost.", file=sys.stderr)
-            return
-
-        message = self.format(record)
-
-        sql = "INSERT INTO system_logs (source, level, message) VALUES (?, ?, ?)"
-
-        # JULES'S FIX: The source of the log should be the logger's name, not the handler's name.
-        log_source = record.name
-
-        retries = 5
-        for i in range(retries):
-            try:
-                conn.execute(sql, (log_source, record.levelname, message))
-                return
-            except sqlite3.OperationalError as e:
-                if "database is locked" in str(e):
-                    if i < retries - 1:
-                        time.sleep(0.1)
-                        continue
-                    else:
-                        print(f"DBLogHandler Error: DB locked after {retries} retries. Log from {self.source} lost.", file=sys.stderr)
-                else:
-                    print(f"DBLogHandler Error: {e}. Log from {self.source} lost.", file=sys.stderr)
-                    return
-            except Exception as e:
-                print(f"DBLogHandler Error: Unexpected error: {e}. Log from {self.source} lost.", file=sys.stderr)
-                return
-
-    def __del__(self):
-        if hasattr(self.local, 'conn') and self.local.conn:
-            self.local.conn.close()
-            self.local.conn = None
+# 可以在應用程式關閉時呼叫此函式，以確保所有日誌都已寫入
+def shutdown_log_worker():
+    log_queue.put(None)
+    log_worker_thread.join()

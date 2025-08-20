@@ -101,6 +101,10 @@ class DBClient:
         return self._send_request("get_all_tasks")
     def get_system_logs(self, levels: list[str] = None, sources: list[str] = None) -> list[dict]:
         return self._send_request("get_system_logs", {"levels": levels or [], "sources": sources or []})
+
+    def add_system_log(self, source: str, level: str, message: str) -> bool:
+        return self._send_request("add_system_log", {"source": source, "level": level, "message": message})
+
     def find_dependent_task(self, parent_task_id: str) -> str | None:
         return self._send_request("find_dependent_task", {"parent_task_id": parent_task_id})
     def get_app_state(self, key: str) -> str | None:

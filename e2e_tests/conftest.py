@@ -62,7 +62,7 @@ def live_server():
         if port_file.exists(): port_file.unlink()
         if ready_file.exists(): ready_file.unlink()
 
-        db_proc = subprocess.Popen(db_manager_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
+        db_proc = subprocess.Popen(db_manager_cmd, stdout=sys.stdout, stderr=sys.stderr, text=True, encoding='utf-8')
         processes.append(db_proc)
         log.info(f"  - DB Manager (PID: {db_proc.pid}) 啟動中...")
 
@@ -116,7 +116,7 @@ def live_server():
         api_port = find_free_port()
         api_url = f"http://127.0.0.1:{api_port}"
         api_server_cmd = [sys.executable, str(ROOT_DIR / "src" / "api" / "api_server.py"), "--port", str(api_port)]
-        api_proc = subprocess.Popen(api_server_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', env=env)
+        api_proc = subprocess.Popen(api_server_cmd, stdout=sys.stdout, stderr=sys.stderr, text=True, encoding='utf-8', env=env)
         processes.append(api_proc)
         log.info(f"  - API Server (PID: {api_proc.pid}) 啟動中，監聽於 {api_url}")
 
