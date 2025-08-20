@@ -1,237 +1,177 @@
-# -*- coding: utf-8 -*-
-"""
-工作者整合測試暨前端測試腳本
-
-本腳本為一個自動化整合測試工具，具備兩種模式：
-1.  **後端工作者測試** (預設模式):
-    旨在驗證所有工作者 (worker) 是否遵循「自我管理」的設計原則。
-    其核心任務是逐一、獨立地啟動每一個 `run_*_worker.py` 檔案，
-    並確認它們是否能在指定時間內成功建立虛擬環境、安裝依賴並進入準備就緒狀態。
-
-2.  **前端點擊日誌測試** (透過 --frontend-only 旗標啟動):
-    執行一個特定的 Playwright 端對端測試，用於驗證前端應用程式的全域點擊
-    日誌功能是否如預期般運作。
-
-主要測試流程 (後端):
--   自動尋找 `run_*_worker.py` 檔案。
--   為每個工作者啟動隔離的子行程進行測試。
--   測試前後進行環境清理。
--   監控輸出以驗證工作者是否成功啟動。
--   產出最終的成功/失敗總結報告。
-
-此腳本是確保專案品質的關鍵工具。
-"""
-
-import sys
-import glob
+# test.py - Standalone E2E Verification Script
 import subprocess
-import time
-import shutil
+import sys
+import os
 import re
-import argparse
+import time
+import logging
 from pathlib import Path
+import threading
 
-# --- 全局設定 ---
-# 測試超時時間（秒）
-WORKER_TIMEOUT_SECONDS = 90
-# 工作者腳本的命名模式
-WORKER_GLOB_PATTERN = "run_*_worker.py"
-# 從工作者輸出中尋找的成功信號
-SUCCESS_SIGNAL = "工作者已啟動，開始監聽"
-# 前端測試檔案路徑
-FRONTEND_TEST_FILE = "e2e_tests/test_click_logging.py"
+# --- 基本設定 ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+log = logging.getLogger('StandaloneTest')
+ROOT_DIR = Path(__file__).resolve().parent
 
-def get_venv_path(worker_path: Path) -> Path:
-    """
-    根據工作者腳本路徑推導其虛擬環境的路徑。
-    """
-    match = re.search(r"run_(.+)_worker\.py", worker_path.name)
-    if not match:
-        base_name = worker_path.stem
-        print(f"⚠️  警告：無法從 '{worker_path.name}' 中解析標準名稱，將使用 '{base_name}' 作為基礎名稱。")
-    else:
-        base_name = match.group(1)
-    return worker_path.parent / f".venv_{base_name}"
-
-def run_frontend_test():
-    """
-    執行前端點擊日誌的 Playwright 測試。
-    """
-    print("=" * 70)
-    print("=== 開始執行前端點擊日誌測試 ===")
-    print("=" * 70)
-
-    test_file_path = Path(FRONTEND_TEST_FILE)
-    if not test_file_path.exists():
-        print(f"❌ 錯誤：找不到前端測試檔案 '{FRONTEND_TEST_FILE}'。")
-        sys.exit(1)
-
-    print(f"將使用 Pytest 執行: {test_file_path}")
-
-    # 使用 -s 旗標來顯示測試中的 print 語句
-    command = [sys.executable, "-m", "pytest", "-s", str(test_file_path)]
-
+def install_test_dependencies():
+    """安裝此測試腳本本身需要的依賴，主要是 playwright。"""
+    log.info("--- [測試步驟 1/4] 安裝測試依賴 (playwright) ---")
     try:
-        # 將 stdout 和 stderr 都導向當前進程，以便即時看到輸出
-        result = subprocess.run(command, check=True, text=True, encoding='utf-8')
-        print("\n🎉 前端測試成功通過！")
-        sys.exit(0)
+        log.info("確保 'uv' 已安裝...")
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "uv"], check=True)
+
+        log.info("使用 uv 安裝 playwright...")
+        # 我們需要 playwright 來執行瀏覽器操作
+        subprocess.run([sys.executable, "-m", "uv", "pip", "install", "-q", "playwright"], check=True, capture_output=True)
+
+        log.info("安裝 Playwright 瀏覽器...")
+        subprocess.run([sys.executable, "-m", "playwright", "install"], check=True, capture_output=True)
+
+        log.info("✅ 測試依賴安裝成功。")
+        return True
     except subprocess.CalledProcessError as e:
-        print(f"\n❌ 前端測試失敗。返回碼: {e.returncode}")
-        sys.exit(1)
-    except FileNotFoundError:
-        print(f"❌ 錯誤：找不到 Python 解譯器 '{sys.executable}' 或 pytest。請確保 pytest 已安裝。")
-        sys.exit(1)
-
-def test_worker(worker_path: Path) -> bool:
-    """
-    對單一工作者腳本進行完整的啟動、驗證與清理測試。
-    """
-    print("-" * 70)
-    print(f"▶️  正在測試: {worker_path.name}")
-    print("-" * 70)
-    venv_path = get_venv_path(worker_path)
-    print(f"   - 預期虛擬環境路徑: {venv_path}")
-
-    if venv_path.exists():
-        print(f"   - 發現殘留的虛擬環境，正在清理: {venv_path}")
-        try:
-            shutil.rmtree(venv_path)
-            print(f"   - 清理完畢。")
-        except OSError as e:
-            print(f"❌ 錯誤：無法刪除舊的虛擬環境 '{venv_path}'。錯誤訊息: {e}", file=sys.stderr)
-            return False
-
-    start_time = time.monotonic()
-    print(f"   - 於 {time.strftime('%H:%M:%S')} 啟動子行程...")
-    print(f"   - 超時設定: {WORKER_TIMEOUT_SECONDS} 秒")
-
-    proc = None
-    try:
-        proc = subprocess.Popen(
-            [sys.executable, str(worker_path)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding='utf-8',
-            bufsize=1
-        )
-
-        while True:
-            elapsed_time = time.monotonic() - start_time
-            if elapsed_time > WORKER_TIMEOUT_SECONDS:
-                print(f"\n❌ 失敗：測試超時（超過 {WORKER_TIMEOUT_SECONDS} 秒）。", file=sys.stderr)
-                return False
-
-            if proc.poll() is not None:
-                print(f"\n❌ 失敗：子行程意外終止，返回碼: {proc.returncode}。", file=sys.stderr)
-                remaining_output = proc.stdout.read()
-                print("--- 子行程剩餘輸出 ---", file=sys.stderr)
-                print(remaining_output, file=sys.stderr)
-                print("----------------------", file=sys.stderr)
-                return False
-
-            try:
-                line = proc.stdout.readline()
-                if not line:
-                    continue
-                print(f"   [輸出] {line.strip()}")
-                if SUCCESS_SIGNAL in line:
-                    print(f"\n✅ 成功！在 {elapsed_time:.2f} 秒內偵測到成功信號。")
-                    return True
-            except Exception:
-                pass
-
-    except FileNotFoundError:
-        print(f"❌ 錯誤：找不到 Python 解譯器 '{sys.executable}' 或工作者腳本 '{worker_path}'。", file=sys.stderr)
+        log.error(f"❌ 安裝測試依賴失敗: {e.stderr}")
         return False
     except Exception as e:
-        print(f"❌ 執行測試時發生未預期的錯誤: {e}", file=sys.stderr)
+        log.error(f"❌ 安裝測試依賴時發生未預期錯誤: {e}")
         return False
-    finally:
-        print("   - 測試結束，開始執行清理程序...")
-        if proc and proc.poll() is None:
-            print("   - 正在終止子行程...")
-            try:
-                proc.terminate()
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                print("   - 溫和終止失敗，強制終止子行程...")
-                proc.kill()
-            print("   - 子行程已終止。")
 
-        if venv_path.exists():
-            print(f"   - 正在刪除虛擬環境: {venv_path}")
-            try:
-                shutil.rmtree(venv_path)
-                print("   - 虛擬環境已成功刪除。")
-            except OSError as e:
-                print(f"❌ 錯誤：無法在後清理階段刪除虛擬環境 '{venv_path}'。請手動刪除。錯誤訊息: {e}", file=sys.stderr)
-        else:
-            print("   - 虛擬環境不存在，無需清理。")
-        print("-" * 70 + "\n")
+def run_server_and_get_url():
+    """
+    執行模組化啟動器，並從其輸出中捕捉最終的伺服器 URL。
+    """
+    log.info("--- [測試步驟 2/4] 執行 runner.py 以啟動伺服器 ---")
+    runner_script_path = ROOT_DIR / "runner" / "main_runner.py"
+
+    if not runner_script_path.exists():
+        log.error(f"❌ 找不到啟動器腳本: {runner_script_path}")
+        return None, None
+
+    log.info(f"執行啟動命令: {sys.executable} {runner_script_path}")
+    runner_proc = subprocess.Popen(
+        [sys.executable, str(runner_script_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding='utf-8'
+    )
+
+    url_pattern = re.compile(r"FINAL_URL:\s*(https?://[^\s]+)")
+    server_url = None
+    timeout = 120  # 給予更長的超時時間
+    start_time = time.time()
+
+    # 使用執行緒非阻塞地讀取 stderr
+    stderr_lines = []
+    def log_stderr():
+        for line in iter(runner_proc.stderr.readline, ''):
+            log.warning(f"[Runner stderr]: {line.strip()}")
+            stderr_lines.append(line)
+
+    stderr_thread = threading.Thread(target=log_stderr)
+    stderr_thread.daemon = True
+    stderr_thread.start()
+
+    for line in iter(runner_proc.stdout.readline, ''):
+        log.info(f"[Runner stdout]: {line.strip()}")
+        match = url_pattern.search(line)
+        if match:
+            server_url = match.group(1)
+            log.info(f"✅ 從啟動器成功解析到 URL: {server_url}")
+            break
+        if time.time() - start_time > timeout:
+            log.error(f"❌ 啟動器未能在 {timeout} 秒內輸出 FINAL_URL。")
+            break
+
+    if not server_url:
+        log.error("❌ 未能獲取伺服器 URL。")
+        runner_proc.kill()
+        return None, None
+
+    return server_url, runner_proc
+
+def verify_url_with_playwright(url: str):
+    """
+    使用 Playwright 開啟給定的 URL 並驗證頁面內容。
+    """
+    log.info(f"--- [測試步驟 3/4] 使用 Playwright 驗證 URL: {url} ---")
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        try:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            log.info(f"正在導航至 {url}...")
+            page.goto(url, timeout=30000)
+
+            # 驗證標題
+            expected_title = "音訊轉錄儀"
+            log.info(f"正在驗證頁面標題是否為 '{expected_title}'...")
+            if expected_title not in page.title():
+                log.error(f"❌ 標題驗證失敗！預期: '{expected_title}', 實際: '{page.title()}'")
+                page.screenshot(path="test_failure_screenshot.png")
+                log.error("📸 已儲存失敗截圖至 test_failure_screenshot.png")
+                return False
+            log.info("✅ 頁面標題驗證成功。")
+
+            # 驗證關鍵元素
+            header_text = "音訊轉錄儀 (Vue)"
+            log.info(f"正在驗證是否存在標題元素 '{header_text}'...")
+            header_element = page.get_by_role("heading", name=header_text)
+
+            header_element.wait_for(state="visible", timeout=10000)
+            if not header_element.is_visible():
+                 log.error(f"❌ 關鍵元素 '{header_text}' 驗證失敗！元素不存在或不可見。")
+                 page.screenshot(path="test_failure_screenshot.png")
+                 log.error("📸 已儲存失敗截圖至 test_failure_screenshot.png")
+                 return False
+            log.info("✅ 關鍵介面元素驗證成功。")
+
+            browser.close()
+            return True
+        except Exception as e:
+            log.error(f"❌ Playwright 驗證過程中發生錯誤: {e}", exc_info=True)
+            if 'page' in locals():
+                page.screenshot(path="test_failure_screenshot.png")
+                log.error("📸 已儲存失敗截圖至 test_failure_screenshot.png")
+            return False
 
 def main():
-    """
-    主執行函式，根據命令列參數決定執行後端或前端測試。
-    """
-    parser = argparse.ArgumentParser(description="整合測試腳本，可用於後端工作者或前端 E2E 測試。")
-    parser.add_argument(
-        '--frontend-only',
-        action='store_true',
-        help='如果設定此旗標，將只執行前端點擊日誌測試。'
-    )
-    args = parser.parse_args()
+    log.info("====== 開始執行端到端啟動驗證 ======")
 
-    if args.frontend_only:
-        run_frontend_test()
-    else:
-        run_worker_tests()
-
-def run_worker_tests():
-    """
-    執行後端工作者的整合測試。
-    """
-    print("=" * 70)
-    print("=== 開始執行後端工作者整合測試 ===")
-    print("=" * 70)
-
-    worker_scripts = list(Path.cwd().glob(WORKER_GLOB_PATTERN))
-    if not worker_scripts:
-        print(f"找不到任何符合 '{WORKER_GLOB_PATTERN}' 模式的工作者腳本。測試中止。")
-        sys.exit(0)
-
-    print(f"發現 {len(worker_scripts)} 個工作者腳本，將逐一進行測試：")
-    for script in worker_scripts:
-        print(f"  - {script.name}")
-    print("\n")
-
-    passed_tests = []
-    failed_tests = []
-
-    for worker_path in worker_scripts:
-        is_success = test_worker(worker_path)
-        if is_success:
-            passed_tests.append(worker_path.name)
-        else:
-            failed_tests.append(worker_path.name)
-
-    print("=" * 70)
-    print("=== 整合測試總結報告 ===")
-    print("=" * 70)
-    print(f"總共測試: {len(worker_scripts)} 個工作者")
-    print(f"✅ 成功: {len(passed_tests)} 個")
-    print(f"❌ 失敗: {len(failed_tests)} 個")
-
-    if failed_tests:
-        print("\n--- 失敗的測試項目 ---")
-        for test_name in failed_tests:
-            print(f"  - {test_name}")
-        print("\n測試未通過。")
+    if not install_test_dependencies():
+        log.critical("====== 驗證失敗：無法安裝測試所需依賴 ======")
         sys.exit(1)
-    else:
-        print("\n🎉 所有工作者均通過整合測試！")
+
+    server_url, runner_proc = run_server_and_get_url()
+
+    if not server_url or not runner_proc:
+        log.critical("====== 驗證失敗：無法啟動伺服器 ======")
+        sys.exit(1)
+
+    # 伺服器已啟動，現在用 Playwright 驗證
+    is_verified = False
+    try:
+        is_verified = verify_url_with_playwright(server_url)
+    finally:
+        # 無論驗證是否成功，都確保關閉伺服器
+        log.info("--- [測試步驟 4/4] 清理並關閉伺服器 ---")
+        if runner_proc.poll() is None:
+            runner_proc.terminate()
+            try:
+                runner_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                runner_proc.kill()
+        log.info("✅ 伺服器進程已關閉。")
+
+    if is_verified:
+        log.info("✅✅✅ 驗證成功！啟動流程看起來運作正常。✅✅✅")
+        print("\n[SUCCESS] The end-to-end test passed.")
         sys.exit(0)
+    else:
+        log.critical("❌❌❌ 驗證失敗！啟動流程存在問題。❌❌❌")
+        print("\n[FAILURE] The end-to-end test failed.")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
