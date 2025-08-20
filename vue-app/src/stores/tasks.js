@@ -25,21 +25,19 @@ export const useTasksStore = defineStore('tasks', {
       progress: 0,
       message: ''
     },
-    // For two-stage startup
+    // JULES'S FIX: 恢復 installationStatus 以避免 App.vue 中的 JS 錯誤
     installationStatus: {
-      inProgress: true,
-      message: '正在連接至啟動伺服器...'
+      inProgress: false,
+      message: ''
     }
   }),
   actions: {
-    // New action to initialize the entire system connection
+    // 初始化 WebSocket 連線
     initializeSystem() {
-      // This function will now handle the two-stage connection.
-      // It starts by connecting to the status server.
-      this.connectToWebSocket('/ws_status', true);
+      this.connectToWebSocket('/api/ws');
     },
 
-    connectToWebSocket(endpoint, isInitialConnection = false) {
+    connectToWebSocket(endpoint) {
       if (this.socket && this.socket.readyState === WebSocket.OPEN) {
         console.log('WebSocket 已連線，無需重複操作。');
         return;
@@ -53,16 +51,10 @@ export const useTasksStore = defineStore('tasks', {
 
       this.socket.onopen = () => {
         console.log(`WebSocket 連線成功: ${endpoint}`);
-        if (isInitialConnection) {
-          this.installationStatus.message = '已連接至啟動伺服器，正在等待安裝進度...';
-        } else {
-          this.socketConnected = true;
-          this.installationStatus.inProgress = false;
-          this.installationStatus.message = '系統準備就緒！';
-          // Now that we are connected to the main server, fetch tasks and statuses
-          this.fetchTasks();
-          this.fetchWorkerStatuses();
-        }
+        this.socketConnected = true;
+        // 連線成功後，立即獲取初始狀態
+        this.fetchTasks();
+        this.fetchWorkerStatuses();
       };
 
       this.socket.onmessage = (event) => {
@@ -77,33 +69,19 @@ export const useTasksStore = defineStore('tasks', {
       this.socket.onclose = () => {
         console.log(`WebSocket 連線已關閉: ${endpoint}`);
         this.socket = null;
-        if (isInitialConnection) {
-          // This means the mini_server has shut down. Time to connect to the main server.
-          console.log('臨時伺服器連線已關閉，嘗試連接至主伺服器...');
-          this.installationStatus.message = '正在連接至主應用程式...';
-          setTimeout(() => this.connectToWebSocket('/api/ws'), 1000); // 1-second delay
-        } else {
-          this.socketConnected = false;
-          // Could implement reconnection logic for the main server here if needed
-        }
+        this.socketConnected = false;
+        // 可選：在這裡實作主伺服器的重連邏輯
       };
 
       this.socket.onerror = (error) => {
         console.error(`WebSocket 發生錯誤: ${endpoint}`, error);
-        if (isInitialConnection) {
-          this.installationStatus.message = '無法連接至啟動伺服器，請檢查後端日誌。';
-        }
+        this.socketConnected = false;
       };
     },
 
     handleSocketMessage(message) {
       console.log('收到 WebSocket 訊息:', message);
       const { type, payload } = message;
-
-      if (type === 'INSTALL_PROGRESS') {
-        this.installationStatus.message = payload.message;
-        return;
-      }
 
       // --- All other message handling remains the same ---
 
