@@ -58,7 +58,7 @@ def find_free_port() -> int:
         s.bind(("", 0))
         return s.getsockname()[1]
 
-def wait_for_service(port: int, timeout: int = 15) -> bool:
+def wait_for_service(port: int, timeout: int = 45) -> bool:
     """
     在指定的超時時間內，等待特定埠號上的網路服務啟動。
 
@@ -81,7 +81,7 @@ def wait_for_service(port: int, timeout: int = 15) -> bool:
     log.error(f"❌ 等待服務 127.0.0.1:{port} 超時 ({timeout}秒)。")
     return False
 
-def get_db_manager_port_from_file(port_file_path: Path, timeout: int = 10) -> int | None:
+def get_db_manager_port_from_file(port_file_path: Path, timeout: int = 45) -> int | None:
     """
     從檔案中讀取 DB Manager 的埠號，並在超時前等待檔案出現。
     這解決了硬編碼埠號導致的不匹配問題。
@@ -102,7 +102,7 @@ def get_db_manager_port_from_file(port_file_path: Path, timeout: int = 10) -> in
     log.error(f"❌ 等待埠號檔案 '{port_file_path}' 超時 ({timeout}秒)。")
     return None
 
-def wait_for_ready_file(ready_file_path: Path, timeout: int = 15) -> bool:
+def wait_for_ready_file(ready_file_path: Path, timeout: int = 45) -> bool:
     """
     等待由 db_manager 建立的「就緒」信號檔案。
     這確保在繼續之前，資料庫已完全初始化。

@@ -154,4 +154,21 @@ def run_server():
         sys.exit(1)
 
 if __name__ == "__main__":
-    run_server()
+    import traceback
+    # 診斷修復 (2025-08-20): 為整個程序添加一個最外層的 try-except 區塊
+    # 這可以捕獲任何在 run_server 內部未被捕獲的致命錯誤，並將其記錄到檔案中，
+    # 以便我們能知道為什麼 db_manager 無法啟動。
+    try:
+        run_server()
+    except Exception as e:
+        # 將完整的錯誤堆疊追蹤寫入一個日誌檔案
+        error_log_path = Path(__file__).parent / "db_manager_error.log"
+        with open(error_log_path, "a", encoding="utf-8") as f:
+            f.write(f"--- DB Manager 致命錯誤 ---\n")
+            f.write(f"時間: {__import__('datetime').datetime.now().isoformat()}\n")
+            f.write(traceback.format_exc())
+            f.write("\n\n")
+        # 仍然將錯誤印出到標準錯誤流，以便上層程序可以感知
+        log.critical(f"一個未捕獲的致命錯誤導致 DB Manager 崩潰。詳細資訊已記錄至 {error_log_path}。")
+        # 以非零狀態碼退出，表示失敗
+        sys.exit(1)
