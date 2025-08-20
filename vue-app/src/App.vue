@@ -9,6 +9,14 @@
     <!-- 全域通知組件 -->
     <NotificationHost />
 
+    <!-- 初始自動下載提示 -->
+    <div v-if="!initialSetup.completed" class="initial-setup-banner card">
+      <p>
+        為了優化您的初次使用體驗，系統將在 <strong>{{ initialSetup.countdown }}</strong> 秒後自動下載基礎模型 (tiny)。
+      </p>
+      <button @click="tasksStore.cancelInitialCountdown()">取消自動下載</button>
+    </div>
+
     <!-- 標題 -->
     <header class="card" style="display: flex; justify-content: space-between; align-items: center;">
       <h1>音訊轉錄儀 (Vue)</h1>
@@ -53,6 +61,14 @@
             {{ getWorkerStatusInfo('youtube').text }}
           </span>
         </button>
+        <button
+          class="tab-button"
+          :class="{ active: activeTab === 'logs' }"
+          @click="setActiveTab('logs')"
+          :disabled="installationStatus.inProgress"
+        >
+          📜 系統日誌
+        </button>
       </div>
     </div>
 
@@ -71,6 +87,11 @@
       <!-- YouTube 轉報告分頁 -->
       <div v-show="activeTab === 'youtube'">
         <YouTubeReporter />
+      </div>
+
+      <!-- 系統日誌分頁 -->
+      <div v-show="activeTab === 'logs'">
+        <LogViewer />
       </div>
 
       <!-- 任務列表 (所有分頁共用) -->
@@ -93,6 +114,7 @@ import Dashboard from './components/Dashboard.vue'
 import TaskUploader from './components/TaskUploader.vue'
 import Downloader from './components/Downloader.vue'
 import YouTubeReporter from './components/YouTubeReporter.vue'
+import LogViewer from './components/LogViewer.vue'
 import PendingTasks from './components/PendingTasks.vue'
 import CompletedTasks from './components/CompletedTasks.vue'
 import TranscriptOutput from './components/TranscriptOutput.vue'
@@ -105,6 +127,7 @@ const tasksStore = useTasksStore()
 const activeTab = ref('transcribe')
 const workerStatuses = computed(() => tasksStore.workerStatuses)
 const installationStatus = computed(() => tasksStore.installationStatus)
+const initialSetup = computed(() => tasksStore.initialSetup)
 
 // --- 方法 ---
 
@@ -190,5 +213,22 @@ main {
   display: flex;
   flex-direction: column;
   gap: 24px;
+}
+
+.initial-setup-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 24px;
+  background-color: #eef2ff;
+  border-color: #c7d2fe;
+}
+.initial-setup-banner p {
+  margin: 0;
+  font-weight: 500;
+}
+.initial-setup-banner button {
+  background-color: #6c757d;
+  flex-shrink: 0;
 }
 </style>

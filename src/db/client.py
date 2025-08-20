@@ -89,6 +89,8 @@ class DBClient:
         return self._send_request("add_task", {"task_id": task_id, "payload": payload, "task_type": task_type, "depends_on": depends_on})
     def fetch_and_lock_task(self) -> dict | None:
         return self._send_request("fetch_and_lock_task")
+    def fetch_and_lock_task_by_type(self, task_type: str) -> dict | None:
+        return self._send_request("fetch_and_lock_task_by_type", {"task_type": task_type})
     def update_task_progress(self, task_id: str, progress: int, partial_result: str):
         return self._send_request("update_task_progress", {"task_id": task_id, "progress": progress, "partial_result": partial_result})
     def update_task_status(self, task_id: str, status: str, result: str = None):

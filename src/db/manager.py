@@ -49,6 +49,7 @@ ACTION_MAP = {
     "initialize_database": database.initialize_database,
     "add_task": database.add_task,
     "fetch_and_lock_task": database.fetch_and_lock_task,
+    "fetch_and_lock_task_by_type": database.fetch_and_lock_task_by_type,
     "update_task_progress": database.update_task_progress,
     "update_task_status": database.update_task_status,
     "get_task_status": database.get_task_status,

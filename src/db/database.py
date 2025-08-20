@@ -241,6 +241,46 @@ def fetch_and_lock_task() -> dict | None:
         if conn:
             conn.close()
 
+def fetch_and_lock_task_by_type(task_type: str) -> dict | None:
+    """
+    以原子操作獲取一個特定類型的待處理任務，並將其狀態更新為 'processing'。
+    """
+    conn = get_db_connection()
+    if not conn: return None
+    log.debug(f"DB:{DB_FILE} Worker 正在嘗試獲取 '{task_type}' 類型的任務...")
+    try:
+        with conn:
+            cursor = conn.cursor()
+            sql = """
+                SELECT id, task_id, payload, type
+                FROM tasks
+                WHERE status = 'pending' AND type = ? AND (
+                    depends_on IS NULL OR
+                    depends_on IN (SELECT task_id FROM tasks WHERE status = 'completed')
+                )
+                ORDER BY created_at
+                LIMIT 1
+            """
+            cursor.execute(sql, (task_type,))
+            task = cursor.fetchone()
+
+            if task:
+                task_id_to_process = task["id"]
+                log.info(f"🔒 找到並鎖定 '{task_type}' 任務 ID: {task['task_id']} (資料庫 id: {task_id_to_process})")
+                cursor.execute(
+                    "UPDATE tasks SET status = 'processing' WHERE id = ?", (task_id_to_process,)
+                )
+                return dict(task)
+            else:
+                log.debug(f"...佇列中無待處理的 '{task_type}' 任務。")
+                return None
+    except sqlite3.Error as e:
+        log.error(f"❌ 獲取並鎖定 '{task_type}' 類型任務時發生錯誤: {e}", exc_info=True)
+        return None
+    finally:
+        if conn:
+            conn.close()
+
 
 def update_task_progress(task_id: str, progress: int, partial_result: str):
     """

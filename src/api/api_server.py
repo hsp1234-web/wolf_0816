@@ -116,6 +116,7 @@ WORKER_SCRIPTS = {
     "youtube": ROOT_DIR / "run_youtube_worker.py",
     "transcription": ROOT_DIR / "run_transcription_worker.py",
     "ai_report": ROOT_DIR / "run_ai_report_worker.py",
+    "model_management": ROOT_DIR / "run_model_management_worker.py",
 }
 
 # 全域工作者狀態註冊表
@@ -284,6 +285,9 @@ def check_model_exists(model_size: str) -> bool:
         log.error(f"檢查模型 '{model_size}' 時發生錯誤: {e}")
         return False
 
+KNOWN_WHISPER_MODELS = ["tiny", "base", "small", "medium", "large-v2", "large-v3"]
+
+
 @app.post("/api/transcribe", status_code=202)
 async def create_transcription_task(
     file: UploadFile = File(...),
@@ -320,27 +324,11 @@ async def create_transcription_task(
         "beam_size": beam_size
     }
 
-    # 3. 檢查模型是否存在
-    if check_model_exists(model_size):
-        # 模型已存在，直接建立並返回轉錄任務
-        log.info(f"✅ 模型 '{model_size}' 已存在，直接建立轉錄任務: {transcribe_task_id}")
-        db_client.add_task(transcribe_task_id, json.dumps(transcription_payload), task_type='transcribe')
-        return {"task_id": transcribe_task_id, "type": "transcribe", "message": "任務已建立，將透過 WebSocket 觸發執行。"}
-    else:
-        # 模型不存在，建立下載任務和依賴的轉錄任務
-        download_task_id = str(uuid.uuid4())
-        log.warning(f"⚠️ 模型 '{model_size}' 不存在。建立下載任務 '{download_task_id}' 和依賴的轉錄任務 '{transcribe_task_id}'")
-
-        download_payload = {"model_size": model_size}
-        db_client.add_task(download_task_id, json.dumps(download_payload), task_type='download')
-
-        db_client.add_task(transcribe_task_id, json.dumps(transcription_payload), task_type='transcribe', depends_on=download_task_id)
-
-        # 我們回傳兩個任務的 ID，讓前端可以追蹤整個鏈
-        return JSONResponse(content={"tasks": [
-            {"task_id": download_task_id, "type": "download"},
-            {"task_id": transcribe_task_id, "type": "transcribe"}
-        ]})
+    # 3. 根據新的手動下載流程，我們不再自動建立下載任務。
+    #    我們假設模型已經存在，如果不存在，轉錄工作者會在執行時失敗。
+    log.info(f"✅ 建立轉錄任務: {transcribe_task_id} (模型: {model_size})")
+    db_client.add_task(transcribe_task_id, json.dumps(transcription_payload), task_type='transcribe')
+    return {"task_id": transcribe_task_id, "type": "transcribe", "message": "任務已建立，將透過 WebSocket 觸發執行。"}
 
 
 @app.get("/api/status/{task_id}")
@@ -414,27 +402,43 @@ async def get_system_stats():
 
     # GPU (透過 nvidia-smi)
     gpu_usage = None
+    gpu_name = None
     gpu_detected = False
     try:
-        # 執行 nvidia-smi 命令
+        # 執行 nvidia-smi 命令，一次查詢多個屬性
         result = subprocess.run(
-            ['nvidia-smi', '--query-gpu=utilization.gpu', '--format=csv,noheader,nounits'],
-            capture_output=True, text=True, check=True
+            ['nvidia-smi', '--query-gpu=gpu_name,utilization.gpu', '--format=csv,noheader,nounits'],
+            capture_output=True, text=True, check=True, encoding='utf-8'
         )
-        # 解析輸出
-        gpu_usage = float(result.stdout.strip())
-        gpu_detected = True
+        # 解析輸出, e.g., "NVIDIA GeForce RTX 4090, 15"
+        output = result.stdout.strip().split(',')
+        if len(output) == 2:
+            gpu_name = output[0].strip()
+            gpu_usage = float(output[1].strip())
+            gpu_detected = True
     except (FileNotFoundError, subprocess.CalledProcessError) as e:
         # nvidia-smi 不存在或執行失敗
         log.debug(f"無法獲取 GPU 資訊: {e}")
         gpu_usage = None
+        gpu_name = None
+        gpu_detected = False
+    except (ValueError, IndexError) as e:
+        # 解析 nvidia-smi 輸出失敗
+        log.error(f"解析 nvidia-smi 輸出時出錯: {e}", exc_info=True)
+        gpu_usage = None
+        gpu_name = None
         gpu_detected = False
 
+    # TODO: 這裡應該要有動態邏輯來決定當前載入的模型
+    active_model = "Whisper-large-v3" # 暫時的佔位符
+
     return {
-        "cpu_usage": cpu_usage,
-        "ram_usage": ram_usage,
-        "gpu_usage": gpu_usage,
+        "cpu_usage": round(cpu_usage, 1) if cpu_usage is not None else None,
+        "ram_usage": round(ram_usage, 1) if ram_usage is not None else None,
+        "gpu_usage": round(gpu_usage, 1) if gpu_usage is not None else None,
         "gpu_detected": gpu_detected,
+        "gpu_name": gpu_name,
+        "active_model": active_model,
     }
 
 
@@ -738,43 +742,48 @@ async def validate_api_key(request: Request):
 @app.post("/api/youtube/models")
 async def get_youtube_models(request: Request):
     """獲取可用的 Gemini 模型列表。"""
-    # 在模擬模式下，回傳一個固定的假列表
     if IS_MOCK_MODE:
-        return {
-            "models": [
-                {"id": "gemini-pro-mock", "name": "Gemini Pro (模擬)"},
-                {"id": "gemini-1.5-flash-mock", "name": "Gemini 1.5 Flash (模擬)"}
-            ]
-        }
+        log.info("模擬模式：回傳固定的 Gemini 模型列表。")
+        return {"models": [{"id": "gemini-pro-mock", "name": "Gemini Pro (模擬)"}]}
 
-    # 真實模式下，從 gemini_processor.py 獲取
     try:
-        # 從請求主體中獲取 API 金鑰
         payload = await request.json()
         api_key = payload.get("api_key")
+        if not api_key:
+            raise HTTPException(status_code=400, detail="請求中未提供 API 金鑰。")
 
-        # 建立一個安全的環境變數副本，用於執行子程序
+        log.info("收到獲取 Gemini 模型列表的請求，正在準備執行工具腳本...")
+
         env = os.environ.copy()
-        if api_key:
-            env["GOOGLE_API_KEY"] = api_key
-
-        # 如果請求中或環境變數中都沒有金鑰，則回傳錯誤
-        if not env.get("GOOGLE_API_KEY"):
-            raise HTTPException(status_code=401, detail="請求中或環境變數中均未提供有效的 Google API 金鑰。")
+        env["GOOGLE_API_KEY"] = api_key
 
         tool_script_path = ROOT_DIR / "src" / "tools" / "gemini_processor.py"
         cmd = [sys.executable, str(tool_script_path), "--command=list_models"]
 
-        # 將包含金鑰的環境變數傳遞給子程序
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True, encoding='utf-8', env=env)
+        log.info(f"正在執行指令: {' '.join(cmd)}")
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+            encoding='utf-8',
+            env=env
+        )
+
         models = json.loads(result.stdout)
+        log.info(f"成功從工具腳本獲取到 {len(models)} 個模型。")
         return {"models": models}
+
     except subprocess.CalledProcessError as e:
-        log.error(f"獲取 Gemini 模型列表失敗，可能是因為 API 金鑰無效。Stderr: {e.stderr}")
-        raise HTTPException(status_code=401, detail="無法使用提供的 API 金鑰獲取模型列表。")
+        log.error(f"執行 gemini_processor.py 失敗。返回碼: {e.returncode}")
+        log.error(f"Stderr: {e.stderr.strip()}")
+        raise HTTPException(status_code=401, detail=f"無法使用提供的 API 金鑰獲取模型列表: {e.stderr.strip()}")
+    except json.JSONDecodeError as e:
+        log.error(f"解析來自 gemini_processor.py 的輸出時出錯: {e}")
+        raise HTTPException(status_code=500, detail="無法解析來自模型工具的輸出。")
     except Exception as e:
-        log.error(f"獲取 Gemini 模型列表時發生錯誤: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="無法獲取 Gemini 模型列表。")
+        log.error(f"獲取 Gemini 模型列表時發生未預期錯誤: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="獲取 Gemini 模型列表時發生內部錯誤。")
 
 
 @app.post("/api/youtube/process", status_code=202)
@@ -867,11 +876,8 @@ def run_worker_in_background(worker_name: str, loop: asyncio.AbstractEventLoop):
         asyncio.run_coroutine_threadsafe(manager.broadcast_json(status_update), loop)
         log.info(f"🧵 [執行緒] 開始準備工作者 '{worker_name}'...")
 
-        # 2. 執行工作者腳本
-        # 根據 AGENTS.md，我們應使用 --test 模式來快速驗證，避免安裝重依賴。
-        # 這些獨立的工作者腳本被設計為在閒置時自動退出。
-        cmd = [sys.executable, str(script_path), "--test"]
-
+        # 2. 執行工作者腳本 (不再使用 --test，讓其持續運行)
+        cmd = [sys.executable, str(script_path)]
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -881,49 +887,37 @@ def run_worker_in_background(worker_name: str, loop: asyncio.AbstractEventLoop):
         )
         WORKER_STATUS[worker_name]["process"] = process
 
-        stdout, stderr = process.communicate(timeout=120) # 增加 120 秒超時
-        return_code = process.returncode
+        # 3. 立即更新狀態為準備就緒並廣播 (樂觀更新)
+        # 我們假設 Popen 成功後，工作者很快就會準備好。
+        # 工作者腳本自身的閒置邏輯會處理關閉。
+        WORKER_STATUS[worker_name]["status"] = "READY"
+        WORKER_STATUS[worker_name]["last_error"] = None
+        ready_update = {
+            "type": "WORKER_STATUS_UPDATE",
+            "payload": {
+                "worker": worker_name,
+                "status": "READY",
+                "last_error": None
+            }
+        }
+        asyncio.run_coroutine_threadsafe(manager.broadcast_json(ready_update), loop)
+        log.info(f"✅ [執行緒] 工作者 '{worker_name}' 已啟動並設定為準備就緒狀態。")
 
-        # 3. 根據執行結果更新最終狀態
-        if return_code == 0:
-            log.info(f"✅ [執行緒] 工作者 '{worker_name}' 準備就緒 (腳本成功執行完畢)。")
-            WORKER_STATUS[worker_name]["status"] = "READY"
-            final_status = "READY"
-        else:
-            log.error(f"❌ [執行緒] 工作者 '{worker_name}' 啟動失敗 (返回碼: {return_code})。")
-            log.error(f"   Stderr: {stderr}")
-            WORKER_STATUS[worker_name]["status"] = "FAILED"
-            WORKER_STATUS[worker_name]["last_error"] = stderr.strip()
-            final_status = "FAILED"
-
-    except subprocess.TimeoutExpired:
-        log.error(f"❌ [執行緒] 工作者 '{worker_name}' 執行超時。")
-        process.kill()
-        stdout, stderr = process.communicate()
-        WORKER_STATUS[worker_name]["status"] = "FAILED"
-        WORKER_STATUS[worker_name]["last_error"] = "執行超時 (120秒)"
-        final_status = "FAILED"
     except Exception as e:
         log.error(f"❌ [執行緒] 執行工作者 '{worker_name}' 時發生嚴重錯誤: {e}", exc_info=True)
         WORKER_STATUS[worker_name]["status"] = "FAILED"
         WORKER_STATUS[worker_name]["last_error"] = str(e)
-        final_status = "FAILED"
 
-    finally:
-        # 4. 廣播最終狀態
-        final_update = {
+        # 廣播失敗狀態
+        failed_update = {
             "type": "WORKER_STATUS_UPDATE",
             "payload": {
                 "worker": worker_name,
-                "status": final_status,
+                "status": "FAILED",
                 "last_error": WORKER_STATUS[worker_name].get("last_error")
             }
         }
-        log.info(f"📢 [執行緒] 準備廣播最終狀態: {final_update}")
-        asyncio.run_coroutine_threadsafe(manager.broadcast_json(final_update), loop)
-        log.info(f"📢 [執行緒] 已成功排程廣播任務。")
-        if worker_name in WORKER_STATUS:
-            WORKER_STATUS[worker_name]["process"] = None # 清理進程對象
+        asyncio.run_coroutine_threadsafe(manager.broadcast_json(failed_update), loop)
 
 
 def trigger_model_download(task_id: str, loop: asyncio.AbstractEventLoop):
@@ -1424,15 +1418,32 @@ async def websocket_endpoint(websocket: WebSocket):
                     continue
                 # --- END MODIFICATION ---
 
+                if msg_type == "CHECK_LOCAL_MODELS":
+                    log.info("收到檢查本地模型的請求。")
+                    available_models = [
+                        model for model in KNOWN_WHISPER_MODELS if check_model_exists(model)
+                    ]
+                    await websocket.send_json({
+                        "type": "LOCAL_MODELS_STATUS",
+                        "payload": {"models": available_models}
+                    })
 
-                if msg_type == "START_DOWNLOAD":
-                    task_id = payload.get("task_id")
-                    if task_id:
-                        log.info(f"收到開始下載任務 '{task_id}' 的請求。")
-                        loop = asyncio.get_running_loop()
-                        trigger_model_download(task_id, loop)
+                elif msg_type == "DOWNLOAD_MODEL":
+                    model_size = payload.get("model")
+                    if model_size and model_size in KNOWN_WHISPER_MODELS:
+                        log.info(f"收到手動下載模型 '{model_size}' 的請求，正在建立任務...")
+                        # 建立一個下載任務，讓 model_management_worker 來處理
+                        download_task_id = str(uuid.uuid4())
+                        download_payload = {"model_size": model_size}
+                        db_client.add_task(
+                            download_task_id,
+                            json.dumps(download_payload),
+                            task_type='download'
+                        )
+                        # 我們可以選擇性地回傳一個確認訊息
+                        await websocket.send_json({"type": "ACK", "payload": f"已為模型 '{model_size}' 建立下載任務。"})
                     else:
-                        await manager.broadcast_json({"type": "ERROR", "payload": "缺少 task_id 參數"})
+                        await manager.broadcast_json({"type": "ERROR", "payload": "無效或未提供的模型大小參數"})
 
                 elif msg_type == "START_TRANSCRIPTION":
                     task_id = payload.get("task_id")
