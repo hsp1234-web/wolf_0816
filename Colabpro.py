@@ -44,6 +44,7 @@ from collections import deque
 import re
 from pathlib import Path
 import html
+import queue
 
 try:
     import pytz
@@ -197,7 +198,10 @@ def create_log_viewer_html(log_manager):
     """產生一個包含頂部和底部複製按鈕的可收合日誌檢視器 HTML。"""
     try:
         log_history = log_manager.get_full_history(limit=LOG_COPY_MAX_LINES)
-        escaped_log_content = html.escape("\n".join(log_history))
+        # 修復 (2025-08-20): 採用舊版的日誌處理邏輯，先逸出每一行再組合。
+        # 這可以避免一次性逸出整個文字區塊可能導致的換行符問題，確保複製功能正常。
+        escaped_lines = [html.escape(line) for line in log_history]
+        escaped_log_content = "\n".join(escaped_lines)
         num_logs = len(log_history)
         unique_log_id = f"log-area-{int(time.time() * 1000)}"
         onclick_js = f'''(async () => {{ try {{ const textToCopy = document.getElementById("{unique_log_id}").innerText; await navigator.clipboard.writeText(textToCopy); this.innerText="✅ 已複製!"; }} catch (err) {{ this.innerText="❌ 複製失敗"; }} finally {{ setTimeout(() => {{ this.innerText="📋 複製這 {num_logs} 條日誌"; }}, 2000); }} }})()'''.replace("\n", " ")
@@ -231,14 +235,66 @@ def launch_application(project_path_str: str, log_manager: LogManager):
             match = url_pattern.search(clean_line)
             if match and not final_url_found:
                 final_url_found = True
-                port = match.group(1).split(':')[-1]
+                port = int(match.group(1).split(':')[-1])
                 log_manager.log("SUCCESS", f"內部服務 URL 已獲取: {match.group(1)}")
-                shared_stats['status'] = "正在生成 Colab 代理連結..."
-                js_script = f"google.colab.kernel.proxyPort({port}, {{'cache': false}})"
-                proxy_url = colab_output.eval_js(f"(async () => await {js_script})()")
-                shared_stats['proxy_url'] = proxy_url
-                shared_stats['status'] = "✅ 應用程式已就緒"
-                log_manager.log("SUCCESS", f"成功獲取代理連結: {proxy_url}")
+
+                # --- START: 移植自舊版的健壯的代理連結獲取邏輯 ---
+                max_retries, retry_delay, js_timeout_ms, py_timeout_sec = 20, 1, 7000, 10
+                js_get_url_script = f'''
+                (async () => {{
+                    const proxyPromise = google.colab.kernel.proxyPort({port}, {{'cache': false}});
+                    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error(`proxyPort call timed out after {js_timeout_ms}ms`)), {js_timeout_ms}));
+                    try {{ const url = await Promise.race([proxyPromise, timeoutPromise]); return {{'url': url, 'error': null}}; }}
+                    catch (e) {{ return {{'url': null, 'error': e.toString()}}; }}
+                }})()
+                '''
+
+                for attempt in range(max_retries):
+                    shared_stats['status'] = f"正在嘗試取得代理連結... (第 {attempt + 1}/{max_retries} 次)"
+                    result_queue = queue.Queue()
+                    def _eval_js_in_thread(q, script):
+                        try: q.put({{'result': colab_output.eval_js(script), 'error': None}})
+                        except Exception as e: q.put({{'result': None, 'error': e}})
+
+                    eval_thread = threading.Thread(target=_eval_js_in_thread, args=(result_queue, js_get_url_script))
+                    eval_thread.daemon = True
+                    eval_thread.start()
+
+                    try:
+                        output = result_queue.get(timeout=py_timeout_sec)
+                        if output.get('error'):
+                            error_msg = str(output['error'])
+                            shared_stats['status'] = f"嘗試失敗 ({error_msg[:50]}...)，{retry_delay}秒後重試。"
+                            log_manager.log("WARN", f"獲取代理連結的背景執行緒發生錯誤: {error_msg}")
+                        else:
+                            result = output.get('result')
+                            if result and result.get('error'):
+                                error_msg = str(result['error'])
+                                shared_stats['status'] = f"JS錯誤 ({error_msg[:50]}...)，{retry_delay}秒後重試。"
+                                log_manager.log("WARN", f"獲取代理連結時發生 JS 錯誤: {error_msg}")
+                            elif result and result.get('url') and result['url'].strip().startswith('http'):
+                                candidate_url = result['url'].strip()
+                                shared_stats['proxy_url'] = candidate_url
+                                shared_stats['status'] = "✅ 應用程式已就緒"
+                                log_manager.log("SUCCESS", f"成功取得並驗證代理連結: {candidate_url}")
+                                break
+                            else:
+                                shared_stats['status'] = f"收到無效的回傳值，{retry_delay}秒後重試。"
+                                log_manager.log("WARN", f"收到無效的代理回傳值: '{str(result)[:100]}...'")
+                    except queue.Empty:
+                        shared_stats['status'] = f"操作超時 ({py_timeout_sec}秒)，{retry_delay}秒後重試。"
+                        log_manager.log("WARN", f"獲取代理連結操作超時 ({py_timeout_sec}秒)。")
+                    except Exception as e:
+                        error_msg = str(e)
+                        shared_stats['status'] = f"發生未預期錯誤 ({error_msg[:50]}...)，{retry_delay}秒後重試。"
+                        log_manager.log("ERROR", f"獲取代理連結迴圈發生未預期錯誤: {e}")
+
+                    time.sleep(retry_delay)
+
+                if not shared_stats.get('proxy_url'):
+                    shared_stats['status'] = "❌ 取得代理連結失敗"
+                    log_manager.log("CRITICAL", "無法取得 Colab 代理連結。後端服務可能仍在運行。")
+                # --- END: 移植的邏輯 ---
         if runner_proc.wait() != 0: shared_stats['status'] = "❌ 啟動失敗"
     except Exception as e:
         log_manager.log("CRITICAL", f"❌ 發生未預期的致命錯誤: {e}")
