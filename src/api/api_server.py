@@ -1380,25 +1380,21 @@ def trigger_youtube_processing(task_id: str, loop: asyncio.AbstractEventLoop):
     thread.start()
 
 
-@app.get("/api/debug/latest_frontend_action_log")
-async def get_latest_frontend_action_log():
+@app.get("/api/debug/all_frontend_action_logs")
+async def get_all_frontend_action_logs():
     """
-    [僅供測試] 獲取最新的前端操作日誌。
+    [僅供測試] 獲取所有前端操作日誌的完整列表。
     用於 E2E 測試，以驗證日誌是否已成功寫入資料庫。
     """
     try:
         # 我們只關心來自 'frontend_action' logger 的日誌
         logs = db_client.get_system_logs(sources=['frontend_action'])
-        if not logs:
-            # 如果沒有日誌，返回一個清晰的空回應，而不是 404
-            return JSONResponse(content={"latest_log": None}, status_code=200)
-
-        # get_system_logs 按時間戳升序排序，所以最後一個就是最新的
-        latest_log = logs[-1]
-        return JSONResponse(content={"latest_log": latest_log})
+        # 確保即使沒有日誌也回傳一個空列表
+        logs = logs or []
+        return JSONResponse(content={"logs": logs})
     except Exception as e:
-        log.error(f"❌ 查詢最新前端日誌時出錯: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="查詢最新前端日誌時發生內部錯誤")
+        log.error(f"❌ 查詢所有前端日誌時出錯: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="查詢所有前端日誌時發生內部錯誤")
 
 
 @app.websocket("/api/ws")

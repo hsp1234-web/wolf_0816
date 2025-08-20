@@ -374,20 +374,42 @@ def get_all_tasks() -> list[dict]:
             conn.close()
 
 
+from datetime import datetime, timezone
+
 def add_system_log(source: str, level: str, message: str) -> bool:
     """
     一個簡單的函式，用於從外部腳本（如 colab.py）直接寫入系統日誌。
     """
-    sql = "INSERT INTO system_logs (source, level, message) VALUES (?, ?, ?)"
+    sql = "INSERT INTO system_logs (timestamp, source, level, message) VALUES (?, ?, ?, ?)"
     conn = get_db_connection()
     if not conn: return False
     try:
         with conn:
-            conn.execute(sql, (source, level.upper(), message))
+            conn.execute(sql, (datetime.now(timezone.utc), source, level.upper(), message))
         return True
     except sqlite3.Error as e:
         # 在這種情況下，我們只在控制台打印錯誤，因為我們不能觸發日誌處理器
         print(f"CRITICAL: Failed to write system log to DB from source {source}. Error: {e}", file=sys.stderr)
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+def add_system_logs_batch(logs: list) -> bool:
+    """
+    在 system_logs 表中批次新增多條日誌記錄。
+    'logs' 應為一個元組列表，每個元組包含 (timestamp, source, level, message)。
+    """
+    sql = "INSERT INTO system_logs (timestamp, source, level, message) VALUES (?, ?, ?, ?)"
+    conn = get_db_connection()
+    if not conn: return False
+    try:
+        with conn:
+            conn.executemany(sql, logs)
+        log.debug(f"已成功批次插入 {len(logs)} 條系統日誌。")
+        return True
+    except sqlite3.Error as e:
+        log.error(f"批次寫入系統日誌時發生資料庫錯誤: {e}", exc_info=True)
         return False
     finally:
         if conn:
@@ -402,7 +424,7 @@ def get_system_logs_by_filter(levels: list[str] = None, sources: list[str] = Non
     if not conn: return []
 
     try:
-        sql = "SELECT timestamp, source, level, message FROM system_logs"
+        sql = "SELECT id, timestamp, source, level, message FROM system_logs"
         conditions = []
         params = []
 
@@ -479,32 +501,6 @@ def delete_task(task_id: str) -> bool:
             cursor = conn.cursor()
             cursor.execute(sql, (task_id,))
             # The rowcount attribute tells us how many rows were affected.
-            if cursor.rowcount > 0:
-                log.info(f"✅ 已從資料庫成功刪除任務: {task_id}")
-                return True
-            else:
-                log.warning(f"⚠️ 嘗試刪除一個不存在的任務: {task_id}")
-                return False
-    except sqlite3.Error as e:
-        log.error(f"❌ 刪除任務 {task_id} 時發生資料庫錯誤: {e}", exc_info=True)
-        return False
-    finally:
-        if conn:
-            conn.close()
-
-
-def delete_task(task_id: str) -> bool:
-    """
-    根據 task_id 刪除一個任務。
-    主要用於測試後的清理。
-    """
-    sql = "DELETE FROM tasks WHERE task_id = ?"
-    conn = get_db_connection()
-    if not conn: return False
-    try:
-        with conn:
-            cursor = conn.cursor()
-            cursor.execute(sql, (task_id,))
             if cursor.rowcount > 0:
                 log.info(f"✅ 已從資料庫成功刪除任務: {task_id}")
                 return True

@@ -105,6 +105,10 @@ class DBClient:
     def add_system_log(self, source: str, level: str, message: str) -> bool:
         return self._send_request("add_system_log", {"source": source, "level": level, "message": message})
 
+    def add_system_logs_batch(self, logs: list) -> bool:
+        """將一批日誌發送到伺服器。"""
+        return self._send_request("add_system_logs_batch", {"logs": logs})
+
     def find_dependent_task(self, parent_task_id: str) -> str | None:
         return self._send_request("find_dependent_task", {"parent_task_id": parent_task_id})
     def get_app_state(self, key: str) -> str | None:

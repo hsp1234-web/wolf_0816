@@ -25,49 +25,60 @@ from playwright.sync_api import Page, expect
 
 # --- 輔助函式 (Helper Functions) ---
 
-def get_latest_log(base_url: str) -> dict | None:
+def get_all_frontend_action_logs(base_url: str) -> list[dict]:
     """
-    呼叫後端偵錯 API，獲取最新的前端操作日誌。
+    呼叫後端偵錯 API，獲取所有前端操作日誌。
 
     Args:
         base_url: 後端伺服器的基礎 URL。
 
     Returns:
-        一個包含日誌資訊的字典，如果沒有日誌則回傳 None。
+        一個包含所有日誌資訊的字典列表。
     """
     try:
-        response = requests.get(f"{base_url}/api/debug/latest_frontend_action_log", timeout=5)
+        # 這個偵錯端點現在會回傳一個包含 'logs' 鍵的物件
+        response = requests.get(f"{base_url}/api/debug/all_frontend_action_logs", timeout=5)
         response.raise_for_status()
         data = response.json()
-        return data.get("latest_log")
+        return data.get("logs", [])
     except requests.RequestException as e:
         print(f"❌ 呼叫日誌 API 時發生錯誤: {e}")
-        return None
+        return []
 
-def wait_for_new_log(base_url: str, last_log_id: int, timeout_seconds: int = 10) -> dict:
+def wait_for_new_log(base_url: str, last_log_id: int, message_contains: str = None, timeout_seconds: int = 10) -> dict:
     """
-    輪詢偵錯 API，直到出現一個 ID 大於 `last_log_id` 的新日誌。
+    輪詢偵錯 API，直到出現一個符合條件的新日誌。
 
     Args:
         base_url: 後端伺服器的基礎 URL。
         last_log_id: 上一個已知的日誌 ID。
+        message_contains: (可選) 日誌訊息中必須包含的子字串。
         timeout_seconds: 等待新日誌的超時時間。
 
     Returns:
         新的日誌物件。
 
     Raises:
-        TimeoutError: 如果在指定時間內沒有等到新日誌。
+        TimeoutError: 如果在指定時間內沒有等到符合條件的新日誌。
     """
     start_time = time.time()
     while time.time() - start_time < timeout_seconds:
-        latest_log = get_latest_log(base_url)
-        # 注意：資料庫中的 ID 是從 1 開始的，所以我們的 last_log_id (-1) 肯定會小於第一個日誌的 ID
-        if latest_log and latest_log.get("id", 0) > last_log_id:
-            print(f"✅ 在 {time.time() - start_time:.2f} 秒後成功捕獲到新日誌 (ID: {latest_log['id']})。")
-            return latest_log
+        all_logs = get_all_frontend_action_logs(base_url)
+
+        # 從新到舊尋找符合條件的日誌
+        for log in reversed(all_logs):
+            log_id = log.get("id", 0)
+            if log_id > last_log_id:
+                if message_contains is None or message_contains in log.get("message", ""):
+                    print(f"✅ 在 {time.time() - start_time:.2f} 秒後成功捕獲到新日誌 (ID: {log_id})。")
+                    return log
+
         time.sleep(0.5)
-    raise TimeoutError(f"❌ 等待新日誌超時（超過 {timeout_seconds} 秒）。")
+
+    error_message = f"❌ 等待新日誌超時（超過 {timeout_seconds} 秒）。"
+    if message_contains:
+        error_message += f" (篩選條件: 訊息需包含 '{message_contains}')"
+    raise TimeoutError(error_message)
 
 # --- 測試主體 (Test Case) ---
 
@@ -88,8 +99,8 @@ def test_backend_click_logging(page: Page, live_server: str):
         print("\n--- 測試案例 1: 點擊「媒體下載器」分頁按鈕 ---")
 
         # a. 獲取點擊前的最新日誌 ID
-        last_log = get_latest_log(target_url)
-        last_log_id = last_log['id'] if last_log and last_log.get('id') is not None else -1
+        all_logs = get_all_frontend_action_logs(target_url)
+        last_log_id = max(log['id'] for log in all_logs) if all_logs else -1
         print(f"點擊前的最新日誌 ID: {last_log_id}")
 
         # b. 定位並點擊按鈕
@@ -98,25 +109,22 @@ def test_backend_click_logging(page: Page, live_server: str):
         print("正在點擊 '媒體下載器' 按鈕...")
         downloader_tab_button.click()
 
-        # c. 等待並驗證新日誌
-        print("正在等待後端記錄新日誌...")
-        new_log = wait_for_new_log(target_url, last_log_id)
+        # c. 等待並驗證我們關心的特定日誌
+        expected_message_part = "click-event: button with class=tab-button"
+        print(f"正在等待後端記錄包含 '{expected_message_part}' 的新日誌...")
+        new_log = wait_for_new_log(target_url, last_log_id, message_contains=expected_message_part)
 
         assert "message" in new_log, "日誌中缺少 'message' 欄位"
         assert "id" in new_log, "日誌中缺少 'id' 欄位 (追蹤編號)"
         assert isinstance(new_log['id'], int), "日誌 ID (追蹤編號) 必須是整數"
-
-        # 驗證日誌訊息是否符合預期格式
-        expected_message_part = "click-event: button with class=tab-button"
-        assert expected_message_part in new_log['message'], \
-            f"日誌訊息不符合預期。預期包含 '{expected_message_part}'，實際為 '{new_log['message']}'"
         print(f"✅ 日誌驗證成功: Message='{new_log['message']}'")
 
         # --- 測試案例 2: 點擊 H1 標題 ---
         print("\n--- 測試案例 2: 點擊 H1 標題 ---")
 
         # a. 再次獲取最新日誌 ID
-        last_log_id = new_log['id']
+        all_logs = get_all_frontend_action_logs(target_url)
+        last_log_id = max(log['id'] for log in all_logs) if all_logs else -1
         print(f"點擊前的最新日誌 ID: {last_log_id}")
 
         # b. 定位並點擊標題
@@ -126,17 +134,13 @@ def test_backend_click_logging(page: Page, live_server: str):
         header_title.click()
 
         # c. 等待並驗證新日誌
-        print("正在等待後端記錄新日誌...")
-        new_log = wait_for_new_log(target_url, last_log_id)
+        expected_message_part = "click-event: h1 with tag=h1"
+        print(f"正在等待後端記錄包含 '{expected_message_part}' 的新日誌...")
+        new_log = wait_for_new_log(target_url, last_log_id, message_contains=expected_message_part)
 
         assert "message" in new_log
         assert "id" in new_log
         assert isinstance(new_log['id'], int)
-
-        # H1 標籤沒有 class，日誌應回退到使用 tag 作為識別碼
-        expected_message_part = "click-event: h1 with tag=h1"
-        assert expected_message_part in new_log['message'], \
-            f"日誌訊息不符合預期。預期包含 '{expected_message_part}'，實際為 '{new_log['message']}'"
         print(f"✅ 日誌驗證成功: Message='{new_log['message']}'")
 
         print("\n🎉🎉🎉 恭喜！所有前端點擊事件均已成功驗證在後端留下記錄！")

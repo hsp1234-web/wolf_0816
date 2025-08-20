@@ -17,30 +17,75 @@ if not handler_log.handlers:
 
 log_queue = queue.Queue()
 
+from datetime import datetime, timezone
+
 def _log_worker():
     """
-    一個在背景執行的工作者，從佇列中獲取日誌並透過 DBClient 發送。
+    一個在背景執行的工作者，從佇列中批次獲取日誌並透過 DBClient 發送。
     """
-    while True:
-        record = log_queue.get()
-        if record is None:  # A sentinel to stop the thread
-            break
-        try:
-            # 獲取客戶端實例。因為這是在一個單獨的執行緒中，
-            # 它會安全地等待 DBManager 準備就緒，而不會阻塞主應用程式。
-            db_client = get_client()
+    db_client = get_client()
+    batch = []
+    max_batch_size = 50  # 每批最大日誌數量
+    max_batch_interval = 2.0  # 秒，即使批次未滿，也最多等待這麼久
 
+    while True:
+        try:
+            # 等待第一個日誌，設定超時
+            record = log_queue.get(timeout=max_batch_interval)
+            if record is None:  # 停止信號
+                # 發送剩餘的批次
+                if batch:
+                    try:
+                        db_client.add_system_logs_batch(batch)
+                    except Exception as e:
+                        handler_log.error(f"關閉前，最後一批日誌寫入失敗: {e}", exc_info=True)
+                    finally:
+                        for _ in range(len(batch)):
+                            log_queue.task_done()
+                        batch.clear()
+                break
+
+            # 格式化並加入批次
             log_source = record.name
             log_level = record.levelname
-
-            # 我們需要手動格式化訊息，因為我們繞過了標準的 format() 流程
             message = logging.Formatter().format(record)
+            # 我們在這裡產生時間戳，以確保批次中的時間戳是一致的
+            timestamp = datetime.fromtimestamp(record.created, tz=timezone.utc)
+            batch.append((timestamp.isoformat(), log_source, log_level, message))
 
-            db_client.add_system_log(log_source, log_level, message)
+            # 如果批次已滿，立即發送
+            if len(batch) >= max_batch_size:
+                db_client.add_system_logs_batch(batch)
+                for _ in range(len(batch)):
+                    log_queue.task_done()
+                batch.clear()
+
+        except queue.Empty:
+            # 如果佇列為空（等待超時），發送當前累積的批次
+            if batch:
+                try:
+                    db_client.add_system_logs_batch(batch)
+                except Exception as e:
+                    handler_log.error(f"日誌工作者執行緒無法將批次日誌寫入資料庫: {e}", exc_info=True)
+                finally:
+                    for _ in range(len(batch)):
+                        log_queue.task_done()
+                    batch.clear()
         except Exception as e:
-            handler_log.error(f"日誌工作者執行緒無法將日誌寫入資料庫: {e}", exc_info=True)
-        finally:
-            log_queue.task_done()
+            handler_log.error(f"日誌工作者執行緒發生未預期錯誤: {e}", exc_info=True)
+            # 如果發生未知錯誤，為避免資料遺失，我們嘗試逐一處理剩餘批次
+            if batch:
+                handler_log.warning("正在嘗試逐一儲存批次中的日誌...")
+                for log_item in batch:
+                    try:
+                        # 轉換回單獨的參數
+                        _, source, level, msg = log_item
+                        db_client.add_system_log(source, level, msg)
+                    except Exception as single_e:
+                        handler_log.error(f"無法儲存單條日誌: {single_e}", exc_info=True)
+                    finally:
+                        log_queue.task_done()
+                batch.clear()
 
 # 啟動單一的背景工作者執行緒
 # 將其設定為 daemon，這樣主程式退出時它也會自動退出

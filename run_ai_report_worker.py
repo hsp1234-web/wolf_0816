@@ -64,23 +64,40 @@ class TaipeiTimeFormatter(logging.Formatter):
         return s
 
 def setup_logging():
-    handler = logging.StreamHandler(sys.stdout)
-    formatter = TaipeiTimeFormatter(
-        '[%(asctime)s] [%(levelname)s] (AI報告工作者) - %(message)s',
-        datefmt='%Y-%m-%dT%H:%M:%S.%f%z'
-    )
-    handler.setFormatter(formatter)
+    """
+    設定日誌系統，將日誌同時發送到資料庫（透過 DatabaseLogHandler）和主控台。
+    """
+    try:
+        # 將 'src' 目錄新增到 Python 路徑中，以便找到 db 模組
+        src_path = str(Path(__file__).resolve().parent / 'src')
+        if src_path not in sys.path:
+            sys.path.insert(0, src_path)
+        from db.log_handler import DatabaseLogHandler
+    except ImportError as e:
+        # 如果匯入失敗，這是一個嚴重錯誤，因為日誌無法記錄到資料庫
+        print(f"嚴重錯誤：無法匯入 DatabaseLogHandler。請確認 'src' 目錄路徑是否正確。錯誤: {e}", file=sys.stderr)
+        sys.exit(1)
 
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
-    if logger.hasHandlers():
-        logger.handlers.clear()
-    logger.addHandler(handler)
+    logger.handlers.clear() # 清除所有現有的處理器
 
+    # 處理器 1: DatabaseLogHandler - 用於將日誌發送到中央資料庫
+    db_handler = DatabaseLogHandler(source='ai_report_worker')
+    logger.addHandler(db_handler)
+
+    # 處理器 2: StreamHandler - 用於在本機主控台顯示日誌，方便偵錯
+    console_handler = logging.StreamHandler(sys.stdout)
+    formatter = TaipeiTimeFormatter(
+        '[%(asctime)s] [ai_report_worker] [%(levelname)s] - %(message)s'
+    )
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
+    # 讓 huey 的日誌也透過我們設定的根記錄器進行處理
     huey_logger = logging.getLogger('huey')
     huey_logger.setLevel(logging.INFO)
-    huey_logger.addHandler(handler)
-    huey_logger.propagate = False
+    huey_logger.propagate = True # 設為 True，讓日誌傳遞到根記錄器
 
 setup_logging()
 log = logging.getLogger(__name__)
