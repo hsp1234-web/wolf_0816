@@ -239,12 +239,21 @@ def main():
         # --- JULES' FIX END ---
 
         db_manager_cmd = [sys.executable, "src/db/manager.py"]
-        # JULES'S FIX (2025-08-17): 將 db_manager 的輸出重定向到 DEVNULL
-        # 與 localtest.py 的工作方式保持一致，以排除潛在的 stdout/stderr 管道阻塞問題。
-        db_manager_proc = subprocess.Popen(db_manager_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # 診斷修復 (2025-08-20): 暫時移除 DEVNULL，以便在 Colab 環境中觀察 db_manager 的輸出
+        db_manager_proc = subprocess.Popen(
+            db_manager_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding='utf-8'
+        )
         processes.append(db_manager_proc)
         log.info(f"✅ 資料庫管理者子程序已建立，PID: {db_manager_proc.pid}")
-        # 日誌流式輸出執行緒不再需要
+
+        # 為 db_manager 的輸出建立日誌流式讀取執行緒
+        db_stdout_thread = threading.Thread(target=stream_reader, args=(db_manager_proc.stdout, 'db_manager'))
+        db_stderr_thread = threading.Thread(target=stream_reader, args=(db_manager_proc.stderr, 'db_manager_stderr'))
+        threads.extend([db_stdout_thread, db_stderr_thread])
 
         # 1a. 從檔案動態讀取 DB Manager 的埠號
         # Note: We re-use the 'port_file_path' variable from the cleanup step above.
