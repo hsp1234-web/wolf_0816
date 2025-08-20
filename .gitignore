@@ -61,6 +61,8 @@ config.json
 
 # Generated config files
 circus.ini
+src/db/db_manager.port
+src/db/db_manager.ready
 
 # Pre-baked artifacts
 /artifacts/

@@ -11,7 +11,7 @@ from pathlib import Path
 # --- 全域設定 ---
 ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT_DIR / "src"))
-from db.database import initialize_database
+from db.database import initialize_database, DB_FILE
 
 log = logging.getLogger('PytestFixture')
 
@@ -22,31 +22,45 @@ def find_free_port():
         return s.getsockname()[1]
 
 @pytest.fixture(scope="session")
-def live_server():
+def build_frontend_session():
     """
-    一個 Pytest fixture，它會在測試會話開始時啟動後端伺服器，
-    並在會話結束時將其關閉。
+    一個 Session-scoped fixture，僅在測試會話開始時建置一次前端。
+    這避免了在每個模組中重複執行耗時的建置過程。
     """
-    log.info("--- Setting up live server for E2E tests ---")
-
-    # 1. 初始化資料庫
-    try:
-        initialize_database()
-        log.info("✅ 資料庫初始化成功。")
-    except Exception as e:
-        pytest.fail(f"資料庫初始化失敗: {e}")
-
-    # 2. 建置前端
+    log.info("--- (Session) Building frontend assets ---")
     try:
         vue_app_dir = ROOT_DIR / "vue-app"
         log.info("🏗️  建置 Vue.js 前端應用程式...")
+        # 注意：這裡假設 bun 已安裝在環境中
         subprocess.run(["bun", "install"], cwd=vue_app_dir, check=True, capture_output=True, text=True, timeout=120)
         subprocess.run(["bun", "run", "build"], cwd=vue_app_dir, check=True, capture_output=True, text=True, timeout=120)
-        log.info("✅ 前端建置完成。")
+        log.info("✅ (Session) 前端建置完成。")
     except Exception as e:
+        log.error(f"前端建置失敗: {e.stdout or e.stderr}")
         pytest.fail(f"前端建置失敗: {e}")
 
-    # 3. 啟動服務
+@pytest.fixture(scope="module")
+def live_server(build_frontend_session):
+    """
+    一個 Module-scoped fixture，它會為每個測試模組（檔案）啟動一組全新的後端服務，
+    並在模組測試結束時將其關閉。它依賴於 build_frontend_session 來確保前端已建置。
+    """
+    log.info(f"--- (Module) Setting up live server for {__name__} ---")
+
+    # 1. 初始化資料庫
+    try:
+        # 為了確保每個模組的測試都在一個乾淨的環境中運行，
+        # 我們在初始化前手動刪除舊的資料庫檔案。
+        if DB_FILE.exists():
+            DB_FILE.unlink()
+            log.info(f"舊資料庫檔案 '{DB_FILE}' 已被刪除，以進行重新初始化。")
+
+        initialize_database()
+        log.info("✅ 資料庫已為此模組重新初始化。")
+    except Exception as e:
+        pytest.fail(f"資料庫初始化失敗: {e}")
+
+    # 2. 啟動服務 (前端已由 build_frontend_session 處理)
     processes = []
     api_url = None
     try:
@@ -56,7 +70,6 @@ def live_server():
 
         # 啟動 DB Manager
         db_manager_cmd = [sys.executable, str(ROOT_DIR / "src" / "db" / "manager.py")]
-        # 清理上一次執行可能遺留的檔案
         port_file = ROOT_DIR / "src" / "db" / "db_manager.port"
         ready_file = ROOT_DIR / "src" / "db" / "db_manager.ready"
         if port_file.exists(): port_file.unlink()
@@ -66,8 +79,7 @@ def live_server():
         processes.append(db_proc)
         log.info(f"  - DB Manager (PID: {db_proc.pid}) 啟動中...")
 
-        # --- JULES'S FIX (V2): 增加更穩健的等待機制 ---
-        # 1. 等待 port 檔案並讀取埠號
+        # --- 等待 DB Manager 就緒 ---
         db_manager_port = None
         start_wait_time = time.time()
         while time.time() - start_wait_time < 20:
@@ -76,14 +88,10 @@ def live_server():
                     db_manager_port = int(port_file.read_text().strip())
                     log.info(f"✅ DB Manager 的埠號檔案已偵測到，埠號: {db_manager_port}")
                     break
-                except (ValueError, IOError):
-                    pass # 檔案可能正在寫入中
+                except (ValueError, IOError): pass
             time.sleep(0.2)
+        if not db_manager_port: pytest.fail("DB Manager 未能在指定時間內建立有效的埠號檔案。")
 
-        if not db_manager_port:
-            pytest.fail("DB Manager 未能在指定時間內建立有效的埠號檔案。")
-
-        # 2. 等待網路服務就緒
         service_ready = False
         start_wait_time = time.time()
         while time.time() - start_wait_time < 20:
@@ -92,13 +100,9 @@ def live_server():
                     log.info(f"✅ DB Manager 的網路服務在埠號 {db_manager_port} 上已就緒。")
                     service_ready = True
                     break
-            except (ConnectionRefusedError, socket.timeout):
-                time.sleep(0.2)
+            except (ConnectionRefusedError, socket.timeout): time.sleep(0.2)
+        if not service_ready: pytest.fail(f"DB Manager 的網路服務未能在埠號 {db_manager_port} 上及時就緒。")
 
-        if not service_ready:
-            pytest.fail(f"DB Manager 的網路服務未能在埠號 {db_manager_port} 上及時就緒。")
-
-        # 3. 等待就緒信號檔案
         ready_file_appeared = False
         start_wait_time = time.time()
         while time.time() - start_wait_time < 20:
@@ -107,9 +111,7 @@ def live_server():
                 ready_file_appeared = True
                 break
             time.sleep(0.2)
-
-        if not ready_file_appeared:
-            pytest.fail("DB Manager 未能在指定時間內建立就緒檔案。")
+        if not ready_file_appeared: pytest.fail("DB Manager 未能在指定時間內建立就緒檔案。")
         # --- 等待機制結束 ---
 
         # 啟動 API Server
@@ -120,7 +122,7 @@ def live_server():
         processes.append(api_proc)
         log.info(f"  - API Server (PID: {api_proc.pid}) 啟動中，監聽於 {api_url}")
 
-        # 4. 健康檢查
+        # 3. 健康檢查
         health_check_passed = False
         start_time = time.time()
         while time.time() - start_time < 30:
@@ -132,35 +134,31 @@ def live_server():
                         break
             except Exception:
                 time.sleep(1)
+        if not health_check_passed: pytest.fail("伺服器健康檢查超時。")
 
-        if not health_check_passed:
-            pytest.fail("伺服器健康檢查超時。")
-
-        # 5. 將 URL 提供給測試
+        # 4. 將 URL 提供給測試
         yield api_url
 
-    # 6. 清理
+    # 5. 清理
     finally:
-        log.info("--- Tearing down live server ---")
+        log.info(f"--- (Module) Tearing down live server for {__name__} ---")
         for proc in reversed(processes):
             if proc.poll() is None:
-                proc.terminate()
-                proc.wait(timeout=10)
-        log.info("✅ 所有服務已關閉。")
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    log.warning(f"  - 程序 (PID: {proc.pid}) 未能正常終止，已強制終止。")
+        log.info("✅ 所有模組服務已關閉。")
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def db_client_fixture(live_server):
     """
-    一個依賴於 live_server 的 fixture，用於提供一個
-    已連接且可用的資料庫客戶端實例。
+    一個 Module-scoped fixture，提供一個對應當前模組 live_server 的資料庫客戶端。
     """
-    # live_server fixture 確保了 db_manager 已經在運行
     from db import client as db_client_module
-
-    # 我們透過重設單例來解決在模組導入時客戶端就被初始化的問題。
-    # 這確保了 get_client() 會在伺服器啟動後才建立一個全新的、可用的連線。
     db_client_module._client_instance = None
-
     client = db_client_module.get_client()
     yield client
 
@@ -171,9 +169,9 @@ def colab_boot_server():
     """
     一個專門用於測試 Colab 開機畫面的 fixture。
     它只會啟動 Colab.py 中的 TempServerManager。
+    此 fixture 保持 session scope，因為它輕量且與主伺服器無關。
     """
     # --- 模擬 Colab 環境依賴 ---
-    # 為了在非 Colab 環境中測試 Colab.py，我們需要模擬它所依賴的模組
     mock_ipython = MagicMock()
     mock_ipython.display.clear_output = MagicMock()
     mock_ipython.display.display = MagicMock()
@@ -182,52 +180,40 @@ def colab_boot_server():
     sys.modules['IPython.display'] = mock_ipython.display
 
     mock_google_colab = MagicMock()
-    # 我們不需要這些函式有實際行為，只需要它們存在即可
     mock_google_colab.output.eval_js = MagicMock(return_value="")
     mock_google_colab.userdata.get = MagicMock(return_value=None)
-    # 建立一個假的 google 模組，因為 `from google.colab` 需要它
     mock_google = MagicMock()
     mock_google.colab = mock_google_colab
     sys.modules['google'] = mock_google
     sys.modules['google.colab'] = mock_google_colab
     # --- 模擬結束 ---
 
-    # Colab.py 位於根目錄，需要將其加入 sys.path
     if str(ROOT_DIR) not in sys.path:
         sys.path.insert(0, str(ROOT_DIR))
     from Colab import TempServerManager, LogManager, find_free_port
     import queue
 
-    log.info("--- Setting up Colab boot screen server ---")
+    log.info("--- (Session) Setting up Colab boot screen server ---")
     temp_server = None
     try:
         port = find_free_port()
         server_url = f"http://127.0.0.1:{port}"
-
-        # 為 TempServerManager 準備最小化的依賴
         log_queue = queue.Queue()
-        # 使用一個簡化的 LogManager，避免寫入資料庫
         log_levels = {
             "SHOW_LOG_LEVEL_DEBUG": True, "SHOW_LOG_LEVEL_INFO": True,
             "SHOW_LOG_LEVEL_SUCCESS": True, "SHOW_LOG_LEVEL_WARN": True,
             "SHOW_LOG_LEVEL_ERROR": True, "SHOW_LOG_LEVEL_CRITICAL": True
         }
         log_manager = LogManager(max_lines=10, timezone_str="UTC", log_levels_to_show=log_levels, db_path=":memory:")
-
-        temp_server = TempServerManager(
-            port=port,
-            log_manager=log_manager,
-            log_queue=log_queue,
-            project_root=ROOT_DIR
-        )
+        temp_server = TempServerManager(port=port, log_manager=log_manager, log_queue=log_queue, project_root=ROOT_DIR)
         temp_server.start()
         log.info(f"✅ Colab boot server 啟動於 {server_url}")
-        time.sleep(1) # 等待伺服器執行緒啟動
+        time.sleep(1)
 
         yield server_url
 
     finally:
-        log.info("--- Tearing down Colab boot screen server ---")
+        log.info("--- (Session) Tearing down Colab boot screen server ---")
         if temp_server:
             temp_server.stop()
         log.info("✅ Colab boot server 已關閉。")
