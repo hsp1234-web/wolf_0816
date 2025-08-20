@@ -150,6 +150,8 @@ select {
 .status-light { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 8px; }
 .status-green { background-color: var(--status-green); box-shadow: 0 0 6px var(--status-green); }
 .status-yellow { background-color: var(--status-yellow); box-shadow: 0 0 6px var(--status-yellow); }
+.status-red { background-color: #dc3545; box-shadow: 0 0 6px #dc3545; }
+.status-gray { background-color: #6c757d; }
 
 /* --- 任務列表 --- */
 .task-list { min-height: 60px; max-height: 400px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }

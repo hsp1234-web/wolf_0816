@@ -67,8 +67,8 @@
 
     <!-- 操作按鈕 -->
     <div style="text-align: center; margin-top: 24px; display: flex; justify-content: center; gap: 15px; flex-wrap: wrap;">
-      <button @click="processRequest(true)" :disabled="!youtubeLinks[0].url">🎧 僅下載音訊</button>
-      <button @click="processRequest(false)" :disabled="!isApiKeyValid || !youtubeLinks[0].url">🚀 分析影片 (Gemini)</button>
+      <button @click="processRequest(true)" :disabled="!youtubeLinks[0].url" title="僅下載影片音訊，不進行 AI 分析">🎧 僅下載音訊</button>
+      <button @click="processRequest(false)" :disabled="!isApiKeyValid || !youtubeLinks[0].url" :title="analyzeButtonTooltip">🚀 分析影片 (Gemini)</button>
     </div>
 
     <!-- 報告瀏覽區 -->
@@ -100,11 +100,16 @@ const fetchModels = async () => {
     models.value = await tasksStore.fetchGeminiModels(apiKey.value);
     if (models.value.length > 0) {
       selectedModel.value = models.value[0].id;
+    } else {
+      apiKeyStatus.text = '無法載入模型列表，請檢查 API 金鑰權限。';
+      apiKeyStatus.color = '#dc3545';
+      apiKeyStatus.italic = false;
     }
   } catch (error) {
-    apiKeyStatus.text = `無法載入模型: ${error.message}`;
+    apiKeyStatus.text = '無法載入模型。請確認您的 API 金鑰是否正確且具有存取 Gemini API 的權限。';
     apiKeyStatus.color = '#dc3545';
     apiKeyStatus.italic = false;
+    models.value = []; // 確保模型列表為空
   }
 };
 
@@ -157,6 +162,16 @@ const removeYoutubeRow = (index) => {
 };
 
 // --- 處理請求 ---
+const analyzeButtonTooltip = computed(() => {
+  if (!isApiKeyValid.value) {
+    return '請先提供有效的 Google API 金鑰以啟用分析功能。';
+  }
+  if (!youtubeLinks.value[0].url) {
+    return '請先輸入 YouTube 影片網址。';
+  }
+  return '開始使用 Gemini 分析影片';
+});
+
 const processRequest = async (downloadOnly = false) => {
   const action = downloadOnly ? 'click-download-audio-only' : 'click-start-youtube-processing';
   logAction(action);
