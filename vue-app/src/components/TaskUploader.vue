@@ -14,6 +14,13 @@
             <option value="large-v3">Large-v3 (最準確)</option>
           </select>
         </div>
+        <button
+          @click="confirmAndDownloadModel"
+          :disabled="localModels.checking || isModelAvailable"
+          style="margin-top: 10px;"
+        >
+          {{ downloadButtonText }}
+        </button>
         <div>
           <label for="language-select">轉錄語言</label>
           <select id="language-select" v-model="language">
@@ -69,8 +76,9 @@
     <div style="text-align: center; margin-top: 24px;">
       <button
         id="start-processing-btn"
-        :disabled="uploadedFiles.length === 0"
+        :disabled="uploadedFiles.length === 0 || !isModelAvailable"
         @click="startProcessing"
+        :title="!isModelAvailable ? '請先下載或確認所選模型' : ''"
       >
         {{ uploadedFiles.length > 0 ? `✨ 開始處理 ${uploadedFiles.length} 個檔案` : '✨ 請先選擇檔案' }}
       </button>
@@ -89,8 +97,9 @@ import eventBus from '@/utils/eventBus'
 const tasksStore = useTasksStore()
 const notificationStore = useNotificationStore()
 
-// 從 store 獲取模型下載狀態
+// 從 store 獲取狀態
 const modelDownloadStatus = computed(() => tasksStore.modelDownloadStatus)
+const localModels = computed(() => tasksStore.localModels)
 
 // --- 組件本地狀態 ---
 const model = ref('tiny')
@@ -98,6 +107,27 @@ const language = ref('zh')
 const beamSize = ref(1)
 const uploadedFiles = ref([])
 const fileInput = ref(null)
+
+// --- 計算屬性 (Computed Properties) ---
+const isModelAvailable = computed(() => {
+  return localModels.value.available.includes(model.value)
+})
+
+const downloadButtonText = computed(() => {
+  if (localModels.value.checking) return '正在檢查模型...'
+  if (isModelAvailable.value) return '✅ 模型已就緒'
+  return '📥 下載模型'
+})
+
+// --- 按鈕事件處理 ---
+const confirmAndDownloadModel = async () => {
+  logAction('click-download-whisper-model', model.value);
+  try {
+    await tasksStore.downloadModel(model.value);
+  } catch (error) {
+    notificationStore.addNotification(`下載模型 ${model.value} 失敗`, 'error');
+  }
+};
 
 // --- 檔案處理方法 ---
 const handleFileSelect = (event) => {
@@ -137,6 +167,7 @@ const handleIncomingFile = (file) => {
 }
 
 onMounted(() => {
+  tasksStore.fetchLocalModels();
   eventBus.on('send-file-to-uploader', handleIncomingFile)
 })
 

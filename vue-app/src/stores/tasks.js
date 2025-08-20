@@ -25,21 +25,27 @@ export const useTasksStore = defineStore('tasks', {
       progress: 0,
       message: ''
     },
-    // For two-stage startup
+    // JULES'S FIX: 恢復 installationStatus 以避免 App.vue 中的 JS 錯誤
     installationStatus: {
-      inProgress: true,
-      message: '正在連接至啟動伺服器...'
+      inProgress: false,
+      message: ''
+    },
+    // JULES'S NEW FEATURE: 新增日誌狀態
+    logs: [],
+    logSourceFilter: 'all', // 'all', 'frontend_action', 'api_server', etc.
+    // JULES'S NEW FEATURE: 本地 Whisper 模型狀態
+    localModels: {
+      available: [],
+      checking: true,
     }
   }),
   actions: {
-    // New action to initialize the entire system connection
+    // 初始化 WebSocket 連線
     initializeSystem() {
-      // This function will now handle the two-stage connection.
-      // It starts by connecting to the status server.
-      this.connectToWebSocket('/ws_status', true);
+      this.connectToWebSocket('/api/ws');
     },
 
-    connectToWebSocket(endpoint, isInitialConnection = false) {
+    connectToWebSocket(endpoint) {
       if (this.socket && this.socket.readyState === WebSocket.OPEN) {
         console.log('WebSocket 已連線，無需重複操作。');
         return;
@@ -53,16 +59,10 @@ export const useTasksStore = defineStore('tasks', {
 
       this.socket.onopen = () => {
         console.log(`WebSocket 連線成功: ${endpoint}`);
-        if (isInitialConnection) {
-          this.installationStatus.message = '已連接至啟動伺服器，正在等待安裝進度...';
-        } else {
-          this.socketConnected = true;
-          this.installationStatus.inProgress = false;
-          this.installationStatus.message = '系統準備就緒！';
-          // Now that we are connected to the main server, fetch tasks and statuses
-          this.fetchTasks();
-          this.fetchWorkerStatuses();
-        }
+        this.socketConnected = true;
+        // 連線成功後，立即獲取初始狀態
+        this.fetchTasks();
+        this.fetchWorkerStatuses();
       };
 
       this.socket.onmessage = (event) => {
@@ -77,33 +77,19 @@ export const useTasksStore = defineStore('tasks', {
       this.socket.onclose = () => {
         console.log(`WebSocket 連線已關閉: ${endpoint}`);
         this.socket = null;
-        if (isInitialConnection) {
-          // This means the mini_server has shut down. Time to connect to the main server.
-          console.log('臨時伺服器連線已關閉，嘗試連接至主伺服器...');
-          this.installationStatus.message = '正在連接至主應用程式...';
-          setTimeout(() => this.connectToWebSocket('/api/ws'), 1000); // 1-second delay
-        } else {
-          this.socketConnected = false;
-          // Could implement reconnection logic for the main server here if needed
-        }
+        this.socketConnected = false;
+        // 可選：在這裡實作主伺服器的重連邏輯
       };
 
       this.socket.onerror = (error) => {
         console.error(`WebSocket 發生錯誤: ${endpoint}`, error);
-        if (isInitialConnection) {
-          this.installationStatus.message = '無法連接至啟動伺服器，請檢查後端日誌。';
-        }
+        this.socketConnected = false;
       };
     },
 
     handleSocketMessage(message) {
       console.log('收到 WebSocket 訊息:', message);
       const { type, payload } = message;
-
-      if (type === 'INSTALL_PROGRESS') {
-        this.installationStatus.message = payload.message;
-        return;
-      }
 
       // --- All other message handling remains the same ---
 
@@ -320,6 +306,41 @@ export const useTasksStore = defineStore('tasks', {
           this.workerStatuses[workerName].status = 'FAILED';
           this.workerStatuses[workerName].last_error = '啟動請求失敗';
         }
+      }
+    },
+    async fetchLogs() {
+      try {
+        const response = await axios.get(`${API_BASE_URL}/logs`);
+        this.logs = response.data;
+        console.log(`已獲取 ${this.logs.length} 條日誌紀錄。`);
+      } catch (error) {
+        console.error('獲取系統日誌時發生錯誤:', error);
+        // 可選：使用 notification store 顯示錯誤
+      }
+    },
+    async fetchLocalModels() {
+      this.localModels.checking = true;
+      try {
+        const response = await axios.get(`${API_BASE_URL}/models/local`);
+        this.localModels.available = response.data.models || [];
+      } catch (error) {
+        console.error('獲取本地模型列表時發生錯誤:', error);
+        this.localModels.available = [];
+      } finally {
+        this.localModels.checking = false;
+      }
+    },
+    async downloadModel(modelName) {
+      try {
+        const response = await axios.post(`${API_BASE_URL}/models/download`, { model_size: modelName });
+        const result = response.data;
+        if (result.type === 'download') {
+          this.sendSocketMessage({ type: 'START_DOWNLOAD', payload: { task_id: result.task_id } });
+        }
+      } catch (error) {
+        console.error(`請求下載模型 ${modelName} 時發生錯誤:`, error);
+        // 可選：使用 notification store 顯示錯誤
+        throw error; // Re-throw to allow component to handle it
       }
     },
   }

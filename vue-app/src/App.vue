@@ -53,6 +53,14 @@
             {{ getWorkerStatusInfo('youtube').text }}
           </span>
         </button>
+        <button
+          class="tab-button"
+          :class="{ active: activeTab === 'logs' }"
+          @click="setActiveTab('logs')"
+          :disabled="installationStatus.inProgress"
+        >
+          📜 系統日誌
+        </button>
       </div>
     </div>
 
@@ -71,6 +79,11 @@
       <!-- YouTube 轉報告分頁 -->
       <div v-show="activeTab === 'youtube'">
         <YouTubeReporter />
+      </div>
+
+      <!-- 系統日誌分頁 -->
+      <div v-show="activeTab === 'logs'">
+        <LogViewer />
       </div>
 
       <!-- 任務列表 (所有分頁共用) -->
@@ -93,6 +106,7 @@ import Dashboard from './components/Dashboard.vue'
 import TaskUploader from './components/TaskUploader.vue'
 import Downloader from './components/Downloader.vue'
 import YouTubeReporter from './components/YouTubeReporter.vue'
+import LogViewer from './components/LogViewer.vue'
 import PendingTasks from './components/PendingTasks.vue'
 import CompletedTasks from './components/CompletedTasks.vue'
 import TranscriptOutput from './components/TranscriptOutput.vue'
