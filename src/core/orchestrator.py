@@ -58,7 +58,7 @@ def find_free_port() -> int:
         s.bind(("", 0))
         return s.getsockname()[1]
 
-def wait_for_service(port: int, timeout: int = 15) -> bool:
+def wait_for_service(port: int, timeout: int = 45) -> bool:
     """
     在指定的超時時間內，等待特定埠號上的網路服務啟動。
 
@@ -81,7 +81,7 @@ def wait_for_service(port: int, timeout: int = 15) -> bool:
     log.error(f"❌ 等待服務 127.0.0.1:{port} 超時 ({timeout}秒)。")
     return False
 
-def get_db_manager_port_from_file(port_file_path: Path, timeout: int = 10) -> int | None:
+def get_db_manager_port_from_file(port_file_path: Path, timeout: int = 45) -> int | None:
     """
     從檔案中讀取 DB Manager 的埠號，並在超時前等待檔案出現。
     這解決了硬編碼埠號導致的不匹配問題。
@@ -102,7 +102,7 @@ def get_db_manager_port_from_file(port_file_path: Path, timeout: int = 10) -> in
     log.error(f"❌ 等待埠號檔案 '{port_file_path}' 超時 ({timeout}秒)。")
     return None
 
-def wait_for_ready_file(ready_file_path: Path, timeout: int = 15) -> bool:
+def wait_for_ready_file(ready_file_path: Path, timeout: int = 45) -> bool:
     """
     等待由 db_manager 建立的「就緒」信號檔案。
     這確保在繼續之前，資料庫已完全初始化。
@@ -238,7 +238,9 @@ def main():
                 log.error(f"清理舊的埠號檔案時發生錯誤: {e}")
         # --- JULES' FIX END ---
 
-        db_manager_cmd = [sys.executable, "src/db/manager.py"]
+        # 診斷修復 (2025-08-20): 新增 -u 旗標 (unbuffered)，強制子程序的輸出
+        # 立刻刷新，避免因緩衝導致我們錯過關鍵的啟動日誌。
+        db_manager_cmd = [sys.executable, "-u", "src/db/manager.py"]
         # 診斷修復 (2025-08-20): 暫時移除 DEVNULL，以便在 Colab 環境中觀察 db_manager 的輸出
         db_manager_proc = subprocess.Popen(
             db_manager_cmd,
@@ -250,9 +252,13 @@ def main():
         processes.append(db_manager_proc)
         log.info(f"✅ 資料庫管理者子程序已建立，PID: {db_manager_proc.pid}")
 
-        # 為 db_manager 的輸出建立日誌流式讀取執行緒
+        # 為 db_manager 的輸出建立日誌流式讀取執行緒並立即啟動
         db_stdout_thread = threading.Thread(target=stream_reader, args=(db_manager_proc.stdout, 'db_manager'))
         db_stderr_thread = threading.Thread(target=stream_reader, args=(db_manager_proc.stderr, 'db_manager_stderr'))
+        db_stdout_thread.daemon = True
+        db_stderr_thread.daemon = True
+        db_stdout_thread.start()
+        db_stderr_thread.start()
         threads.extend([db_stdout_thread, db_stderr_thread])
 
         # 1a. 從檔案動態讀取 DB Manager 的埠號
@@ -334,17 +340,15 @@ def main():
         worker_proc = None
         # (Worker launch code remains commented out)
 
-        # 5. 啟動剩餘的日誌流式讀取執行緒
-        # 為 api_server 子程序的 stdout 和 stderr 建立執行緒
+        # 5. 啟動 api_server 的日誌流式讀取執行緒
         api_stdout_thread = threading.Thread(target=stream_reader, args=(api_proc.stdout, 'api_server'))
         api_stderr_thread = threading.Thread(target=stream_reader, args=(api_proc.stderr, 'api_server_stderr'))
+        # 立即啟動，確保不錯過任何日誌
+        api_stdout_thread.daemon = True
+        api_stderr_thread.daemon = True
+        api_stdout_thread.start()
+        api_stderr_thread.start()
         threads.extend([api_stdout_thread, api_stderr_thread])
-
-        # 啟動所有尚未啟動的執行緒
-        for t in threads:
-            if not t.is_alive():
-                t.daemon = True
-                t.start()
 
         # 6. 進入主監控與心跳迴圈
         log.info("--- [協調器進入監控模式] ---")

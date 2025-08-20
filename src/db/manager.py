@@ -35,8 +35,9 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 from db import database
 
 # --- 日誌設定 ---
-LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+# 診斷修復 (2025-08-20): 增加微秒級時間戳，以便更精確地追蹤效能瓶頸
+LOG_FORMAT = '%(asctime)s.%(msecs)03d - %(name)s - %(levelname)s - %(message)s'
+logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, datefmt='%Y-%m-%d %H:%M:%S')
 log = logging.getLogger('DBManagerServer')
 
 # --- 伺服器設定 ---
@@ -113,32 +114,41 @@ def run_server():
     """
     啟動資料庫管理者伺服器。
     """
+    log.info("[DIAGNOSTIC] `run_server` 函式開始執行。")
     try:
-        log.info("資料庫管理者伺服器啟動前，正在進行資料庫初始化...")
-        # JULES'S FIX: 清理上一次可能遺留的 ready 檔案
+        log.info("[DIAGNOSTIC] 步驟 1: 清理舊的 ready 檔案 (如果存在)...")
         if READY_FILE.exists():
             READY_FILE.unlink()
+            log.info("[DIAGNOSTIC] 舊的 ready 檔案已清理。")
+
+        log.info("[DIAGNOSTIC] 步驟 2: 初始化資料庫...")
         database.initialize_database()
-        log.info("✅ 資料庫初始化成功。")
-        # JULES'S FIX: 建立「就緒」檔案作為明確信號
+        log.info("[DIAGNOSTIC] ✅ 資料庫初始化成功。")
+
+        log.info("[DIAGNOSTIC] 步驟 3: 建立 ready 信號檔案...")
         READY_FILE.touch()
-        log.info(f"✅ 已建立就緒信號檔案: {READY_FILE}")
+        log.info(f"[DIAGNOSTIC] ✅ 已建立 ready 信號檔案: {READY_FILE}")
+
     except (sqlite3.Error, IOError) as e:
         log.critical(f"❌ 資料庫初始化或建立就緒檔案時失敗，伺服器無法啟動: {e}")
         sys.exit(1)
 
     socketserver.TCPServer.allow_reuse_address = True
+    log.info("[DIAGNOSTIC] 步驟 4: 準備啟動 TCP 伺服器...")
     try:
         with socketserver.TCPServer((HOST, 0), DBRequestHandler) as server:
             actual_port = server.server_address[1]
-            log.info(f"🚀 資料庫管理者伺服器已在 {HOST}:{actual_port} 上啟動...")
+            log.info(f"[DIAGNOSTIC] ✅ TCP 伺服器已成功綁定埠號: {actual_port}")
+
+            log.info("[DIAGNOSTIC] 步驟 5: 寫入 port 檔案...")
             try:
                 PORT_FILE.write_text(str(actual_port))
-                log.info(f"已將埠號寫入: {PORT_FILE}")
+                log.info(f"[DIAGNOSTIC] ✅ 已將埠號寫入: {PORT_FILE}")
             except IOError as e:
                 log.critical(f"❌ 無法寫入埠號檔案，客戶端將無法連線: {e}")
                 sys.exit(1)
 
+            log.info(f"[DIAGNOSTIC] 步驟 6: 進入 server.serve_forever() 主迴圈...")
             try:
                 server.serve_forever()
             finally:
@@ -154,4 +164,21 @@ def run_server():
         sys.exit(1)
 
 if __name__ == "__main__":
-    run_server()
+    import traceback
+    # 診斷修復 (2025-08-20): 為整個程序添加一個最外層的 try-except 區塊
+    # 這可以捕獲任何在 run_server 內部未被捕獲的致命錯誤，並將其記錄到檔案中，
+    # 以便我們能知道為什麼 db_manager 無法啟動。
+    try:
+        run_server()
+    except Exception as e:
+        # 將完整的錯誤堆疊追蹤寫入一個日誌檔案
+        error_log_path = Path(__file__).parent / "db_manager_error.log"
+        with open(error_log_path, "a", encoding="utf-8") as f:
+            f.write(f"--- DB Manager 致命錯誤 ---\n")
+            f.write(f"時間: {__import__('datetime').datetime.now().isoformat()}\n")
+            f.write(traceback.format_exc())
+            f.write("\n\n")
+        # 仍然將錯誤印出到標準錯誤流，以便上層程序可以感知
+        log.critical(f"一個未捕獲的致命錯誤導致 DB Manager 崩潰。詳細資訊已記錄至 {error_log_path}。")
+        # 以非零狀態碼退出，表示失敗
+        sys.exit(1)

@@ -197,7 +197,10 @@ def create_log_viewer_html(log_manager):
     """產生一個包含頂部和底部複製按鈕的可收合日誌檢視器 HTML。"""
     try:
         log_history = log_manager.get_full_history(limit=LOG_COPY_MAX_LINES)
-        escaped_log_content = html.escape("\n".join(log_history))
+        # 修復 (2025-08-20): 採用舊版的日誌處理邏輯，先逸出每一行再組合。
+        # 這可以避免一次性逸出整個文字區塊可能導致的換行符問題，確保複製功能正常。
+        escaped_lines = [html.escape(line) for line in log_history]
+        escaped_log_content = "\n".join(escaped_lines)
         num_logs = len(log_history)
         unique_log_id = f"log-area-{int(time.time() * 1000)}"
         onclick_js = f'''(async () => {{ try {{ const textToCopy = document.getElementById("{unique_log_id}").innerText; await navigator.clipboard.writeText(textToCopy); this.innerText="✅ 已複製!"; }} catch (err) {{ this.innerText="❌ 複製失敗"; }} finally {{ setTimeout(() => {{ this.innerText="📋 複製這 {num_logs} 條日誌"; }}, 2000); }} }})()'''.replace("\n", " ")
