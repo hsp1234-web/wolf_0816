@@ -2,6 +2,28 @@
 
 ### 🧹 重構與清理 (Refactoring & Cleanup)
 - **大規模清理專案**: 為了替換為 `uv` + `Supervisor` 新架構，進行了大規模的檔案清理。
+    <details>
+    <summary>點此展開被刪除的檔案與目錄完整列表</summary>
+
+    ```
+    - /run_ai_report_worker.py
+    - /run_model_management_worker.py
+    - /run_transcription_worker.py
+    - /run_youtube_worker.py
+    - /requirements-prod-server.txt
+    - /requirements-server.txt
+    - /requirements-worker.txt
+    - /requirements.txt
+    - /pyproject.toml
+    - /bun.lock
+    - /package.json
+    - /package-lock.json
+    - /file_list.txt
+    - /bun_install.sh
+    - /e2e_tests/   (整個目錄)
+    - /config/     (整個目錄)
+    ```
+    </details>
     - **刪除過時的啟動器與 Worker**: 移除了根目錄下的所有 `run_*.py` 獨立 worker 腳本。
     - **移除多餘的依賴檔案**: 刪除了所有根目錄下的 `requirements*.txt`, `pyproject.toml`, `package.json` 等，因為依賴將由 `uv` 在腳本內部管理。
     - **精簡測試與設定**: 刪除了整個 `e2e_tests/` 和 `config/` 目錄，以降低重構期間的複雜性。
