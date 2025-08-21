@@ -63,95 +63,88 @@ def install_dependencies():
         log.error(f"❌ 依賴安裝過程中發生未預期的錯誤: {e}", exc_info=True)
         return False
 
-def launch_orchestrator():
-    """啟動核心協調器並捕捉其輸出的 URL。"""
-    log.info("--- [步驟 2/3] 正在啟動核心協調器 ---")
+def launch_and_monitor_orchestrator():
+    """
+    啟動並持續監控核心協調器，處理其日誌輸出並在找到URL時報告。
+    這個函數將會持續運行，直到協調器終止或被中斷。
+    """
+    log.info("--- [步驟 2/3] 正在啟動並監控核心協調器 ---")
     orchestrator_script = ROOT_DIR / "src" / "core" / "orchestrator.py"
     if not orchestrator_script.exists():
         log.error(f"❌ 找不到協調器腳本: {orchestrator_script}")
-        return None
+        return False
 
-    # 設定子程序的環境變數，確保它能找到 src 目錄下的模組
     env = os.environ.copy()
     src_path = str(ROOT_DIR / "src")
     env["PYTHONPATH"] = src_path + os.pathsep + env.get("PYTHONPATH", "")
-    env["API_MODE"] = "mock" # 為了與測試環境一致，預設使用 mock 模式
+    env["API_MODE"] = "mock"
 
     command = [sys.executable, str(orchestrator_script)]
     log.info(f"執行協調器命令: {' '.join(command)}")
 
-    # 我們需要非阻塞地讀取 stdout，以解析 URL
     proc = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, # 將 stderr 也導出以利除錯
+        stderr=subprocess.STDOUT, # 將 stderr 合併到 stdout
         text=True,
         encoding='utf-8',
         env=env
     )
 
-    # 從 orchestrator 的 stdout 中解析出 PROXY_URL
     url_pattern = re.compile(r"PROXY_URL:\s*(https?://[^\s]+)")
-    server_url = None
+    url_found = False
+    # JULES'S FIX: 核心修復邏輯
+    # 持續讀取 orchestrator 的輸出，永不停止。
+    # 這可以防止 stdout 管道被填滿，從而避免 orchestrator 子程序被阻塞或崩潰。
+    try:
+        for line in iter(proc.stdout.readline, ''):
+            clean_line = line.strip()
+            log.info(f"[Orchestrator]: {clean_line}")
 
-    # 設定一個合理的超時，例如 60 秒
-    timeout = 60
-    start_time = time.time()
+            if not url_found:
+                match = url_pattern.search(clean_line)
+                if match:
+                    server_url = match.group(1)
+                    log.info(f"✅ 從協調器成功解析到 URL: {server_url}")
+                    # 這是我們與外部世界的「合約」
+                    log.info("--- [步驟 3/3] 輸出最終 URL ---")
+                    print(f"FINAL_URL: {server_url}", flush=True)
+                    url_found = True # 標記已找到，避免重複打印
 
-    for line in iter(proc.stdout.readline, ''):
-        log.info(f"[Orchestrator]: {line.strip()}")
-        match = url_pattern.search(line)
-        if match:
-            server_url = match.group(1)
-            log.info(f"✅ 從協調器成功解析到 URL: {server_url}")
-            # 注意：我們在這裡不中斷，讓協調器繼續運行
-            # 主函式將負責回傳 URL 並保持此程序運行
-            return server_url, proc
+        # 等待子程序自然結束
+        proc.wait()
 
-        if time.time() - start_time > timeout:
-            log.error(f"❌ 等待協調器輸出 URL 超時 ({timeout} 秒)。")
-            # 關閉超時的進程
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-            return None, None
+    except KeyboardInterrupt:
+        log.info("收到手動中斷信號，正在關閉協調器...")
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        log.info("✅ 協調器已關閉。")
+    except Exception as e:
+        log.error(f"監控協調器時發生未預期錯誤: {e}", exc_info=True)
+        if proc.poll() is None:
+            proc.kill()
+        return False
 
-    # 如果迴圈結束（程序終止）但未找到 URL
-    log.error("❌ 協調器進程已結束，但未能從其輸出中找到 URL。")
-    return None, None
+    if proc.returncode is not None and proc.returncode != 0:
+        log.error(f"協調器意外終止，返回碼: {proc.returncode}")
+        return False
+
+    log.info("協調器已正常關閉。")
+    return True
 
 def main():
     """主執行函數"""
     # 步驟 1: 安裝依賴
     if not install_dependencies():
-        sys.exit(1) # 如果安裝失敗，則退出
-
-    # 步驟 2: 啟動協調器
-    server_url, orchestrator_proc = launch_orchestrator()
-    if not server_url or not orchestrator_proc:
-        log.critical("❌ 無法啟動主伺服器。")
         sys.exit(1)
 
-    # 步驟 3: 輸出最終 URL 給外部程序 (例如 Colabpro.py 或測試框架)
-    # 這是我們與外部世界的「合約」
-    log.info("--- [步驟 3/3] 輸出最終 URL ---")
-    print(f"FINAL_URL: {server_url}", flush=True)
-
-    # 步驟 4: 等待協調器進程結束
-    # 在真實場景中，Colabpro.py 會在接收到 URL 後繼續監控
-    # 在這個腳本的獨立執行模式下，我們只需等待它被手動中斷
-    try:
-        orchestrator_proc.wait()
-    except KeyboardInterrupt:
-        log.info("收到手動中斷信號，正在關閉協調器...")
-        orchestrator_proc.terminate()
-        try:
-            orchestrator_proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            orchestrator_proc.kill()
-        log.info("✅ 協調器已關閉。")
+    # 步驟 2 & 3 & 4 都被整合到這個函數中
+    if not launch_and_monitor_orchestrator():
+        log.critical("❌ 主伺服器啟動或運行失敗。")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

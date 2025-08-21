@@ -317,24 +317,40 @@ def main():
             api_port = find_free_port()
             log.info(f"找到一個隨機的空閒埠號: {api_port}")
 
-        # 根本原因修復 (2025-08-20): 將相對路徑改為基於 ROOT_DIR 的絕對路徑。
-        api_server_cmd = [sys.executable, str(ROOT_DIR / "src" / "api" / "api_server.py"), "--port", str(api_port)]
-        if args.mock:
-            api_server_cmd.append("--mock")
+        # JULES'S FIX (2025-08-20): 改用更穩健的 uvicorn 命令列方式啟動 API 伺服器。
+        # 這種方式避免了直接執行 python 腳本可能帶來的路徑和參數解析問題，
+        # 是執行 FastAPI 應用程式的標準做法。
+        api_server_cmd = [
+            sys.executable,
+            "-m", "uvicorn",
+            "api.api_server:app",  # 指向 FastAPI 應用實例
+            "--host", "0.0.0.0",
+            "--port", str(api_port)
+        ]
 
-        # JULES'S FIX (2025-08-17): 修正 API Server 的啟動環境
-        # 錯誤根源：Orchestrator 未將自身的 PYTHONPATH 傳遞給 api_server 子程序，
-        # 導致 api_server 因找不到 'fastapi' 等模組而啟動失敗。
-        # 解決方案：為子程序建立一個包含正確 PYTHONPATH 的環境變數。
+        # 為子程序建立一個包含正確 PYTHONPATH 的環境變數。
         api_env = os.environ.copy()
-        # 確保 src 目錄在 PYTHONPATH 中
+        # 確保 src 目錄在 PYTHONPATH 中，這樣 uvicorn 才能找到 'api.api_server' 模組
         api_env["PYTHONPATH"] = str(ROOT_DIR / "src") + os.pathsep + api_env.get("PYTHONPATH", "")
-        # 將模擬模式也透過環境變數傳遞，與 api_server 的讀取方式保持一致
+        # 將模擬模式也透過環境變數傳遞
         if args.mock:
             api_env["API_MODE"] = "mock"
+        else:
+            # 確保即使在真實模式下，環境變數也被設定，以覆蓋任何潛在的舊設定
+            api_env["API_MODE"] = "real"
+
 
         log.info(f"🔧 正在啟動 API 伺服器: {' '.join(api_server_cmd)}")
-        api_proc = subprocess.Popen(api_server_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', env=api_env)
+        # JULES'S FIX (2025-08-20): 將 stderr 合併到 stdout，以便在 main_runner 中統一捕捉所有日誌
+        api_proc = subprocess.Popen(
+            api_server_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, # 合併 stderr
+            text=True,
+            encoding='utf-8',
+            env=api_env,
+            cwd=str(ROOT_DIR / "src") # 在 src 目錄下執行，以確保模組路徑正確
+        )
         processes.append(api_proc)
         log.info(f"✅ API 伺服器子程序已建立，PID: {api_proc.pid}，埠號: {api_port}")
 
