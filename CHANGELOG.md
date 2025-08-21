@@ -1,3 +1,19 @@
+## 2025-08-21T11:55:00+08:00
+
+### 🧪 測試基礎設施 (Testing Infrastructure)
+- **新增 Vue 元件測試框架**: 為了驗證前端工作流程，引入了 Playwright 的元件測試功能。
+    - 在 `vue-app/` 中新增了 `playwright.config.js`，設定了元件測試的執行環境，使用 Vite 作為打包工具。
+    - 在 `vue-app/package.json` 中新增了 `@playwright/experimental-ct-vue` 依賴。
+    - 為了解決依賴衝突，將 `vite` 降級至 `^5.0.0`，並將 `@vitejs/plugin-vue` 和 `vite-plugin-vue-devtools` 降級至相容版本。
+- **建立工作流程驗證測試**:
+    - 在 `vue-app/tests/component/` 目錄下建立了 `workflow.spec.js`。
+    - 此測試透過掛載 `PendingTasks.vue` 和 `CompletedTasks.vue` 元件，並提供一個假的 Pinia store，來模擬並驗證一個任務從「處理中」到「已完成」的完整前端狀態轉移，無需依賴後端。
+
+### 🐛 修復與除錯 (Bug Fixes & Debugging)
+- **解決測試環境問題**: 投入大量時間解決了在沙箱環境中執行 Playwright 元件測試時遇到的一系列底層問題。
+    - **發現並解決了 CWD (當前工作目錄) 不一致問題**：最終確認 `npx playwright` 指令的執行目錄與預期不符，導致設定檔 (`playwright.config.js`) 從未被載入。透過改用 `cd vue-app && npx playwright test` 的方式，確保了指令在正確的目錄下執行。
+    - **隔離測試類型**: 為了避免元件測試執行器錯誤地解析 E2E 測試檔案，建立了 `tests/component` 目錄來存放所有元件測試，並在 `playwright.config.js` 中明確指定該目錄，實現了不同測試類型的隔離。
+
 ## 2025-08-21T10:50:00+08:00
 
 ### 🧹 重構與清理 (Refactoring & Cleanup)
