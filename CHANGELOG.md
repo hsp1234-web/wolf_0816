@@ -1,3 +1,18 @@
+## 2025-08-21T08:44:24+08:00
+
+### 🐛 修復 (Bug Fixes)
+- **修正 Worker 導入錯誤**: 解決了 `main_worker.py` 因嘗試導入一個不存在的日誌設定函式 (`setup_logging_for_module`) 而導致的 `ImportError`。此錯誤會造成 worker 崩潰，進而觸發協調器關閉整個應用程式。現已移除該錯誤的導入程式碼。
+
+## 2025-08-21T08:40:46+08:00
+
+### 🐛 修復 (Bug Fixes)
+- **修正伺服器啟動穩定性**: 解決了導致後端服務在啟動後立即崩潰、網址無法使用的根本性問題。
+    - **修正 Runner 邏輯**: 重構了 `runner/main_runner.py`，確保它在獲取到 URL 後會繼續監聽 `orchestrator` 的輸出，而不是提前退出。這解決了因輸出管道阻塞而導致子程序崩潰的問題。
+    - **穩健化 API 伺服器啟動**: 修改了 `src/core/orchestrator.py`，改為使用標準的 `uvicorn` 命令列方式來啟動 API 伺服器，解決了直接執行腳本時可能發生的啟動失敗和連線被拒絕的問題。
+
+### 🧪 測試基礎設施 (Testing Infrastructure)
+- **補全測試腳本**: 為 `test.py` 腳本提供了一個缺失的 `jules-scratch/verification/verify_simple.py` 驗證檔案，並修正了其中的預期標題，使得端對端測試可以成功執行並驗證系統狀態。
+
 ## 2025-08-21T02:06:16+08:00
 
 ### ♻️ 重構 (Refactoring)

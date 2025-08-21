@@ -23,15 +23,19 @@ IS_MOCK_MODE = os.environ.get("API_MODE", "real") == "mock"
 
 # --- 延遲匯入 ---
 try:
-    from db.log_handler import setup_logging_for_module
+    # JULES'S FIX (2025-08-21): 修正導入錯誤
+    # 移除了對不存在的 `setup_logging_for_module` 的導入。
+    # 日誌處理現在由父程序 (orchestrator) 統一設定，子程序只需獲取 logger 即可。
     from db.client import get_client
 except ImportError as e:
+    # 保留這個錯誤處理，以防未來出現其他匯入問題
     print(f"嚴重錯誤：無法匯入必要的模組。請確認 'src' 目錄路徑是否正確且環境已設定。錯誤: {e}", file=sys.stderr)
     sys.exit(1)
 
 # --- 日誌與資料庫用戶端設定 ---
-setup_logging_for_module("main_worker")
-log = logging.getLogger(__name__)
+# JULES'S FIX (2025-08-21): 移除對已廢棄函式的呼叫
+# setup_logging_for_module("main_worker")
+log = logging.getLogger("main_worker") # 為 logger 指定一個清晰的名稱
 db_client = get_client()
 
 def notify_api_server(task_id: str, status: str, result: dict):
