@@ -325,7 +325,13 @@ def main():
         log.info(f"🔧 正在啟動 API 伺服器: {' '.join(api_server_cmd)}")
         api_proc = subprocess.Popen(api_server_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', env=api_env)
         processes.append(api_proc)
-        log.info(f"✅ API 伺服器已啟動，PID: {api_proc.pid}，埠號: {api_port}")
+        log.info(f"✅ API 伺服器子程序已建立，PID: {api_proc.pid}，埠號: {api_port}")
+
+        # --- FIX: 等待 API 伺服器完全就緒 ---
+        # 在報告 URL 之前，先確認服務已在監聽埠號，以避免 E2E 測試中的競爭條件。
+        if not wait_for_service(api_port):
+            raise RuntimeError(f"API 伺服器在埠號 {api_port} 上未能及時就緒，啟動中止。")
+
         # --- JULES' FIX for BATTLE Environment ---
         # 根據 BATTLE 測試環境的新要求，修改握手信號的輸出格式，
         # 從 "API_PORT:..." 改為 "PROXY_URL:..."。
