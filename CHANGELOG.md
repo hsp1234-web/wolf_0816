@@ -1,3 +1,10 @@
+## 2025-08-21T22:56:35+08:00
+
+### 🧪 測試基礎設施 (Testing Infrastructure)
+- **新增啟動驗證腳本**: 新增了 `e2e_tests/verify_startup.py`，這是一個獨立的 Playwright 腳本，用於驗證整個應用程式是否能成功啟動並被前端存取。
+- **確立核心啟動流程**: 透過分析 `test.py` 和 `runner/main_runner.py`，確認了專案當前正確的、模組化的啟動方法。
+- **修復測試環境**: 成功安裝了 Playwright 的系統級依賴 (`playwright install-deps`)，解決了瀏覽器無法在沙箱環境中啟動的問題。
+
 ## 2025-08-21T01:33:00+08:00
 
 ### 🧪 測試基礎設施 (Testing Infrastructure)
