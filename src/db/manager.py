@@ -79,8 +79,19 @@ class DBRequestHandler(socketserver.BaseRequestHandler):
                 data = self.request.recv(data_len)
                 if not data: break
 
-                request = json.loads(data.decode('utf-8'))
-                log.info(f"收到請求: {request}")
+                try:
+                    request = json.loads(data.decode('utf-8'))
+                    log.info(f"收到請求: {request}")
+                except json.JSONDecodeError:
+                    log.error(f"無法解析來自 {self.client_address} 的 JSON 請求。資料: {data!r}")
+                    response = {
+                        "status": "error",
+                        "message": "無效的 JSON 格式"
+                    }
+                    response_bytes = json.dumps(response).encode('utf-8')
+                    response_header = len(response_bytes).to_bytes(4, 'big')
+                    self.request.sendall(response_header + response_bytes)
+                    continue # 繼續處理下一個請求，而不是關閉連線
 
                 action = request.get("action")
                 params = request.get("params", {})
