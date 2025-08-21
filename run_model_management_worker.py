@@ -100,10 +100,11 @@ def process_download_task(task):
 
 def run_worker():
     """工作者主迴圈。"""
-    log.info("模型管理工作者已啟動，開始輪詢 'download' 類型的任務...")
+    log.info("模型管理工作者已啟動，開始輪詢 'download_model' 類型的任務...")
     while True:
         try:
-            task = db_client.fetch_and_lock_task_by_type('download')
+            # JULES'S FIX: 修正了任務類型，使其與 api_server.py 中建立的 'download_model' 任務匹配。
+            task = db_client.fetch_and_lock_task_by_type('download_model')
             if task:
                 process_download_task(task)
             else:

@@ -45,8 +45,36 @@ def run_workflow_test(page: Page, target_url: str):
             print("模型尚未就緒，正在點擊下載按鈕...")
             model_button.click()
 
-        expect(model_button).to_have_text("✅ 模型已就緒", timeout=20000)
-        print("✅ 模型已成功就緒！")
+        # JULES'S REFACTOR: 增加更穩健的後端狀態驗證，而不是單純等待 UI。
+        # 我們現在直接輪詢資料庫，確認模型下載任務是否真的完成。
+        print("正在等待後端完成模型下載任務...")
+        model_download_task_completed = False
+        start_wait_time = time.time()
+        # 增加一個較長的超時（例如 90 秒），因為模型下載可能很慢
+        while time.time() - start_wait_time < 90:
+            # 尋找最新的 'download_model' 任務
+            all_tasks = db_client.get_all_tasks()
+            download_tasks = [t for t in all_tasks if t.get('type') == 'download_model']
+
+            if download_tasks:
+                # 假設最新的任務是我們正在等待的
+                latest_task = max(download_tasks, key=lambda t: t.get('created_at', ''))
+                print(f"  - 找到 download_model 任務 (ID: {latest_task['task_id']}), 狀態: {latest_task['status']}")
+                if latest_task['status'] == 'completed':
+                    model_download_task_completed = True
+                    print(f"✅ 後端任務在 {time.time() - start_wait_time:.2f} 秒後確認完成。")
+                    break
+            else:
+                print("  - 尚未在資料庫中找到 'download_model' 任務，繼續等待...")
+
+            time.sleep(2) # 每 2 秒檢查一次
+
+        assert model_download_task_completed, "❌ 在 90 秒內，模型下載任務未在資料庫中標記為完成。"
+
+        # 在確認後端狀態後，我們現在可以驗證前端 UI 是否正確反映了這個狀態
+        # 我們給予一個合理的短超時，因為 WebSocket 的更新應該很快
+        expect(model_button).to_have_text("✅ 模型已就緒", timeout=10000)
+        print("✅ UI 已成功更新，模型已就緒！")
 
         # --- 步驟 1.2: 模擬檔案上傳 ---
         print("--- 步驟 1.2: 模擬檔案上傳 ---")
