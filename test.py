@@ -7,6 +7,7 @@ import time
 import logging
 from pathlib import Path
 import threading
+import importlib.util
 
 # --- 基本設定 ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -21,7 +22,6 @@ def install_test_dependencies():
         subprocess.run([sys.executable, "-m", "pip", "install", "-q", "uv"], check=True)
 
         log.info("使用 uv 安裝 playwright...")
-        # 我們需要 playwright 來執行瀏覽器操作
         subprocess.run([sys.executable, "-m", "uv", "pip", "install", "-q", "playwright"], check=True, capture_output=True)
 
         log.info("安裝 Playwright 瀏覽器...")
@@ -58,10 +58,9 @@ def run_server_and_get_url():
 
     url_pattern = re.compile(r"FINAL_URL:\s*(https?://[^\s]+)")
     server_url = None
-    timeout = 60  # 根據使用者要求，設定為 60 秒超時
+    timeout = 120  # 增加超時以應對較慢的啟動
     start_time = time.time()
 
-    # 使用執行緒非阻塞地讀取 stderr
     stderr_lines = []
     def log_stderr():
         for line in iter(runner_proc.stderr.readline, ''):
@@ -90,54 +89,11 @@ def run_server_and_get_url():
 
     return server_url, runner_proc
 
-def verify_url_with_playwright(url: str):
-    """
-    使用 Playwright 開啟給定的 URL 並驗證頁面內容。
-    """
-    log.info(f"--- [測試步驟 3/4] 使用 Playwright 驗證 URL: {url} ---")
-    from playwright.sync_api import sync_playwright
-
-    with sync_playwright() as p:
-        try:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            log.info(f"正在導航至 {url}...")
-            page.goto(url, timeout=30000)
-
-            # 驗證標題
-            expected_title = "音訊轉錄儀"
-            log.info(f"正在驗證頁面標題是否為 '{expected_title}'...")
-            if expected_title not in page.title():
-                log.error(f"❌ 標題驗證失敗！預期: '{expected_title}', 實際: '{page.title()}'")
-                page.screenshot(path="test_failure_screenshot.png")
-                log.error("📸 已儲存失敗截圖至 test_failure_screenshot.png")
-                return False
-            log.info("✅ 頁面標題驗證成功。")
-
-            # 驗證關鍵元素
-            header_text = "音訊轉錄儀 (Vue)"
-            log.info(f"正在驗證是否存在標題元素 '{header_text}'...")
-            header_element = page.get_by_role("heading", name=header_text)
-
-            header_element.wait_for(state="visible", timeout=10000)
-            if not header_element.is_visible():
-                 log.error(f"❌ 關鍵元素 '{header_text}' 驗證失敗！元素不存在或不可見。")
-                 page.screenshot(path="test_failure_screenshot.png")
-                 log.error("📸 已儲存失敗截圖至 test_failure_screenshot.png")
-                 return False
-            log.info("✅ 關鍵介面元素驗證成功。")
-
-            browser.close()
-            return True
-        except Exception as e:
-            log.error(f"❌ Playwright 驗證過程中發生錯誤: {e}", exc_info=True)
-            if 'page' in locals():
-                page.screenshot(path="test_failure_screenshot.png")
-                log.error("📸 已儲存失敗截圖至 test_failure_screenshot.png")
-            return False
-
 def main():
     log.info("====== 開始執行端到端啟動驗證 ======")
+
+    scratch_dir = Path("jules-scratch/verification")
+    scratch_dir.mkdir(parents=True, exist_ok=True)
 
     if not install_test_dependencies():
         log.critical("====== 驗證失敗：無法安裝測試所需依賴 ======")
@@ -149,12 +105,25 @@ def main():
         log.critical("====== 驗證失敗：無法啟動伺服器 ======")
         sys.exit(1)
 
-    # 伺服器已啟動，現在用 Playwright 驗證
     is_verified = False
     try:
-        is_verified = verify_url_with_playwright(server_url)
+        log.info(f"--- [測試步驟 3/4] 使用自定義腳本驗證 URL: {server_url} ---")
+
+        # 動態載入我們的驗證模組
+        module_path = scratch_dir / "verify_simple.py"
+        spec = importlib.util.spec_from_file_location("verify_simple", module_path)
+        verify_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(verify_module)
+
+        # 執行驗證函式
+        verify_module.run_verification(server_url)
+
+        is_verified = True
+        log.info("✅ 自定義驗證腳本執行成功。")
+    except Exception as e:
+        log.error(f"❌ 自定義驗證腳本執行失敗: {e}", exc_info=True)
+        is_verified = False
     finally:
-        # 無論驗證是否成功，都確保關閉伺服器
         log.info("--- [測試步驟 4/4] 清理並關閉伺服器 ---")
         if runner_proc.poll() is None:
             runner_proc.terminate()

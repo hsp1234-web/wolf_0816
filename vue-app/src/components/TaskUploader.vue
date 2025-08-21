@@ -33,18 +33,7 @@
           <input type="number" id="beam-size-input" v-model.number="beamSize" min="1" max="10" style="width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #ccc; box-sizing: border-box;">
           <small style="font-size: 0.8em; color: #666;">建議值為 5。較大的值可能更準確但較慢。</small>
         </div>
-        <!-- JULES'S FIX: 模型下載進度條邏輯，現在是自動觸發，無需手動確認 -->
-        <div v-if="modelDownloadStatus.status !== 'idle' && modelDownloadStatus.status !== 'completed'" class="progress-container" style="margin-top: 10px;">
-          <div
-            class="progress-bar"
-            :style="{ width: modelDownloadStatus.progress + '%', backgroundColor: modelDownloadStatus.status === 'failed' ? '#dc3545' : '' }"
-          ></div>
-          <span class="progress-text">{{ modelDownloadStatus.message }}</span>
-        </div>
-        <div v-else-if="modelDownloadStatus.status === 'completed'" class="progress-container" style="margin-top: 10px;">
-            <div class="progress-bar" style="width: 100%; background-color: var(--success-color);"></div>
-            <span class="progress-text">{{ modelDownloadStatus.message }}</span>
-        </div>
+        <!-- JULES'S REFACTOR: 模型下載進度條邏輯已移至 App.vue 的全域 operationStatus 覆蓋層 -->
       </div>
       <div class="card flex-col">
         <h2>📤 步驟 2: 上傳檔案</h2>

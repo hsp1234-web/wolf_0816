@@ -1,9 +1,14 @@
 <template>
   <div id="app" class="container">
-    <!-- 安裝狀態覆蓋層 -->
-    <div v-if="installationStatus.inProgress" class="installation-overlay">
-      <div class="spinner"></div>
-      <p>{{ installationStatus.message }}</p>
+    <!-- 全域操作狀態覆蓋層 -->
+    <div v-if="operationStatus.inProgress" class="installation-overlay">
+      <div class="overlay-content">
+        <div class="spinner"></div>
+        <p>{{ operationStatus.message }}</p>
+        <div v-if="operationStatus.progress > 0" class="progress-bar-container">
+          <div class="progress-bar" :style="{ width: operationStatus.progress + '%' }"></div>
+        </div>
+      </div>
     </div>
 
     <!-- 全域通知組件 -->
@@ -26,13 +31,13 @@
     <Dashboard />
 
     <!-- 功能分頁導覽 -->
-    <div class="card" :class="{ 'disabled-content': installationStatus.inProgress }">
+    <div class="card" :class="{ 'disabled-content': operationStatus.inProgress }">
       <div class="tab-container">
         <button
           class="tab-button"
           :class="{ active: activeTab === 'transcribe' }"
           @click="setActiveTab('transcribe')"
-          :disabled="installationStatus.inProgress"
+          :disabled="operationStatus.inProgress"
         >
           📁 本機檔案轉錄
           <span :class="getWorkerStatusInfo('transcription').class" class="status-indicator">
@@ -43,7 +48,7 @@
           class="tab-button"
           :class="{ active: activeTab === 'downloader' }"
           @click="setActiveTab('downloader')"
-          :disabled="installationStatus.inProgress"
+          :disabled="operationStatus.inProgress"
         >
           📥 媒體下載器
           <span :class="getWorkerStatusInfo('youtube').class" class="status-indicator">
@@ -54,7 +59,7 @@
           class="tab-button"
           :class="{ active: activeTab === 'youtube' }"
           @click="setActiveTab('youtube')"
-          :disabled="installationStatus.inProgress"
+          :disabled="operationStatus.inProgress"
         >
           ▶️ YouTube 轉報告
           <span :class="getWorkerStatusInfo('youtube').class" class="status-indicator">
@@ -65,7 +70,7 @@
           class="tab-button"
           :class="{ active: activeTab === 'logs' }"
           @click="setActiveTab('logs')"
-          :disabled="installationStatus.inProgress"
+          :disabled="operationStatus.inProgress"
         >
           📜 系統日誌
         </button>
@@ -73,7 +78,7 @@
     </div>
 
     <!-- 分頁內容 -->
-    <main :class="{ 'disabled-content': installationStatus.inProgress }">
+    <main :class="{ 'disabled-content': operationStatus.inProgress }">
       <!-- 本機檔案轉錄分頁 -->
       <div v-show="activeTab === 'transcribe'">
         <TaskUploader />
@@ -126,14 +131,14 @@ const tasksStore = useTasksStore()
 // --- 狀態管理 ---
 const activeTab = ref('transcribe')
 const workerStatuses = computed(() => tasksStore.workerStatuses)
-const installationStatus = computed(() => tasksStore.installationStatus)
+const operationStatus = computed(() => tasksStore.operationStatus)
 const initialSetup = computed(() => tasksStore.initialSetup)
 
 // --- 方法 ---
 
 // 根據工作者狀態回傳顯示資訊
 const getWorkerStatusInfo = (workerName) => {
-  if (installationStatus.value.inProgress) {
+  if (operationStatus.value.inProgress) {
       return { text: '準備中', class: 'status-yellow' };
   }
   const status = workerStatuses.value[workerName]?.status || 'NOT_STARTED';
@@ -151,7 +156,7 @@ const getWorkerStatusInfo = (workerName) => {
 
 // 設定當前頁籤，並按需啟動工作者
 const setActiveTab = (tabName) => {
-  if (installationStatus.value.inProgress) return;
+  if (operationStatus.value.inProgress) return;
   activeTab.value = tabName
   logAction('click-tab', tabName)
 
@@ -181,6 +186,27 @@ onMounted(() => {
 <style scoped>
 /* App.vue 的特定樣式可以放在這裡 */
 /* 全域樣式已在 main.css 中定義 */
+
+.overlay-content {
+  text-align: center;
+}
+
+.progress-bar-container {
+  width: 250px;
+  height: 8px;
+  background-color: rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  margin-top: 16px;
+  overflow: hidden;
+  display: inline-block;
+}
+
+.progress-bar {
+  width: 0%;
+  height: 100%;
+  background-color: #4CAF50;
+  transition: width 0.2s ease-in-out;
+}
 
 .status-indicator {
   display: inline-block;
