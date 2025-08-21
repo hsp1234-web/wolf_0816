@@ -1,3 +1,21 @@
+## 2025-08-21T10:50:00+08:00
+
+### 🧹 重構與清理 (Refactoring & Cleanup)
+- **大規模清理專案**: 為了替換為 `uv` + `Supervisor` 新架構，進行了大規模的檔案清理。
+    - **刪除過時的啟動器與 Worker**: 移除了根目錄下的所有 `run_*.py` 獨立 worker 腳本。
+    - **移除多餘的依賴檔案**: 刪除了所有根目錄下的 `requirements*.txt`, `pyproject.toml`, `package.json` 等，因為依賴將由 `uv` 在腳本內部管理。
+    - **精簡測試與設定**: 刪除了整個 `e2e_tests/` 和 `config/` 目錄，以降低重構期間的複雜性。
+- **新增架構 POC 報告**:
+    - 在 `DOC/` 目錄下新增了 `ARCHITECTURE_POC_REPORT.md`。
+    - 這份報告詳細記錄了 `uv` + `Supervisor` 架構的可行性驗證過程，包括實驗中遇到的問題與解決方案，為未來的開發提供重要參考。
+
+## 2025-08-21T09:52:00+08:00
+
+### 🏛️ 架構 (Architecture)
+- **研究並驗證新架構**: 根據使用者的研究日誌，對 `uv` + `Supervisor` 的輕量級微服務架構進行了深入研究與概念驗證 (POC)。
+- **建立 POC**: 在 `poc_supervisor_uv/` 目錄中建立了一個包含兩個獨立 worker、`supervisord.conf` 和啟動腳本的微型環境。
+- **成功驗證**: 實驗的即時日誌證明，`Supervisor` 能成功啟動並管理使用 `uv` 進行依賴隔離的 Python 腳本，驗證了此核心架構的可行性。所有 POC 相關檔案將在此提交後被刪除，為後續重構做準備。
+
 ## 2025-08-21T22:56:35+08:00
 
 ### 🧪 測試基礎設施 (Testing Infrastructure)

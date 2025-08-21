@@ -1,8 +1,0 @@
-# Worker & Tooling Dependencies
-torch
-faster-whisper
-opencc-python-reimplemented
-yt-dlp
-google-generativeai
-pydub
-WeasyPrint

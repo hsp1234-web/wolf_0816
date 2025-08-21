@@ -1,3 +1,0 @@
-# Include core and heavy dependencies
--r requirements-server.txt
--r requirements-worker.txt
