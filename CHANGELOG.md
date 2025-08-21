@@ -1,3 +1,14 @@
+## 2025-08-21T01:33:00+08:00
+
+### 🧪 測試基礎設施 (Testing Infrastructure)
+- **新增儀表板功能 E2E 測試**: 建立了一個新的 Playwright 測試檔案 `e2e_tests/test_dashboard_functionality.py`。此測試透過模擬 API 回應和 WebSocket 訊息，完整驗證了儀表板在接收到後端事件時，其狀態（如：系統負載、工作者狀態）能夠正確且即時地更新。這確保了使用者回報的儀表板無反應問題可以被穩定地監控與驗證。
+
+### 🐛 修復 (Bug Fixes)
+- **增強 E2E 測試的穩定性**:
+    - **修正競爭條件**: 移除了新測試中多個因後端回應過快而導致不穩定的初始狀態斷言。測試現在專注於驗證核心的更新邏輯，而非短暫的過渡狀態。
+    - **修正既有測試的崩潰問題**: 修復了 `e2e_tests/test_end_to_end_workflow.py` 中一個因無法處理非預期 WebSocket 訊息格式而導致的 `AttributeError` 崩潰。
+    - **修正測試執行路徑**: 發現並修正了說明文件中關於測試啟動指令 `runner/localtest.py` 的路徑錯誤，正確路徑應為 `e2e_tests/localtest.py`。
+
 ## 2025-08-21T09:04:24+08:00
 
 ### 🐛 修復 (Bug Fixes)

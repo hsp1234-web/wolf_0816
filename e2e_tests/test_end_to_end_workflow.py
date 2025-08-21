@@ -98,7 +98,8 @@ class WebSocketClient:
         while time.time() - start_time < timeout:
             for msg in self.received_messages:
                 payload = msg.get("payload", {})
-                if payload.get("task_id") == task_id and payload.get("status") == status:
+                # JULES'S FIX (2025-08-20): 增加對 payload 類型的檢查，以避免非字典類型的 payload 導致錯誤
+                if isinstance(payload, dict) and payload.get("task_id") == task_id and payload.get("status") == status:
                     return msg
             time.sleep(0.2)
         return None # 超時
