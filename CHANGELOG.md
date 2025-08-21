@@ -1,3 +1,12 @@
+## 2025-08-21T13:02:00+08:00
+
+### ♻️ 重構與遷移 (Refactoring & Migration)
+- **將元件測試框架從 Playwright 遷移至 Vitest**: 由於在沙箱環境中遭遇了無法解決的 Playwright 元件測試編譯問題，故決定更換測試框架。
+    - **移除 Playwright**: 從 `vue-app/package.json` 中完全移除了 `@playwright/experimental-ct-vue` 和 `@playwright/test` 依賴，並刪除了所有相關的設定檔 (`playwright.config.js`) 和測試檔案。
+    - **引入 Vitest**: 新增了 `vitest`、`@vue/test-utils` 和 `jsdom` 作為新的開發依賴，為 Vue 元件提供了一個更穩定、更輕量的測試環境。
+    - **建立驗證測試**: 建立了一個簡單的 Vitest 測試 (`Simple.spec.js`)，成功掛載了一個 Vue 元件並驗證了其輸出，確認新測試框架已正確設定並可運作。
+    - **更新測試腳本**: 在 `package.json` 中新增了 `test:unit` 腳本，方便未來執行單元測試。
+
 ## 2025-08-21T11:55:00+08:00
 
 ### 🧪 測試基礎設施 (Testing Infrastructure)
