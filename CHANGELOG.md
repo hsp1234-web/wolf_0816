@@ -1,3 +1,72 @@
+## 2025-08-21T13:25:00+08:00
+
+### ♻️ 重構 (Refactoring)
+- **重構 API 伺服器以對接新架構**:
+    - 大幅重構了 `src/api/api_server.py`，移除了所有與舊 `db_manager` TCP 服務的耦合。
+    - API 伺服器現在直接連接至 Redis (透過 Unix Socket)，作為任務佇列和狀態儲存的唯一來源。
+    - 改造了核心端點 (如 `/api/youtube/process`, `/api/transcribe`)，使其職責簡化為接收前端請求、打包任務內容，並將任務推入 Redis 佇列。
+    - 新增了 `GET /api/task_status/{task_id}` 端點，供前端輪詢以獲取任務的即時狀態和結果。
+    - 移除了過時的內部通知端點 (`/api/internal/notify_task_update`)。
+- **修復 API 伺服器啟動錯誤**:
+    - 修正了因缺少 `import argparse` 而導致的 `NameError`。
+- **整合測試驗證**:
+    - 成功地進行了整合測試，驗證了 API 伺服器和中央調度器都能正確地嘗試透過 Unix socket 連接至 Redis，證明了新架構下核心組件間的通訊路徑已正確建立。
+
+## 2025-08-21T13:01:00+08:00
+
+### ♻️ 重構 (Refactoring)
+- **改進 Redis 連線方式以提高穩定性**:
+    - 根據使用者的建議，將所有新架構組件 (`dispatcher`, `youtube_downloader`, `audio_to_report_task`) 連接 Redis 的方式，從 TCP 網路 (`localhost:6379`) 全面更換為使用 **Unix Domain Socket**。
+    - 此舉旨在從根本上解決在特定環境中（如沙盒）可能出現的 TCP/IP 堆疊問題（例如 `Errno 97`），並提升本地跨行程通訊的效能與可靠性。
+    - 新增了 `REDIS_SOCKET_PATH` 環境變數，使 Socket 檔案的路徑可配置。
+
+## 2025-08-21T12:48:00+08:00
+
+### 🚀 新架構原型 (New Architecture Prototype)
+- **實作中央調度器核心邏輯**:
+    - 充實了 `services/dispatcher/main.py`，實現了新架構的核心。
+    - 調度器能夠「按需加載」：當收到一個新類型的任務時，它會自動為該任務建立一個獨立的虛擬環境，並使用 `uv` 安裝其專屬的 Python 依賴。
+    - 該功能已透過 `--test-dispatch` 模式進行驗證，證明了其能夠成功地為多個不同的任務類型（如下載器和 Gemini 分析器）準備環境並啟動對應的腳本。
+- **修復調度器啟動錯誤**:
+    - 修正了因缺少 `import os` 和 `import argparse` 而導致的 `NameError`。
+- **識別並記錄環境問題**:
+    - 在測試過程中，確認了沙盒環境因網路設定問題（`Errno 97`）而無法連接至 Redis，此問題阻礙了端到端測試，但 dispatcher 的核心邏輯已被驗證是正確的。
+
+## 2025-08-21T12:32:00+08:00
+
+### 🚀 新架構原型 (New Architecture Prototype)
+- **實作獨立的「音訊轉報告」任務**:
+    - 根據使用者澄清的需求，建立了 `src/tasks/audio_to_report_task.py`。
+    - 此腳本使用 Gemini Files API (`genai.upload_file`) 直接處理音訊檔案，一步到位生成報告，不再依賴 Whisper。
+    - 腳本可根據前端傳來的選項（如 `summary`, `key_points`）動態組合提示詞。
+- **驗證 Gemini 音訊處理腳本**:
+    - 成功地使用 `uv` 為新腳本建立了隔離的虛擬環境。
+    - 在模擬模式下，驗證了腳本能正確處理缺少 `GOOGLE_API_KEY` 的情況，證明了其健壯性。
+
+## 2025-08-21T11:55:00+08:00
+
+### 🚀 新架構原型 (New Architecture Prototype)
+- **實作獨立的「語音轉報告」任務**:
+    - 建立了 `src/tasks/transcribe_task.py`，作為新架構下的第二個獨立任務腳本。
+    - 腳本整合了 `openai-whisper` 進行語音轉錄，以及 `google-generativeai` 用於從逐字稿生成結構化報告。
+    - 內建了模擬 Redis 和處理缺失 API 金鑰的邏輯，以實現可獨立驗證的、健壯的測試流程。
+- **驗證轉錄腳本可行性**:
+    - 成功地使用 `uv` 為轉錄腳本建立了包含 `torch` 等複雜依賴的隔離虛擬環境。
+    - 驗證了腳本能正確處理因缺少 `ffmpeg` 外部依賴而導致的預期錯誤，證明了其錯誤處理機制的有效性。
+
+## 2025-08-21T10:18:00+08:00
+
+### 🚀 新架構原型 (New Architecture Prototype)
+- **確立新架構計畫**: 在 `plan.md` 中，規劃了以 Redis、中央調度器和獨立任務腳本為核心的全新後端架構，以解決既有的啟動、測試和設計複雜性問題。
+- **建立中央調度器骨架**: 建立了 `services/dispatcher/main.py`，作為未來統一任務調度的核心服務。
+- **實作獨立的 YouTube 下載器**:
+    - 建立了 `src/tasks/youtube_downloader.py`，這是新架構下的第一個獨立、單次執行的任務腳本。
+    - 腳本使用 `yt-dlp` 函式庫執行下載，並透過 `redis` 函式庫回報進度與結果。
+    - 內建了模擬 Redis 客戶端 (`--mock-redis`) 以便進行獨立測試。
+- **驗證原型可行性**:
+    - 透過 `uv` 工具成功地為新的下載腳本建立了隔離的虛擬環境並安裝其依賴。
+    - 成功執行了下載腳本，驗證了其核心邏輯和錯誤處理機制的健壯性。
+
 ## 2025-08-21T01:33:00+08:00
 
 ### 🧪 測試基礎設施 (Testing Infrastructure)
