@@ -893,10 +893,13 @@ async def websocket_endpoint(websocket: WebSocket):
                     available_models = [
                         model for model in KNOWN_WHISPER_MODELS if check_model_exists(model)
                     ]
+                    response_payload = {"models": available_models}
+                    log.info(f"準備回傳 LOCAL_MODELS_STATUS，內容: {response_payload}")
                     await websocket.send_json({
                         "type": "LOCAL_MODELS_STATUS",
-                        "payload": {"models": available_models}
+                        "payload": response_payload
                     })
+                    log.info("LOCAL_MODELS_STATUS 訊息已發送。")
 
                 elif msg_type == "DOWNLOAD_MODEL":
                     model_size = payload.get("model")
