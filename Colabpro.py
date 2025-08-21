@@ -7,7 +7,7 @@
 #@markdown **後端程式碼倉庫 (REPOSITORY_URL)**
 REPOSITORY_URL = "https://github.com/hsp1234-web/wolf_0816.git" #@param {type:"string"}
 #@markdown **後端版本分支或標籤 (TARGET_BRANCH_OR_TAG)**
-TARGET_BRANCH_OR_TAG = "485" #@param {type:"string"}
+TARGET_BRANCH_OR_TAG = "520" #@param {type:"string"}
 #@markdown **專案資料夾名稱 (PROJECT_FOLDER_NAME)**
 PROJECT_FOLDER_NAME = "WEB1" #@param {type:"string"}
 #@markdown **強制刷新後端程式碼 (FORCE_REPO_REFRESH)**
@@ -217,39 +217,52 @@ def create_log_viewer_html(log_manager):
     except Exception as e: return f"<p>❌ 產生最終日誌報告時發生錯誤: {e}</p>"
 
 class BackgroundRunner(threading.Thread):
-    """在背景執行緒中運行後端服務，避免阻塞主執行緒。"""
-    def __init__(self, project_path_str, log_manager, shared_stats, port_queue):
+    """在背景執行緒中運行後端服務，並透過心跳機制報告健康狀態。"""
+    def __init__(self, project_path_str, log_manager, shared_stats, port_queue, heartbeat_queue):
         super().__init__(daemon=True)
         self.project_path = Path(project_path_str)
         self.log_manager = log_manager
         self.shared_stats = shared_stats
         self.port_queue = port_queue
+        self.heartbeat_queue = heartbeat_queue
         self.runner_proc = None
         self._stop_event = threading.Event()
 
+    def _heartbeat_emitter(self):
+        """一個在獨立執行緒中運行的函數，定期發送心跳信號。"""
+        self.log_manager.log("DEBUG", "❤️ 心跳發送器執行緒已啟動。")
+        while not self._stop_event.is_set():
+            try:
+                self.heartbeat_queue.put(time.monotonic())
+                # 每 10 秒發送一次心跳
+                time.sleep(10)
+            except Exception as e:
+                self.log_manager.log("ERROR", f"❤️ 心跳發送器發生錯誤: {e}")
+                break
+        self.log_manager.log("DEBUG", "❤️ 心跳發送器執行緒已停止。")
+
     def run(self):
+        heartbeat_thread = threading.Thread(target=self._heartbeat_emitter, daemon=True)
         try:
-            self.log_manager.log("INFO", "準備執行模組化啟動器 (runner)...")
+            self.log_manager.log("DEBUG", "準備啟動背景服務...")
+            heartbeat_thread.start()
+
             runner_script_path = self.project_path / "runner" / "main_runner.py"
             if not runner_script_path.exists():
                 raise FileNotFoundError(f"找不到啟動器腳本: {runner_script_path}。")
 
             command = [sys.executable, str(runner_script_path)]
             self.runner_proc = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding='utf-8',
-                bufsize=1
+                command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding='utf-8', bufsize=1
             )
+            self.log_manager.log("INFO", f"✅ 背景 runner 程序已啟動 (PID: {self.runner_proc.pid})。")
 
             url_pattern = re.compile(r"FINAL_URL:\s*(https?://[^\s]+)")
             for line in iter(self.runner_proc.stdout.readline, ''):
                 if self._stop_event.is_set(): break
                 clean_line = line.strip()
                 if not clean_line: continue
-
                 self.log_manager.log("RUNNER", clean_line)
 
                 if "安裝伺服器依賴" in clean_line: self.shared_stats['status'] = "安裝依賴..."
@@ -260,16 +273,25 @@ class BackgroundRunner(threading.Thread):
                 if match:
                     self.log_manager.log("SUCCESS", f"內部服務 URL 已獲取: {match.group(1)}")
                     port = int(match.group(1).split(':')[-1])
-                    self.port_queue.put(port) # 將埠號發送回主執行緒
+                    self.port_queue.put(port)
 
-            if self.runner_proc.wait() != 0:
-                 self.shared_stats['status'] = "❌ 後端啟動失敗"
-                 self.port_queue.put(None) # 發送失敗信號
+            # 等待子程序結束
+            return_code = self.runner_proc.wait()
+            self.log_manager.log("WARN", f"背景 runner 程序已終止，返回碼: {return_code}。")
+            if return_code != 0:
+                self.shared_stats['status'] = "❌ 後端程序異常終止"
+                self.port_queue.put(None)
 
         except Exception as e:
-            self.log_manager.log("CRITICAL", f"❌ 背景執行緒發生未預期的致命錯誤: {e}")
+            self.log_manager.log("CRITICAL", f"❌ 背景執行緒發生未預期的致命錯誤: {e}", exc_info=True)
             self.shared_stats['status'] = f"❌ 啟動失敗: {e}"
-            self.port_queue.put(None) # 發送失敗信號
+            self.port_queue.put(None)
+        finally:
+            # 確保心跳執行緒也被停止
+            if heartbeat_thread.is_alive():
+                self._stop_event.set()
+                heartbeat_thread.join(timeout=1)
+            self.log_manager.log("DEBUG", "背景執行緒 run() 方法結束。")
 
     def stop(self):
         self._stop_event.set()
@@ -280,19 +302,21 @@ class BackgroundRunner(threading.Thread):
                 self.runner_proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self.runner_proc.kill()
+        self.log_manager.log("INFO", "✅ 背景 runner 程序已成功停止。")
+
 
 def launch_application(project_path_str: str, log_manager: LogManager):
-    """主執行函式，使用背景執行緒模型來啟動應用。"""
+    """主執行函式，使用背景執行緒和心跳機制來啟動應用。"""
     shared_stats = {"start_time_monotonic": time.monotonic(), "status": "啟動中...", "proxy_url": None}
     display_manager = DisplayManager(log_manager=log_manager, stats_dict=shared_stats, refresh_rate=UI_REFRESH_SECONDS)
     display_manager.start()
 
     port_queue = queue.Queue()
-    background_runner = BackgroundRunner(project_path_str, log_manager, shared_stats, port_queue)
+    heartbeat_queue = queue.Queue()
+    background_runner = BackgroundRunner(project_path_str, log_manager, shared_stats, port_queue, heartbeat_queue)
 
     try:
         background_runner.start()
-
         port = None
         try:
             log_manager.log("INFO", "等待後端服務啟動並回傳埠號...")
@@ -301,106 +325,94 @@ def launch_application(project_path_str: str, log_manager: LogManager):
             log_manager.log("CRITICAL", "等待後端服務啟動超時 (180秒)。")
             shared_stats['status'] = "❌ 後端啟動超時"
             return
-
         if port is None:
             log_manager.log("ERROR", "背景執行緒未能成功獲取埠號，啟動中止。")
             return
 
-        # --- 增強診斷 (2025-08-20) ---
-        # 1. 心跳探測
+        # ... (代理連結獲取邏輯保持不變) ...
         log_manager.log("INFO", "執行 Colab 前後端通訊心跳探測...")
         try:
             ping_result = colab_output.eval_js("'ping'")
-            if ping_result == 'ping':
-                log_manager.log("SUCCESS", "✅ Colab 前後端通訊正常。")
-            else:
-                log_manager.log("WARN", f"⚠️ Colab 前後端通訊異常，收到非預期的回應: {ping_result}")
+            if ping_result == 'ping': log_manager.log("SUCCESS", "✅ Colab 前後端通訊正常。")
+            else: log_manager.log("WARN", f"⚠️ Colab 前後端通訊異常，收到非預期的回應: {ping_result}")
         except Exception as e:
             log_manager.log("CRITICAL", f"❌ Colab 前後端通訊探測失敗: {e}")
-            log_manager.log("CRITICAL", "這通常表示 Colab 執行個體本身不穩定。請嘗試重新啟動執行階段。")
             shared_stats['status'] = "❌ Colab 通訊失敗"
             return
 
-        # 2. 健壯的代理連結獲取邏輯
         max_retries, retry_delay, js_timeout_ms, py_timeout_sec = 20, 1, 7000, 10
-        js_get_url_script = f'''
-        (async () => {{
-            const proxyPromise = google.colab.kernel.proxyPort({port}, {{'cache': false}});
-            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error(`proxyPort call timed out after {js_timeout_ms}ms`)), {js_timeout_ms}));
-            try {{ const url = await Promise.race([proxyPromise, timeoutPromise]); return {{'url': url, 'error': null}}; }}
-            catch (e) {{ return {{'url': null, 'error': e.toString()}}; }}
-        }})()
-        '''
-
+        js_get_url_script = f'''(async () => {{ const proxyPromise = google.colab.kernel.proxyPort({port}, {{'cache': false}}); const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error(`proxyPort call timed out after {js_timeout_ms}ms`)), {js_timeout_ms})); try {{ const url = await Promise.race([proxyPromise, timeoutPromise]); return {{'url': url, 'error': null}}; }} catch (e) {{ return {{'url': null, 'error': e.toString()}}; }} }})()'''
         for attempt in range(max_retries):
             shared_stats['status'] = f"正在嘗試取得代理連結... (第 {attempt + 1}/{max_retries} 次)"
             result_queue = queue.Queue()
             def _eval_js_in_thread(q, script):
-                try:
-                    q.put({'result': colab_output.eval_js(script), 'error': None})
-                except Exception as e:
-                    # 在執行緒內捕獲異常並放入佇列
-                    q.put({'result': None, 'error': e, 'traceback': traceback.format_exc()})
-
+                try: q.put({'result': colab_output.eval_js(script), 'error': None})
+                except Exception as e: q.put({'result': None, 'error': e, 'traceback': traceback.format_exc()})
             eval_thread = threading.Thread(target=_eval_js_in_thread, args=(result_queue, js_get_url_script))
-            eval_thread.daemon = True
-            eval_thread.start()
-
+            eval_thread.daemon = True; eval_thread.start()
             try:
                 output = result_queue.get(timeout=py_timeout_sec)
                 if output.get('error'):
-                    error_msg = str(output['error'])
-                    tb_msg = output.get('traceback', '無堆疊追蹤資訊。')
+                    error_msg, tb_msg = str(output['error']), output.get('traceback', '無堆疊追蹤資訊。')
                     shared_stats['status'] = f"嘗試失敗 ({error_msg[:50]}...)，{retry_delay}秒後重試。"
-                    log_manager.log("WARN", f"獲取代理連結的背景執行緒發生錯誤: {error_msg}")
-                    log_manager.log("DEBUG", f"詳細堆疊追蹤:\n{tb_msg}")
+                    log_manager.log("WARN", f"獲取代理連結的背景執行緒發生錯誤: {error_msg}"); log_manager.log("DEBUG", f"詳細堆疊追蹤:\n{tb_msg}")
                 else:
                     result = output.get('result')
                     if result and result.get('error'):
                         error_msg = str(result['error'])
-                        shared_stats['status'] = f"JS錯誤 ({error_msg[:50]}...)，{retry_delay}秒後重試。"
-                        log_manager.log("WARN", f"獲取代理連結時發生 JS 錯誤: {error_msg}")
+                        shared_stats['status'] = f"JS錯誤 ({error_msg[:50]}...)，{retry_delay}秒後重試。"; log_manager.log("WARN", f"獲取代理連結時發生 JS 錯誤: {error_msg}")
                     elif result and result.get('url') and result['url'].strip().startswith('http'):
                         candidate_url = result['url'].strip()
-                        shared_stats['proxy_url'] = candidate_url
-                        shared_stats['status'] = "✅ 應用程式已就緒"
-                        log_manager.log("SUCCESS", f"成功取得並驗證代理連結: {candidate_url}")
+                        shared_stats['proxy_url'] = candidate_url; shared_stats['status'] = "✅ 應用程式已就緒"; log_manager.log("SUCCESS", f"成功取得並驗證代理連結: {candidate_url}")
                         break
                     else:
-                        shared_stats['status'] = f"收到無效的回傳值，{retry_delay}秒後重試。"
-                        log_manager.log("WARN", f"收到無效的代理回傳值: '{str(result)[:100]}...'")
+                        shared_stats['status'] = f"收到無效的回傳值，{retry_delay}秒後重試。"; log_manager.log("WARN", f"收到無效的代理回傳值: '{str(result)[:100]}...'")
             except queue.Empty:
-                shared_stats['status'] = f"操作超時 ({py_timeout_sec}秒)，{retry_delay}秒後重試。"
-                log_manager.log("WARN", f"獲取代理連結操作超時 ({py_timeout_sec}秒)。")
+                shared_stats['status'] = f"操作超時 ({py_timeout_sec}秒)，{retry_delay}秒後重試。"; log_manager.log("WARN", f"獲取代理連結操作超時 ({py_timeout_sec}秒)。")
             except Exception:
-                # 記錄主執行緒中的任何其他異常
-                log_manager.log("ERROR", "獲取代理連結迴圈發生未預期的主執行緒錯誤。")
-                log_manager.log("ERROR", f"詳細堆疊追蹤:\n{traceback.format_exc()}")
-
+                log_manager.log("ERROR", "獲取代理連結迴圈發生未預期的主執行緒錯誤。"); log_manager.log("ERROR", f"詳細堆疊追蹤:\n{traceback.format_exc()}")
             time.sleep(retry_delay)
 
         if not shared_stats.get('proxy_url'):
             shared_stats['status'] = "❌ 取得代理連結失敗"
             log_manager.log("CRITICAL", "無法取得 Colab 代理連結。")
 
-        log_manager.log("INFO", "應用程式正在運行中。請使用 Colab 的「中斷執行」按鈕來停止。")
-        while background_runner.is_alive():
-            background_runner.join(timeout=1.0)
+        # --- 新的、更穩健的主迴圈 ---
+        log_manager.log("INFO", "應用程式已進入持續運行模式。使用 Colab 的「中斷執行」按鈕來停止。")
+        last_heartbeat = time.monotonic()
+        HEARTBEAT_TIMEOUT = 60 # 秒
+
+        while True:
+            try:
+                # 使用非阻塞 get_nowait 來清空佇列並獲取最新的心跳
+                while not heartbeat_queue.empty():
+                    last_heartbeat = heartbeat_queue.get_nowait()
+
+                # 只有在代理連結成功獲取後，才檢查心跳
+                if shared_stats.get('proxy_url'):
+                    if time.monotonic() - last_heartbeat > HEARTBEAT_TIMEOUT:
+                        if not shared_stats['status'].startswith("❌"):
+                            shared_stats['status'] = "❌ 後端服務無回應"
+                            log_manager.log("ERROR", f"超過 {HEARTBEAT_TIMEOUT} 秒未收到後端心跳，服務可能已停止。")
+                    # 如果心跳恢復，可以選擇性地將狀態改回 "已就緒"
+                    elif shared_stats['status'] == "❌ 後端服務無回應":
+                         shared_stats['status'] = "✅ 應用程式已就緒"
+                         log_manager.log("INFO", "重新偵測到後端心跳，服務已恢復。")
+
+                time.sleep(5) # 主執行緒的檢查間隔
+
+            except queue.Empty:
+                 # 這是 get_nowait 的正常情況，忽略即可
+                 pass
 
     except KeyboardInterrupt:
         log_manager.log("WARN", "🛑 偵測到使用者手動中斷...")
     except Exception:
-        log_manager.log("CRITICAL", f"❌ launch_application 發生未預期的致命錯誤:")
-        log_manager.log("CRITICAL", traceback.format_exc())
+        log_manager.log("CRITICAL", f"❌ launch_application 發生未預期的致命錯誤:", exc_info=True)
         shared_stats['status'] = "❌ 致命錯誤"
     finally:
         background_runner.stop()
         display_manager.stop()
-        # 最終修復 (2025-08-20): 移除此處的 clear_output。
-        # DisplayManager 的迴圈已停止，且最後一幀的狀態可能還未被印出。
-        # 在此處清理會將最終結果（特別是代理連結）清除，導致使用者看不到。
-        # 下方的 print 會確保印出包含代理連結的最終狀態。
-        # clear_output(wait=True)
         print("\n".join(display_manager._build_output_buffer()))
         print("\n--- 🏁 啟動程序結束 ---")
         display(HTML(create_log_viewer_html(log_manager)))

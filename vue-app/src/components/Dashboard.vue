@@ -91,24 +91,11 @@ const translateWorkerStatus = (status) => {
   return translations[status] || status;
 }
 
-let pollingInterval = null
-
 onMounted(() => {
-  // 立即獲取一次狀態
+  // 元件掛載時，主動獲取一次初始狀態
+  // 後續的更新將由 WebSocket 推送
   tasksStore.fetchSystemStats()
   tasksStore.fetchWorkerStatuses()
-  // 每 2 秒輪詢一次
-  pollingInterval = setInterval(() => {
-    tasksStore.fetchSystemStats()
-    tasksStore.fetchWorkerStatuses()
-  }, 2000)
-})
-
-onUnmounted(() => {
-  // 元件卸載時停止輪詢
-  if (pollingInterval) {
-    clearInterval(pollingInterval)
-  }
 })
 </script>
 

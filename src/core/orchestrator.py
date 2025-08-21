@@ -8,6 +8,7 @@ import threading
 from pathlib import Path
 import socket
 import os
+import signal
 
 # --- JULES 於 2025-08-09 的修改：設定應用程式全域時區 ---
 # 為了確保所有日誌和資料庫時間戳都使用一致的時區，我們在應用程式啟動的
@@ -169,10 +170,20 @@ def build_frontend(vue_app_dir: Path):
 
     log.info("--- [前端建置完成] ---")
 
+def handle_sigterm(signum, frame):
+    """自定義的 SIGTERM 信號處理器，只記錄訊息而不退出。"""
+    log.warning(f"收到 SIGTERM 信號({signum})，已忽略。程序將繼續運行以保持服務穩定。")
+
 def main():
     """
     系統的「大腦」，負責啟動、監控所有服務，並發送心跳。
     """
+    # --- 註冊 SIGTERM 信號處理器 ---
+    # 這是為了解決在某些雲端環境（如 Colab）中，程序可能被無聲終止的問題。
+    # 我們捕獲 SIGTERM，只記錄它，但不讓程序退出。
+    signal.signal(signal.SIGTERM, handle_sigterm)
+    log.info("已成功註冊 SIGTERM 信號處理器。")
+
     # JULES'S FIX (2025-08-17): 確保依賴在啟動前都已安裝
     # 模仿 localtest.py 的行為，使 orchestrator 成為一個更可靠的獨立啟動器。
     # JULES'S FIX (2025-08-19): 新增環境變數開關，以便在測試引擎中跳過此檢查
@@ -325,7 +336,13 @@ def main():
         log.info(f"🔧 正在啟動 API 伺服器: {' '.join(api_server_cmd)}")
         api_proc = subprocess.Popen(api_server_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', env=api_env)
         processes.append(api_proc)
-        log.info(f"✅ API 伺服器已啟動，PID: {api_proc.pid}，埠號: {api_port}")
+        log.info(f"✅ API 伺服器子程序已建立，PID: {api_proc.pid}，埠號: {api_port}")
+
+        # --- FIX: 等待 API 伺服器完全就緒 ---
+        # 在報告 URL 之前，先確認服務已在監聽埠號，以避免 E2E 測試中的競爭條件。
+        if not wait_for_service(api_port):
+            raise RuntimeError(f"API 伺服器在埠號 {api_port} 上未能及時就緒，啟動中止。")
+
         # --- JULES' FIX for BATTLE Environment ---
         # 根據 BATTLE 測試環境的新要求，修改握手信號的輸出格式，
         # 從 "API_PORT:..." 改為 "PROXY_URL:..."。
