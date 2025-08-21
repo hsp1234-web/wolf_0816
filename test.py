@@ -39,6 +39,7 @@ def install_test_dependencies():
 def run_server_and_get_url():
     """
     執行模組化啟動器，並從其輸出中捕捉最終的伺服器 URL。
+    包含總體超時和 I/O 超時邏輯。
     """
     log.info("--- [測試步驟 2/4] 執行 runner.py 以啟動伺服器 ---")
     runner_script_path = ROOT_DIR / "runner" / "main_runner.py"
@@ -50,40 +51,54 @@ def run_server_and_get_url():
     log.info(f"執行啟動命令: {sys.executable} {runner_script_path}")
     runner_proc = subprocess.Popen(
         [sys.executable, str(runner_script_path)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding='utf-8'
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8'
     )
 
-    url_pattern = re.compile(r"FINAL_URL:\s*(https?://[^\s]+)")
-    server_url = None
-    timeout = 120  # 增加超時以應對較慢的啟動
+    # --- 線程化 I/O 讀取 ---
+    import queue
+    q = queue.Queue()
+
+    def reader_thread(pipe, stream_name):
+        try:
+            for line in iter(pipe.readline, ''):
+                q.put((stream_name, line))
+        finally:
+            pipe.close()
+
+    threading.Thread(target=reader_thread, args=[runner_proc.stdout, 'stdout'], daemon=True).start()
+    threading.Thread(target=reader_thread, args=[runner_proc.stderr, 'stderr'], daemon=True).start()
+
+    # --- 超時與 URL 解析邏輯 ---
+    OVERALL_TIMEOUT = 100  # 秒
+    IO_TIMEOUT = 20       # 秒
     start_time = time.time()
+    last_output_time = start_time
+    server_url = None
+    url_pattern = re.compile(r"FINAL_URL:\s*(https?://[^\s]+)")
 
-    stderr_lines = []
-    def log_stderr():
-        for line in iter(runner_proc.stderr.readline, ''):
-            log.warning(f"[Runner stderr]: {line.strip()}")
-            stderr_lines.append(line)
+    while time.time() - start_time < OVERALL_TIMEOUT:
+        try:
+            stream_name, line = q.get(timeout=IO_TIMEOUT)
+            last_output_time = time.time() # 重置 I/O 計時器
 
-    stderr_thread = threading.Thread(target=log_stderr)
-    stderr_thread.daemon = True
-    stderr_thread.start()
+            if stream_name == 'stdout':
+                log.info(f"[Runner stdout]: {line.strip()}")
+                match = url_pattern.search(line)
+                if match:
+                    server_url = match.group(1)
+                    log.info(f"✅ 從啟動器成功解析到 URL: {server_url}")
+                    break
+            elif stream_name == 'stderr':
+                log.warning(f"[Runner stderr]: {line.strip()}")
 
-    for line in iter(runner_proc.stdout.readline, ''):
-        log.info(f"[Runner stdout]: {line.strip()}")
-        match = url_pattern.search(line)
-        if match:
-            server_url = match.group(1)
-            log.info(f"✅ 從啟動器成功解析到 URL: {server_url}")
-            break
-        if time.time() - start_time > timeout:
-            log.error(f"❌ 啟動器未能在 {timeout} 秒內輸出 FINAL_URL。")
-            break
+        except queue.Empty:
+            log.error(f"❌ IO 超時：在 {IO_TIMEOUT} 秒內未收到任何日誌輸出。")
+            runner_proc.kill()
+            return None, None
 
     if not server_url:
-        log.error("❌ 未能獲取伺服器 URL。")
+        if time.time() - start_time >= OVERALL_TIMEOUT:
+             log.error(f"❌ 總體超時：在 {OVERALL_TIMEOUT} 秒內未能啟動服務並找到 URL。")
         runner_proc.kill()
         return None, None
 
