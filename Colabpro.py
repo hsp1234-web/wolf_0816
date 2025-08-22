@@ -7,7 +7,7 @@
 #@markdown **後端程式碼倉庫 (REPOSITORY_URL)**
 REPOSITORY_URL = "https://github.com/hsp1234-web/wolf_0816.git" #@param {type:"string"}
 #@markdown **後端版本分支或標籤 (TARGET_BRANCH_OR_TAG)**
-TARGET_BRANCH_OR_TAG = "602" #@param {type:"string"}
+TARGET_BRANCH_OR_TAG = "610" #@param {type:"string"}
 #@markdown **專案資料夾名稱 (PROJECT_FOLDER_NAME)**
 PROJECT_FOLDER_NAME = "WEB1" #@param {type:"string"}
 #@markdown **強制刷新後端程式碼 (FORCE_REPO_REFRESH)**
@@ -78,7 +78,8 @@ def _setup_colab_mocks():
     """如果不在真實的 Colab 環境中，則建立虛假的 google.colab 模組以避免 ImportError。"""
     print("[MOCK] 偵測到測試模式，正在注入虛假的 google.colab 模組...")
     class FakeColabOutput:
-        def eval_js(self, script): return None
+        # 讓模擬函式接受任意參數，使其更具彈性，以避免因簽章變更而導致測試失敗
+        def eval_js(self, *args, **kwargs): return None
     google_module = types.ModuleType('google')
     google_colab_module = types.ModuleType('google.colab')
     google_colab_output_module = types.ModuleType('google.colab.output')
