@@ -1,3 +1,13 @@
+## 2025-08-23T00:57:04+08:00
+
+### 🐛 修復與功能恢復 (Fixes & Feature Restoration)
+- **恢復 HTML 日誌報告**:
+    - 在 `Colabpro.py` 中重新實作了 `create_log_viewer_html` 函式，並修改 `DisplayManager` 以儲存完整日誌。
+    - 此修改恢復了在 Colab 儲存格執行結束後，顯示可複製的完整日誌報告之功能。
+- **新增 Bun 自動安裝**:
+    - 在中央啟動腳本 `run_app.py` 中加入了 `ensure_bun_installed` 函式。
+    - 此函式會自動偵測並安裝在乾淨環境中缺失的 `bun`，提高了啟動器的穩健性。
+
 ## 2025-08-23T00:41:15+08:00
 
 ### 🏛️ 架構重構 (Architectural Refactoring)
