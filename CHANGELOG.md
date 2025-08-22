@@ -1,3 +1,21 @@
+## 2025-08-22T15:08:48+08:00
+
+### 🏛️ 重大架構重構 (Major Architectural Refactoring)
+- **引入 Huey 任務佇列**: 徹底重構了服務間的通訊方式。舊有的直接導入和不穩定的 HTTP 呼叫，被替換為一個基於 `Huey` 的、穩健的非同步任務佇列系統。`api_gateway` 現在作為任務的唯一生產者，將工作（如轉錄、日誌記錄）放入佇列，由獨立的背景工作者消費。
+- **統一與隔離資料庫**:
+    - **雙資料庫策略**：根據與使用者的深入討論，採用了雙資料庫隔離方案以提高穩定性。建立了一個獨立的 `logs.db` 用於日誌記錄，以及一個獨立的 `queue.db` 專供 Huey 任務佇列使用。
+    - **中心化初始化**：`api_gateway` 現在是應用啟動的核心，它會在 `lifespan` 事件中，最優先初始化日誌資料庫（並啟用 WAL 模式以提高併發效能），然後才啟動所有背景工作者，從根本上解決了先前版本中存在的啟動時序競態條件問題。
+- **重構為工作者模式 (Worker Pattern)**:
+    - 建立了 `workers/` 目錄，並新增了 `transcription_worker.py` 和 `logging_worker.py`。
+    - `background_tasks.py` 現在不再啟動多個獨立的服務，而是啟動一個 `huey_consumer.py` 程序來統一管理所有工作者的生命週期。
+- **API Gateway 職責整合**:
+    - 將原 `static_web_server` 的靜態檔案服務功能，以及 WebSocket 代理功能，全部整合進 `api_gateway`。
+    - `api_gateway` 現在是名副其實的應用唯一入口點，負責處理所有 HTTP 請求、WebSocket 連線和前端檔案服務。
+- **強化端對端測試**:
+    - `test.py` 被徹底重構，不再依賴 `Colabpro.py`，而是直接測試 `api_gateway`。
+    - 測試現在會動態尋找可用埠號，避免因埠號被佔用而導致的測試失敗。
+    - Playwright 的驗證邏輯被加強，現在會實際檢查 UI 上的狀態文字 (`狀態: 準備就緒`)，確保前後端通訊真正成功。
+
 ## 2025-08-22T12:21:08+08:00
 
 ### 🐛 修復與功能優化 (Bug Fixes & Feature Enhancements)

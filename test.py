@@ -7,23 +7,34 @@ from pathlib import Path
 import logging
 import os
 
+import socket
+
 # --- 基本設定 ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-log = logging.getLogger('StartupTest')
+log = logging.getLogger('E2E_Test')
 ROOT_DIR = Path(__file__).resolve().parent
-COLAB_SCRIPT_PATH = ROOT_DIR / "Colabpro.py"
+API_GATEWAY_DIR = ROOT_DIR / "services" / "api_gateway"
 
 # --- 超時設定 ---
-# 測試安裝+啟動+驗證的總超時
 E2E_TIMEOUT = 60
+
+def find_free_port() -> int:
+    """動態尋找一個可用的埠號。"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
 
 def install_dependencies():
     """安裝測試所需的核心依賴。"""
-    log.info("--- [步驟 1/4] 安裝 E2E 測試核心依賴 ---")
-    dependencies = ["playwright", "ipython", "pytz"]
+    log.info("--- [步驟 1/3] 安裝 E2E 測試核心依賴 ---")
+    # 步驟 1: 安裝 API Gateway 的依賴，以確保測試執行環境擁有 uvicorn 等核心套件
+    gateway_reqs = API_GATEWAY_DIR / "requirements.txt"
+    test_deps = ["playwright", "pytz"] # requests 等會被 gateway 的依賴包含
     try:
-        log.info(f"使用 pip 安裝: {', '.join(dependencies)}...")
-        subprocess.run([sys.executable, "-m", "pip", "install", "-q"] + dependencies, check=True)
+        log.info(f"正在從 {gateway_reqs} 安裝 API Gateway 的依賴...")
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", str(gateway_reqs)], check=True)
+        log.info(f"正在安裝測試專用的額外依賴: {', '.join(test_deps)}...")
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q"] + test_deps, check=True)
         log.info("安裝 Playwright 瀏覽器...")
         subprocess.run([sys.executable, "-m", "playwright", "install", "--with-deps"], check=True, capture_output=True, text=True)
         log.info("✅ 核心依賴安裝成功。")
@@ -34,65 +45,80 @@ def install_dependencies():
 
 def run_and_verify():
     """
-    執行 Colabpro.py 腳本，並驗證其啟動流程與核心UI功能。
-    此函式包含完整的端對端測試邏輯。
+    直接啟動 API Gateway，並驗證其啟動流程與核心UI功能。
     """
-    log.info(f"--- [步驟 2/4] 執行啟動腳本: {COLAB_SCRIPT_PATH} (總超時: {E2E_TIMEOUT}秒) ---")
-    assert COLAB_SCRIPT_PATH.exists(), f"❌ 啟動腳本不存在: {COLAB_SCRIPT_PATH}"
+    log.info(f"--- [步驟 2/3] 啟動 API Gateway (總超時: {E2E_TIMEOUT}秒) ---")
 
-    url = None
     proc = None
     start_time = time.monotonic()
 
     try:
+        # 動態尋找可用埠號
+        port = find_free_port()
+        api_gateway_url = f"http://127.0.0.1:{port}"
+        log.info(f"將在動態埠號 {port} 上啟動 API Gateway...")
+
+        # 在新架構中，我們直接測試核心服務 api_gateway
+        # 它會負責初始化資料庫和啟動背景工作者
         env = os.environ.copy()
-        env["IN_TEST_MODE"] = "1"
+        env["PYTHONPATH"] = str(ROOT_DIR)
+
+        command = [
+            sys.executable, "-m", "uvicorn",
+            "main:app",
+            "--host", "0.0.0.0",
+            "--port", str(port)
+        ]
+
         proc = subprocess.Popen(
-            [sys.executable, "-u", str(COLAB_SCRIPT_PATH)],
+            command,
+            cwd=API_GATEWAY_DIR,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8',
             env=env
         )
-        log.info("監聽啟動日誌以捕獲 URL...")
-        while time.monotonic() - start_time < E2E_TIMEOUT:
+
+        # 監聽 API Gateway 的啟動日誌
+        log.info("監聽 API Gateway 啟動日誌...")
+        gateway_ready = False
+        while time.monotonic() - start_time < 20: # 給 20 秒啟動時間
             line = proc.stdout.readline()
             if not line:
                 if proc.poll() is not None:
-                    log.error("❌ 啟動腳本提前終止，未能成功啟動伺服器。")
+                    log.error("❌ API Gateway 啟動失敗，程序提前終止。")
                     return None
-                time.sleep(0.1)
+                time.sleep(0.2)
                 continue
-            log.info(f"[Colabpro]: {line.strip()}")
-            if line.strip().startswith("APP_URL:"):
-                match = re.search(r"APP_URL:\s*(https?://[^\s]+)", line)
-                if match:
-                    url = match.group(1)
-                    log.info(f"✅ 成功從契約捕獲本地伺服器 URL: {url}")
-                    break
-        if not url:
-            log.error(f"❌ 在 {E2E_TIMEOUT} 秒內未能捕獲到 URL。啟動超時。")
+
+            log.info(f"[API_Gateway]: {line.strip()}")
+            if "Uvicorn running on" in line:
+                log.info("✅ API Gateway 已成功啟動！")
+                gateway_ready = True
+                break
+
+        if not gateway_ready:
+            log.error("❌ 在 20 秒內 API Gateway 未能啟動。")
             return None
 
         # --- Playwright 驗證 ---
-        log.info(f"--- [步驟 3/4] 使用 Playwright 驗證 UI 與核心功能 ---")
+        log.info(f"--- [步驟 3/3] 使用 Playwright 驗證 UI 與核心功能 ---")
         from playwright.sync_api import sync_playwright, expect
 
         with sync_playwright() as p:
             browser = p.chromium.launch()
             page = browser.new_page()
 
-            # 增加日誌以追蹤 Playwright 操作
             def log_playwright(msg): log.info(f"[Playwright] {msg}")
 
             try:
-                log_playwright(f"導航至: {url}")
-                page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                log_playwright(f"導航至: {api_gateway_url}")
+                page.goto(api_gateway_url, wait_until="domcontentloaded", timeout=20000)
 
                 # 驗證 1: 等待後端上線的關鍵指標出現
-                log_playwright("等待儀表板狀態變為『在線』...")
-                # 使用正則表達式來匹配，更具彈性
-                status_locator = page.locator("text=/狀態:.*在線/")
-                expect(status_locator).to_be_visible(timeout=30000)
-                log_playwright("✅ 驗證成功：儀表板顯示服務在線！")
+                log_playwright("等待儀表板狀態變為『準備就緒』...")
+                # 根據 Dashboard.vue 的原始碼，我們鎖定 #status-text 元素
+                status_locator = page.locator("#status-text")
+                expect(status_locator).to_have_text("準備就緒", timeout=30000)
+                log_playwright("✅ 驗證成功：儀表板顯示服務準備就緒！")
 
                 # 驗證 2: 執行點擊操作並驗證結果
                 log_playwright("測試『複製日誌』按鈕...")
@@ -112,25 +138,25 @@ def run_and_verify():
 
             except Exception as e:
                 log.error(f"❌ Playwright 驗證失敗: {e}")
-                # 失敗時也截圖，以利除錯
                 failure_screenshot_path = ROOT_DIR / "final_e2e_failure.png"
                 try:
                     page.screenshot(path=str(failure_screenshot_path))
                     log.info(f"已擷取失敗畫面至: {failure_screenshot_path}")
                 except Exception as screenshot_e:
                     log.error(f"擷取失敗畫面時也發生錯誤: {screenshot_e}")
-                return None # 表示驗證失敗
+                return False
             finally:
                 browser.close()
 
-        log.info(f"--- [步驟 4/4] 所有驗證通過 ---")
-        return url
+        return True
     finally:
         if proc and proc.poll() is None:
-            log.info("正在終止 Colabpro.py 子程序...")
+            log.info("正在清理，終止 API Gateway 子程序...")
             proc.terminate()
-            try: proc.wait(timeout=5)
-            except subprocess.TimeoutExpired: proc.kill()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
             log.info("✅ 子程序已終止。")
 
 def main():

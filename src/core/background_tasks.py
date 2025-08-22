@@ -19,8 +19,8 @@ from workers.logging_worker import add_log
 
 def log(level, message):
     """將日誌發送到佇列的輔助函式。"""
-    # 我們在這裡直接呼叫 .delay()，將日誌任務放入佇列
-    add_log.delay("background_tasks", level, message)
+    # 正確的呼叫方式是不使用 .delay()
+    add_log("background_tasks", level, message)
 
 async def run_subprocess_for_install(command, **kwargs):
     """一個非同步執行子程序並等待其完成的輔助函式，用於安裝過程。"""

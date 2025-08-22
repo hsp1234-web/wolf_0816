@@ -1,0 +1,44 @@
+# --- From services/notification_service/requirements.txt ---
+fastapi
+uvicorn
+pydantic-settings
+
+# --- From services/media_preview_service/requirements.txt ---
+fastapi
+uvicorn
+pydantic-settings
+
+# --- From services/file_management_service/requirements.txt ---
+fastapi
+uvicorn
+pydantic-settings
+python-multipart
+
+# --- 測試專用依賴 ---
+pytest
+pytest-mock
+httpx
+
+# --- From services/api_gateway/requirements.txt ---
+fastapi
+uvicorn
+pydantic-settings
+huey
+requests
+python-multipart
+websockets
+
+# --- From services/static_web_server/requirements.txt ---
+fastapi
+uvicorn
+
+# --- From services/local_ai_model_service/requirements.txt ---
+fastapi
+uvicorn
+pydantic-settings
+
+# AI/ML 相關的重量級依賴
+# faster-whisper 用於高效的語音轉錄
+faster-whisper
+# torch 是 faster-whisper 的底層依賴
+torch
