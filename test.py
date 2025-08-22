@@ -1,160 +1,123 @@
-# test.py - Standalone E2E Verification Script
+# -*- coding: utf-8 -*-
 import subprocess
 import sys
-import os
 import re
 import time
-import logging
 from pathlib import Path
-import threading
-import importlib.util
+import logging
+import os
 
 # --- 基本設定 ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-log = logging.getLogger('StandaloneTest')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+log = logging.getLogger('StartupTest')
 ROOT_DIR = Path(__file__).resolve().parent
+COLAB_SCRIPT_PATH = ROOT_DIR / "Colabpro.py"
 
-def install_test_dependencies():
-    """安裝此測試腳本本身需要的依賴，主要是 playwright。"""
-    log.info("--- [測試步驟 1/4] 安裝測試依賴 (playwright) ---")
+# --- 超時設定 ---
+OVERALL_TIMEOUT = 120
+URL_TIMEOUT = 60
+
+def install_dependencies():
+    """安裝測試所需的核心依賴。"""
+    log.info("--- [1/3] 安裝測試核心依賴 ---")
+    # 不再需要 google-colab，因為 Colabpro.py 會自我模擬
+    dependencies = ["playwright", "ipython", "pytz"]
     try:
-        log.info("確保 'uv' 已安裝...")
-        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "uv"], check=True)
-
-        log.info("使用 uv 安裝 playwright...")
-        subprocess.run([sys.executable, "-m", "uv", "pip", "install", "-q", "playwright"], check=True, capture_output=True)
-
+        # 使用 pip 安裝，因為 uv 在此環境中解析 google-colab 有問題
+        log.info(f"使用 pip 安裝: {', '.join(dependencies)}...")
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q"] + dependencies, check=True)
         log.info("安裝 Playwright 瀏覽器...")
-        subprocess.run([sys.executable, "-m", "playwright", "install"], check=True, capture_output=True)
-
-        log.info("✅ 測試依賴安裝成功。")
+        subprocess.run([sys.executable, "-m", "playwright", "install", "--with-deps"], check=True, capture_output=True, text=True)
+        log.info("✅ 核心依賴安裝成功。")
         return True
-    except subprocess.CalledProcessError as e:
-        log.error(f"❌ 安裝測試依賴失敗: {e.stderr}")
-        return False
     except Exception as e:
-        log.error(f"❌ 安裝測試依賴時發生未預期錯誤: {e}")
+        log.error(f"❌ 核心依賴安裝失敗: {e}")
         return False
 
-def run_server_and_get_url():
-    """
-    執行模組化啟動器，並從其輸出中捕捉最終的伺服器 URL。
-    包含總體超時和 I/O 超時邏輯。
-    """
-    log.info("--- [測試步驟 2/4] 執行 runner.py 以啟動伺服器 ---")
-    runner_script_path = ROOT_DIR / "runner" / "main_runner.py"
+def run_and_verify():
+    """執行 Colabpro.py 腳本，並驗證其啟動流程。"""
+    log.info(f"--- [2/3] 執行啟動腳本: {COLAB_SCRIPT_PATH} ---")
+    assert COLAB_SCRIPT_PATH.exists(), f"❌ 啟動腳本不存在: {COLAB_SCRIPT_PATH}"
 
-    if not runner_script_path.exists():
-        log.error(f"❌ 找不到啟動器腳本: {runner_script_path}")
-        return None, None
+    url = None
+    proc = None
+    start_time = time.monotonic()
 
-    log.info(f"執行啟動命令: {sys.executable} {runner_script_path}")
-    runner_proc = subprocess.Popen(
-        [sys.executable, str(runner_script_path)],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8'
-    )
+    try:
+        # 設定環境變數，通知 Colabpro.py 進入測試模式
+        env = os.environ.copy()
+        env["IN_TEST_MODE"] = "1"
 
-    # --- 線程化 I/O 讀取 ---
-    import queue
-    q = queue.Queue()
-
-    def reader_thread(pipe, stream_name):
-        try:
-            for line in iter(pipe.readline, ''):
-                q.put((stream_name, line))
-        finally:
-            pipe.close()
-
-    threading.Thread(target=reader_thread, args=[runner_proc.stdout, 'stdout'], daemon=True).start()
-    threading.Thread(target=reader_thread, args=[runner_proc.stderr, 'stderr'], daemon=True).start()
-
-    # --- 超時與 URL 解析邏輯 ---
-    OVERALL_TIMEOUT = 100  # 秒
-    IO_TIMEOUT = 20       # 秒
-    start_time = time.time()
-    last_output_time = start_time
-    server_url = None
-    url_pattern = re.compile(r"FINAL_URL:\s*(https?://[^\s]+)")
-
-    while time.time() - start_time < OVERALL_TIMEOUT:
-        try:
-            stream_name, line = q.get(timeout=IO_TIMEOUT)
-            last_output_time = time.time() # 重置 I/O 計時器
-
-            if stream_name == 'stdout':
-                log.info(f"[Runner stdout]: {line.strip()}")
-                match = url_pattern.search(line)
+        proc = subprocess.Popen(
+            [sys.executable, "-u", str(COLAB_SCRIPT_PATH)],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8',
+            env=env # 傳遞修改後的環境變數
+        )
+        log.info("監聽啟動日誌以捕獲 URL...")
+        while time.monotonic() - start_time < URL_TIMEOUT:
+            line = proc.stdout.readline()
+            if not line:
+                if proc.poll() is not None:
+                    log.error("❌ 啟動腳本提前終止，未能成功啟動伺服器。")
+                    return None
+                time.sleep(0.1)
+                continue
+            log.info(f"[Colabpro]: {line.strip()}")
+            if line.strip().startswith("APP_URL:"):
+                match = re.search(r"APP_URL:\s*(https?://[^\s]+)", line)
                 if match:
-                    server_url = match.group(1)
-                    log.info(f"✅ 從啟動器成功解析到 URL: {server_url}")
+                    url = match.group(1)
+                    log.info(f"✅ 成功從契約捕獲本地伺服器 URL: {url}")
                     break
-            elif stream_name == 'stderr':
-                log.warning(f"[Runner stderr]: {line.strip()}")
+        if not url:
+            log.error(f"❌ 在 {URL_TIMEOUT} 秒內未能捕獲到 URL。啟動超時。")
+            return None
 
-        except queue.Empty:
-            log.error(f"❌ IO 超時：在 {IO_TIMEOUT} 秒內未收到任何日誌輸出。")
-            runner_proc.kill()
-            return None, None
-
-    if not server_url:
-        if time.time() - start_time >= OVERALL_TIMEOUT:
-             log.error(f"❌ 總體超時：在 {OVERALL_TIMEOUT} 秒內未能啟動服務並找到 URL。")
-        runner_proc.kill()
-        return None, None
-
-    return server_url, runner_proc
+        log.info(f"--- [3/3] 使用 Playwright 驗證 URL ---")
+        from playwright.sync_api import sync_playwright, expect
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            log.info(f"導航至: {url}")
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            expected_title = "音訊轉錄儀"
+            expect(page).to_have_title(expected_title, timeout=10000)
+            log.info(f"✅ 頁面標題 '{expected_title}' 驗證成功！")
+            screenshot_path = ROOT_DIR / "final_startup_success.png"
+            page.screenshot(path=str(screenshot_path))
+            log.info(f"✅ 成功擷取螢幕截圖至: {screenshot_path}")
+            browser.close()
+        return url
+    finally:
+        if proc and proc.poll() is None:
+            log.info("正在終止 Colabpro.py 子程序...")
+            proc.terminate()
+            try: proc.wait(timeout=5)
+            except subprocess.TimeoutExpired: proc.kill()
+            log.info("✅ 子程序已終止。")
 
 def main():
-    log.info("====== 開始執行端到端啟動驗證 ======")
+    log.info("====== 開始執行新架構啟動流程端對端驗證 ======")
+    start_time = time.monotonic()
 
-    scratch_dir = Path("jules-scratch/verification")
-    scratch_dir.mkdir(parents=True, exist_ok=True)
-
-    if not install_test_dependencies():
-        log.critical("====== 驗證失敗：無法安裝測試所需依賴 ======")
+    if not install_dependencies():
+        log.critical("====== 驗證失敗：無法安裝核心依賴 ======")
         sys.exit(1)
 
-    server_url, runner_proc = run_server_and_get_url()
-
-    if not server_url or not runner_proc:
-        log.critical("====== 驗證失敗：無法啟動伺服器 ======")
-        sys.exit(1)
-
-    is_verified = False
     try:
-        log.info(f"--- [測試步驟 3/4] 使用自定義腳本驗證 URL: {server_url} ---")
-
-        # 動態載入我們的驗證模組
-        module_path = scratch_dir / "verify_simple.py"
-        spec = importlib.util.spec_from_file_location("verify_simple", module_path)
-        verify_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(verify_module)
-
-        # 執行驗證函式
-        verify_module.run_verification(server_url)
-
-        is_verified = True
-        log.info("✅ 自定義驗證腳本執行成功。")
+        final_url = run_and_verify()
+        if final_url:
+            elapsed = time.monotonic() - start_time
+            log.info(f"✅✅✅ 驗證成功！在 {elapsed:.2f} 秒內成功啟動並驗證了應用。✅✅✅")
+            print("\n[SUCCESS] The end-to-end test passed.")
+            sys.exit(0)
+        else:
+            log.critical("❌❌❌ 驗證失敗！啟動流程未能成功完成。❌❌❌")
+            print("\n[FAILURE] The end-to-end test failed.")
+            sys.exit(1)
     except Exception as e:
-        log.error(f"❌ 自定義驗證腳本執行失敗: {e}", exc_info=True)
-        is_verified = False
-    finally:
-        log.info("--- [測試步驟 4/4] 清理並關閉伺服器 ---")
-        if runner_proc.poll() is None:
-            runner_proc.terminate()
-            try:
-                runner_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                runner_proc.kill()
-        log.info("✅ 伺服器進程已關閉。")
-
-    if is_verified:
-        log.info("✅✅✅ 驗證成功！啟動流程看起來運作正常。✅✅✅")
-        print("\n[SUCCESS] The end-to-end test passed.")
-        sys.exit(0)
-    else:
-        log.critical("❌❌❌ 驗證失敗！啟動流程存在問題。❌❌❌")
-        print("\n[FAILURE] The end-to-end test failed.")
+        log.critical(f"❌ 測試過程中發生未預期的錯誤: {e}", exc_info=True)
+        print("\n[FAILURE] The end-to-end test failed due to an unexpected error.")
         sys.exit(1)
 
 if __name__ == "__main__":

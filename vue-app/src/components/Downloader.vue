@@ -70,16 +70,18 @@
 <script setup>
 import { ref } from 'vue'
 import { useTasksStore } from '@/stores/tasks'
+import { useNotificationStore } from '@/stores/notifications'
 import { logAction } from '@/utils/logging'
 
 const tasksStore = useTasksStore()
+const notificationStore = useNotificationStore()
 const urls = ref('')
 const downloadType = ref('audio')
 
 const startDownload = async () => {
   const urlList = urls.value.split('\n').map(u => u.trim()).filter(u => u)
   if (urlList.length === 0) {
-    alert('請輸入至少一個有效的網址。')
+    notificationStore.addNotification('請輸入至少一個有效的網址。', 'error')
     return
   }
   logAction('click-start-download', `urls_count: ${urlList.length}`)
@@ -90,10 +92,9 @@ const startDownload = async () => {
       downloadType: downloadType.value
     })
     urls.value = ''
-    // 可以加入成功提示
-    alert('下載任務已成功建立！')
+    notificationStore.addNotification('下載任務已成功建立！', 'success')
   } catch (error) {
-    alert(`建立下載任務失敗: ${error.message}`)
+    notificationStore.addNotification(`建立下載任務失敗: ${error.message}`, 'error')
   }
 }
 </script>
