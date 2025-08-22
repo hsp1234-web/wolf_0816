@@ -79,10 +79,12 @@
 <script setup>
 import { ref, reactive, onMounted, computed } from 'vue';
 import { useTasksStore } from '@/stores/tasks';
+import { useNotificationStore } from '@/stores/notifications';
 import { logAction } from '@/utils/logging';
 import YouTubeReportBrowser from './YouTubeReportBrowser.vue';
 
 const tasksStore = useTasksStore();
+const notificationStore = useNotificationStore();
 
 // 組件狀態
 const apiKey = ref('');
@@ -116,7 +118,7 @@ const fetchModels = async () => {
 const saveAndValidateApiKey = async () => {
   logAction('click-save-api-key');
   if (!apiKey.value) {
-    alert('API 金鑰不能為空');
+    notificationStore.addNotification('API 金鑰不能為空', 'error');
     return;
   }
   localStorage.setItem('googleApiKey', apiKey.value);
@@ -181,11 +183,11 @@ const processRequest = async (downloadOnly = false) => {
     filename: link.filename.trim()
   }));
   if (requests.length === 0) {
-    alert('請至少輸入一個有效的 YouTube 網址。');
+    notificationStore.addNotification('請至少輸入一個有效的 YouTube 網址。', 'error');
     return;
   }
   if (!downloadOnly && selectedTasks.value.length === 0) {
-    alert('請至少選擇一個 AI 分析任務。');
+    notificationStore.addNotification('請至少選擇一個 AI 分析任務。', 'error');
     return;
   }
 
@@ -201,9 +203,9 @@ const processRequest = async (downloadOnly = false) => {
   try {
     await tasksStore.processYoutubeRequest(payload);
     youtubeLinks.value = [{ url: '', filename: '' }]; // 清空輸入
-    alert('YouTube 處理任務已成功建立！');
+    notificationStore.addNotification('YouTube 處理任務已成功建立！', 'success');
   } catch (error) {
-    alert(`建立任務失敗: ${error.message}`);
+    notificationStore.addNotification(`建立任務失敗: ${error.message}`, 'error');
   }
 };
 

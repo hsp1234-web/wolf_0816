@@ -15,8 +15,10 @@
 <script setup>
 import { computed } from 'vue';
 import { useTasksStore } from '@/stores/tasks';
+import { useNotificationStore } from '@/stores/notifications';
 
 const tasksStore = useTasksStore();
+const notificationStore = useNotificationStore();
 
 const logs = computed(() => tasksStore.logs);
 
@@ -33,10 +35,10 @@ const loadLogs = () => {
 const copyLogs = () => {
   if (logs.value.length === 0) return;
   navigator.clipboard.writeText(formattedLogs.value).then(() => {
-    alert('日誌已複製到剪貼簿！');
+    notificationStore.addNotification('日誌已複製到剪貼簿！', 'success');
   }).catch(err => {
     console.error('複製日誌失敗:', err);
-    alert('複製日誌失敗。');
+    notificationStore.addNotification('複製日誌失敗', 'error');
   });
 };
 

@@ -24,11 +24,13 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { useTasksStore } from '@/stores/tasks'
+import { useNotificationStore } from '@/stores/notifications'
 import { logAction } from '@/utils/logging'
 import PreviewModal from './PreviewModal.vue' // 匯入新的 Modal 元件
 
 // 獲取 store 實例
 const tasksStore = useTasksStore()
+const notificationStore = useNotificationStore()
 
 // 建立一個計算屬性來響應式地獲取已完成的任務
 const completedTasks = computed(() => tasksStore.completedTasks)
@@ -52,10 +54,9 @@ const renameTask = async (task) => {
     const sanitizedName = newName.trim().replace(/[\\/?%*:|"<>\x00-\x1F]/g, '');
     try {
         await tasksStore.renameTask(task.task_id, sanitizedName);
-        // 可以加入一個成功提示
+        notificationStore.addNotification('檔案已成功重新命名！', 'success');
     } catch (error) {
-        // 可以加入一個失敗提示
-        alert(`重新命名失敗: ${error.message}`);
+        notificationStore.addNotification(`重新命名失敗: ${error.message}`, 'error');
     }
   }
 }
