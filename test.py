@@ -47,10 +47,10 @@ VENV_PYTHON = VENV_DIR / "bin" / "python" if platform.system() != "Windows" else
 REQ_FILE = ROOT_DIR / "requirements-server.txt"
 VUE_APP_DIR = ROOT_DIR / "vue-app"
 LOG_FILE = ROOT_DIR / "test_engine.log"
-API_PORT = 18787  # 使用一個固定的、不常用的埠號以避免衝突
 PROCESSES = [] # 用於存放所有背景服務的 process 物件
 
-# --- 輔助函式 ---
+# 全域變數，用於在 start_services 和 run_test 之間傳遞動態分配的 URL
+DYNAMIC_API_URL = None
 def _print_header(message):
     """打印帶有標題格式的訊息。"""
     print("\n" + "="*60)
@@ -158,44 +158,62 @@ def build(c):
 @task(build)
 def start_services(c):
     """
-    在背景啟動所有必要的後端服務。
+    在背景啟動核心後端服務，並捕獲其動態分配的 URL。
     """
-    _print_header("3. 啟動後端服務 (Start Services)")
-    global PROCESSES
+    _print_header("3. 啟動核心後端服務 (via localrun_new.py)")
+    global PROCESSES, DYNAMIC_API_URL
 
-    # 建立一個包含虛擬環境 bin 目錄和專案 src 目錄的環境
-    env = os.environ.copy()
-    env["PATH"] = str(VENV_DIR / "bin") + os.pathsep + env.get("PATH", "")
-    env["PYTHONPATH"] = str(ROOT_DIR / "src") + os.pathsep + env.get("PYTHONPATH", "")
-    env["SKIP_DEP_CHECK"] = "1" # 設定環境變數以跳過 orchestrator 的內部依賴檢查
-
-    # 啟動 orchestrator.py
-    # 它會自己處理 db_manager 和 api_server
+    # 使用虛擬環境的 Python 解譯器來執行新的啟動器
     command = [
         str(VENV_PYTHON),
-        str(ROOT_DIR / "src" / "core" / "orchestrator.py"),
-        "--port",
-        str(API_PORT)
+        str(ROOT_DIR / "runner" / "localrun_new.py"),
+        "--no-mock" # 在測試時使用真實模式
     ]
-    print(f"🚀 正在啟動主協調器...")
-    proc = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
+
+    print(f"🚀 正在執行: {' '.join(command)}")
+    proc = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding='utf-8',
+        bufsize=1
+    )
     PROCESSES.append(proc)
 
-    # 等待 Uvicorn 啟動
-    print(f"⏳ 等待 Uvicorn 在埠號 {API_PORT} 上啟動...")
+    # 等待 localrun_new.py 完成健康檢查並輸出成功訊息
+    print(f"⏳ 等待後端健康檢查完成...")
     ready = False
-    uvicorn_pattern = re.compile(r"Uvicorn running on")
+    # 更穩健的 Regex，專門匹配包含 URL 的那一行
+    url_line_pattern = re.compile(r"網址已就緒: (https?://\S+)")
+    health_check_pattern = re.compile(r"✅ 後端健康檢查成功。")
+
     try:
         for line in iter(proc.stdout.readline, ''):
-            sys.stdout.write(line) # 顯示 orchestrator 的輸出
+            sys.stdout.write(line)
             with open(LOG_FILE, "a") as log:
                 log.write(line)
-            if uvicorn_pattern.search(line):
-                print(f"✅ Uvicorn 服務已啟動！")
+
+            # 捕獲 URL
+            if DYNAMIC_API_URL is None:
+                match = url_line_pattern.search(line)
+                if match:
+                    # URL 是捕獲組 1
+                    DYNAMIC_API_URL = match.group(1)
+                    print(f"✅ 捕獲到動態 API URL: {DYNAMIC_API_URL}")
+
+            # 檢查是否已就緒
+            if health_check_pattern.search(line):
+                print(f"✅ 後端服務已就緒！")
                 ready = True
+                time.sleep(2) # 給予緩衝時間，確保服務完全穩定
                 break
+
         if not ready:
-             raise RuntimeError("Uvicorn 服務未能成功啟動。")
+             raise RuntimeError("後端服務未能成功啟動或通過健康檢查。")
+        if DYNAMIC_API_URL is None:
+             raise RuntimeError("未能從啟動器輸出中捕獲到 API URL。")
+
     except Exception as e:
         print(f"❌ 啟動服務時發生錯誤: {e}")
         _kill_all_services()
@@ -215,9 +233,45 @@ def run_test(c):
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
 
-            target_url = f"http://127.0.0.1:{API_PORT}"
-            print(f"🎭 Playwright 正在導航至: {target_url}")
+            if not DYNAMIC_API_URL:
+                raise RuntimeError("動態 API URL 未被設定，測試無法繼續。")
 
+            target_url = DYNAMIC_API_URL.replace("127.0.0.1", "localhost")
+
+            # 最終診斷：檢查啟動器程序是否仍在運行
+            if not PROCESSES:
+                raise RuntimeError("❌ PROCESSES 列表為空，無法檢查啟動器狀態。")
+            launcher_proc = PROCESSES[0] # 假設它是唯一的程序
+            poll_result = launcher_proc.poll()
+            if poll_result is not None:
+                # 為了獲取更多上下文，讀取一些剩餘的日誌
+                remaining_output = launcher_proc.stdout.read()
+                print("--- [啟動器剩餘日誌] ---")
+                print(remaining_output)
+                print("--- [日誌結束] ---")
+                raise RuntimeError(f"❌ 啟動器程序已意外終止，結束碼: {poll_result}。測試無法繼續。")
+            else:
+                print(f"✅ 啟動器程序 (PID: {launcher_proc.pid}) 仍在運行中。")
+
+            print(f"🩺 執行手動連線測試 (curl) 到: {target_url}")
+            try:
+                # 使用 curl 進行額外的連線診斷
+                # capture_output=True 以免干擾主日誌
+                result = subprocess.run(
+                    ["curl", "-v", "--max-time", "5", target_url],
+                    check=True,
+                    timeout=10,
+                    capture_output=True
+                )
+                print("✅ curl 連線測試成功。")
+                print(f"   - curl stdout: {result.stdout.decode(errors='ignore')}")
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+                print(f"❌ curl 連線測試失敗: {e}")
+                if hasattr(e, 'stderr'):
+                    print(f"   - curl stderr: {e.stderr.decode(errors='ignore')}")
+                raise RuntimeError(f"curl 連線測試失敗，無法繼續 Playwright 測試。")
+
+            print(f"🎭 Playwright 正在導航至: {target_url}")
             page.goto(target_url, timeout=15000)
 
             print("   - 正在驗證頁面標題...")

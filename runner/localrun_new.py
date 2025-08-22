@@ -253,12 +253,17 @@ class StagedLauncher:
             log.info("  - 安裝 Playwright 瀏覽器 (Chromium)...")
             subprocess.run(["npx", "playwright", "install", "chromium"], check=True, capture_output=True, timeout=120)
 
-            # 步驟 2: 安裝 uv
-            log.info("  - 正在安裝 uv 套件管理器...")
-            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "uv"], check=True, capture_output=True)
+            # 步驟 2: 確認 uv 可用 (不再重新安裝)
+            log.info("  - 正在確認 uv 套件管理器可用...")
+            try:
+                subprocess.run(["uv", "--version"], check=True, capture_output=True)
+            except (FileNotFoundError, subprocess.CalledProcessError):
+                log.error("❌ `uv` 指令無法執行。請確保 uv 已安裝並在系統 PATH 中。")
+                raise RuntimeError("uv not found")
 
-            # 步驟 3: 使用 uv 安裝伺服器和 worker 的依賴
-            # MODIFIED: Removed 'worker' from this loop, as new workers manage their own dependencies.
+            # 步驟 3: 僅安裝伺服器依賴
+            # 工作者的依賴將由 StartupManager 在其各自的虛擬環境中動態安裝。
+            log.info("  - 僅安裝伺服器端依賴...")
             for req_name in ["server"]:
                 req_file = ROOT_DIR / f"requirements-{req_name}.txt"
                 if req_file.exists():
@@ -345,31 +350,16 @@ class StagedLauncher:
         api_proc = subprocess.Popen(api_server_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', preexec_fn=os.setsid, env=env)
         self.processes.append(("api_server", api_proc))
 
-        # --- MODIFICATION START ---
-        # Remove old worker startup
-        # worker_cmd = [sys.executable, str(ROOT_DIR / "src" / "tasks" / "worker.py")]
-        # if self.mock_mode: worker_cmd.append("--mock")
-        # env["API_PORT"] = str(self.api_port)
-        # worker_proc = subprocess.Popen(worker_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', preexec_fn=os.setsid, env=env)
-        # self.processes.append(("worker", worker_proc))
+        # --- JULES: 動態啟動架構修改 ---
+        # 舊的獨立工作者將不再由這裡啟動。
+        # 我們只啟動新的「啟動管理者」工作者，它將會負責根據需求動態喚醒其他工作者。
 
-        # Launch new standalone workers
-        worker_scripts = [
-            "run_youtube_worker.py",
-            "run_transcription_worker.py",
-            "run_ai_report_worker.py"
-        ]
+        startup_manager_cmd = [sys.executable, str(ROOT_DIR / "run_startup_manager_worker.py")]
+        startup_manager_proc = subprocess.Popen(startup_manager_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', preexec_fn=os.setsid, env=env)
+        self.processes.append(("startup_manager", startup_manager_proc))
+        log.info("  - Startup Manager (啟動管理者) 已啟動。")
 
-        for script_name in worker_scripts:
-            worker_cmd = [sys.executable, str(ROOT_DIR / script_name)]
-            # The new workers don't have a mock mode flag, they rely on environment variables set in api_server for tools
-            # For now, we run them as is. They are self-contained.
-            proc = subprocess.Popen(worker_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', preexec_fn=os.setsid, env=env)
-            worker_name = script_name.replace('.py', '')
-            self.processes.append((worker_name, proc))
-            log.info(f"  - {worker_name} 已啟動。")
-
-        # --- MODIFICATION END ---
+        # --- 修改結束 ---
 
         log.info("✅ 所有主要服務已啟動。")
         for name, proc in self.processes:
