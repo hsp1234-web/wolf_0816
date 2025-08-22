@@ -62,6 +62,7 @@ import os
 import shutil
 import subprocess
 import sqlite3
+import socket
 import time
 from datetime import datetime
 import threading
@@ -262,10 +263,10 @@ def launch_application(project_path_str: str, log_manager: DisplayManager):
 
 def _get_colab_proxy_url(port: int, shared_stats: dict, display_manager: DisplayManager):
     """
-    在背景執行緒中執行，此函式包含更穩健的邏輯，反覆嘗試獲取 Colab 的代理 URL。
-    它處理了 JS 執行可能引發的各種錯誤和超時情況。
+    在背景執行緒中執行，此函式使用整合式重試邏輯，耐心等待並獲取 Colab 代理 URL。
+    它結合了伺服器就緒檢查和代理獲取兩個步驟。
     """
-    max_retries, retry_delay, js_timeout_ms, py_timeout_sec = 20, 1, 7000, 10
+    max_retries, retry_delay, js_timeout_ms, py_timeout_sec = 30, 2, 7000, 10
 
     js_get_url_script = f'''
     (async () => {{
@@ -282,13 +283,37 @@ def _get_colab_proxy_url(port: int, shared_stats: dict, display_manager: Display
     '''
 
     for attempt in range(max_retries):
-        shared_stats['status'] = f"正在嘗試取得代理連結... (第 {attempt + 1}/{max_retries} 次)"
-        result_queue = queue.Queue()
+        # --- 階段 1: 檢查後端伺服器是否就緒 ---
+        status_msg = f"🔍 檢查伺服器狀態... (第 {attempt + 1}/{max_retries} 次)"
+        shared_stats['status'] = status_msg
+        display_manager.log("INFO", status_msg)
 
+        server_ready = False
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                server_ready = True
+                display_manager.log("DEBUG", f"Socket check on port {port} successful.")
+        except (socket.timeout, ConnectionRefusedError):
+            display_manager.log("INFO", f"伺服器在埠號 {port} 上尚未就緒，將在 {retry_delay} 秒後重試...")
+        except Exception as e:
+            display_manager.log("ERROR", f"伺服器就緒檢查時發生未預期錯誤: {e}")
+            # 發生未知錯誤時，也等待一下再重試
+
+        if not server_ready:
+            time.sleep(retry_delay)
+            continue
+
+        # --- 階段 2: 伺服器已就緒，嘗試獲取代理連結 ---
+        status_msg = f"⏳ 伺服器已就緒，嘗試取得代理連結... (第 {attempt + 1}/{max_retries} 次)"
+        shared_stats['status'] = status_msg
+        display_manager.log("INFO", status_msg)
+
+        result_queue = queue.Queue()
         def _eval_js_in_thread(q, script):
             try:
                 q.put({'result': colab_output.eval_js(script), 'error': None})
             except Exception as e:
+                display_manager.log("ERROR", f"Python 端 eval_js 執行緒崩潰:\n{traceback.format_exc()}")
                 q.put({'result': None, 'error': e})
 
         eval_thread = threading.Thread(target=_eval_js_in_thread, args=(result_queue, js_get_url_script))
@@ -299,34 +324,29 @@ def _get_colab_proxy_url(port: int, shared_stats: dict, display_manager: Display
             output = result_queue.get(timeout=py_timeout_sec)
             if output.get('error'):
                 error_msg = str(output['error'])
-                shared_stats['status'] = f"嘗試失敗 ({error_msg[:50]}...)，{retry_delay}秒後重試。"
-                display_manager.log("WARN", f"獲取代理連結的背景執行緒發生錯誤: {error_msg}")
+                display_manager.log("WARN", f"獲取代理連結的 Python 執行緒出錯: {error_msg}")
             else:
                 result = output.get('result')
                 if result and result.get('error'):
                     error_msg = str(result['error'])
-                    shared_stats['status'] = f"JS錯誤 ({error_msg[:50]}...)，{retry_delay}秒後重試。"
                     display_manager.log("WARN", f"獲取代理連結時發生 JS 錯誤: {error_msg}")
                 elif result and result.get('url') and result['url'].strip().startswith('http'):
                     candidate_url = result['url'].strip()
                     shared_stats['proxy_url'] = candidate_url
                     shared_stats['status'] = "✅ 應用程式已就緒"
                     display_manager.log("SUCCESS", f"成功取得並驗證代理連結: {candidate_url}")
-                    return
-                else:
-                    shared_stats['status'] = f"收到無效的回傳值，{retry_delay}秒後重試。"
-                    display_manager.log("WARN", f"收到無效的代理回傳值: '{str(result)[:100]}...'")
+                    return # 成功，退出函式
         except queue.Empty:
-            shared_stats['status'] = f"操作超時 ({py_timeout_sec}秒)，{retry_delay}秒後重試。"
-            display_manager.log("WARN", f"獲取代理連結操作超時 ({py_timeout_sec}秒)。")
+            display_manager.log("WARN", f"獲取代理連結操作超時 ({py_timeout_sec}秒)。Colab 前端可能已無回應。")
         except Exception as e:
-            error_msg = str(e)
-            shared_stats['status'] = f"發生未預期錯誤 ({error_msg[:50]}...)，{retry_delay}秒後重試。"
-            display_manager.log("ERROR", f"獲取代理連結迴圈發生未預期錯誤: {e}")
+            display_manager.log("ERROR", f"獲取代理連結迴圈發生未預期錯誤: {e}\n{traceback.format_exc()}")
 
+        # 如果 socket 檢查成功但 JS 失敗，提示訊息
+        display_manager.log("WARN", "後端已就緒但無法獲取代理連結，這可能是 Colab 的暫時性問題。")
         time.sleep(retry_delay)
 
-    display_manager.log("ERROR", "❌ 無法取得 Colab 代理連結。請檢查瀏覽器主控台是否有錯誤。")
+    display_manager.log("CRITICAL", "❌ 無法取得 Colab 代理連結。這通常是 Colab 環境本身的問題。")
+    display_manager.log("CRITICAL", "💡 解決方案：請嘗試在 Colab 選單中選擇「執行階段」->「恢復原廠執行階段」，然後重新執行此儲存格。")
     shared_stats['status'] = "❌ 獲取連結失敗"
 
 def create_log_viewer_html(display_manager: DisplayManager) -> str:
