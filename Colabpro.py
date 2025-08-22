@@ -36,8 +36,8 @@ ENABLE_CLEAR_OUTPUT = True #@param {type:"boolean"}
 # ==                                  開發者日誌                                  ==
 # ======================================================================================
 #
-# 版本: 2.0 (架構: 極速兩階段啟動)
-# 日期: 2025-08-22T11:17:25+08:00
+# 版本: 2.1 (架構: 極速啟動 + 穩定性修復)
+# 日期: 2025-08-22T11:22:25+08:00
 #
 # 🔴 **禁止直接執行**: 本檔案 (Colabpro.py) 被設計為一個程式庫 (library)，
 #    由 Colab Notebook 環境導入並呼叫。請勿透過 `python Colabpro.py` 直接執行。
@@ -70,6 +70,7 @@ import html
 import queue
 import traceback
 import types
+import json
 
 def _setup_colab_mocks():
     """如果不在真實的 Colab 環境中，則建立虛假的 google.colab 模組以避免 ImportError。"""
@@ -155,18 +156,24 @@ class LogManager:
         with self._lock: return list(self._log_deque)
     def get_full_history(self, limit: int) -> list[str]:
         with self._lock:
-            cursor = self._db_conn.cursor()
-            cursor.execute("SELECT timestamp, level, message FROM logs ORDER BY id DESC LIMIT ?", (limit,))
-            rows = cursor.fetchall()
-            return [f"[{row[0]}] [{row[1]}] {row[2]}" for row in reversed(rows)]
+            # 確保資料庫連線是開啟的
+            if not self._db_conn: return ["資料庫連線已關閉。"]
+            try:
+                cursor = self._db_conn.cursor()
+                cursor.execute("SELECT timestamp, level, message FROM logs ORDER BY id DESC LIMIT ?", (limit,))
+                rows = cursor.fetchall()
+                return [f"[{row[0]}] [{row[1]}] {row[2]}" for row in reversed(rows)]
+            except sqlite3.ProgrammingError:
+                return ["資料庫連線已關閉。"]
     def close(self):
-        if self._db_conn: self._db_conn.close()
+        if self._db_conn:
+            self._db_conn.close()
+            self._db_conn = None
 
 ANSI_COLORS = {"SUCCESS": "\033[32m", "WARN": "\033[33m", "ERROR": "\033[31m", "CRITICAL": "\033[31m", "RESET": "\033[0m", "INFO": "\033[34m", "DEBUG": "\033[90m", "RUNNER": "\033[90m"}
 def colorize(text, level): return f"{ANSI_COLORS.get(level, '')}{text}{ANSI_COLORS.get('RESET', '')}"
 
 class DisplayManager:
-    # ... (DisplayManager 保持不變) ...
     def __init__(self, log_manager, stats_dict, refresh_rate):
         self._log_manager = log_manager; self._stats = stats_dict; self._refresh_rate = refresh_rate
         self._stop_event = threading.Event(); self._thread = threading.Thread(target=self._run, daemon=True)
@@ -261,7 +268,6 @@ def launch_application(project_path_str: str, log_manager: LogManager):
         print(f"APP_URL: http://127.0.0.1:{port}", flush=True)
         time.sleep(5)
 
-        # ... (代理連結獲取邏輯保持不變) ...
         for attempt in range(20):
             shared_stats['status'] = f"正在嘗試取得代理連結... (第 {attempt + 1}/20 次)"
             result_queue = queue.Queue()
@@ -296,22 +302,43 @@ def launch_application(project_path_str: str, log_manager: LogManager):
         if server_proc and server_proc.poll() is None: server_proc.terminate()
         display_manager.stop()
         print("\n".join(display_manager._build_output_buffer()))
-        display(HTML(create_log_viewer_html(log_manager)))
+        # 在關閉 log_manager 之前，先產生 HTML
+        final_html = create_log_viewer_html(log_manager)
         log_manager.close()
+        display(HTML(final_html))
 
 def create_log_viewer_html(log_manager):
-    # ... (此函式保持不變) ...
+    """產生一個包含日誌內容的、功能獨立的 HTML 檢視器。"""
+    import json
     try:
         log_history = log_manager.get_full_history(limit=LOG_COPY_MAX_LINES)
-        escaped_lines = [html.escape(line) for line in log_history]
-        escaped_log_content = "\n".join(escaped_lines)
+        # 將日誌歷史轉換為 JSON 字串，以便安全地嵌入 HTML
+        log_json_string = json.dumps("\n".join(log_history), ensure_ascii=False)
+
         num_logs = len(log_history)
-        unique_log_id = f"log-area-{int(time.time() * 1000)}"
-        onclick_js = f'''(async () => {{ try {{ const textToCopy = document.getElementById("{unique_log_id}").innerText; await navigator.clipboard.writeText(textToCopy); this.innerText="✅ 已複製!"; }} catch (err) {{ this.innerText="❌ 複製失敗"; }} finally {{ setTimeout(() => {{ this.innerText="📋 複製這 {num_logs} 條日誌"; }}, 2000); }} }})()'''.replace("\n", " ")
-        top_button_html = f'<button onclick=\'{onclick_js}\' style="padding: 6px 12px; margin-bottom: 12px; cursor: pointer; border: 1px solid #ccc; border-radius: 5px; background-color: #fff;">📋 複製這 {num_logs} 條日誌</button>'
-        bottom_button_html = f'<button onclick=\'{onclick_js}\' style="padding: 6px 12px; margin-top: 12px; cursor: pointer; border: 1px solid #ccc; border-radius: 5px; background-color: #fff;">📋 複製這 {num_logs} 條日誌</button>'
-        return f'<details style="margin-top: 15px; margin-bottom: 15px; border: 1px solid #e0e0e0; padding: 12px; border-radius: 8px; background-color: #f9f9f9;"><summary style="cursor: pointer; font-weight: bold; color: #333;">點此展開/收合最近 {num_logs} 條詳細日誌</summary><div style="margin-top: 12px;">{top_button_html}<pre id="{unique_log_id}" style="background-color: #fff; padding: 12px; border: 1px solid #e0e0e0; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; font-family: monospace; font-size: 13px; color: #444;"><code>{escaped_log_content}</code></pre>{bottom_button_html}</div></details>'
-    except Exception as e: return f"<p>❌ 產生最終日誌報告時發生錯誤: {e}</p>"
+        unique_id = f"log-area-{int(time.time() * 1000)}"
+
+        # 將日誌內容直接嵌入到 onclick 事件中
+        # 使用 textContent 而不是 innerText 來保留換行符
+        onclick_js = f'''(async () => {{ try {{ const logText = {log_json_string}; await navigator.clipboard.writeText(logText); this.innerText="✅ 已複製!"; }} catch (err) {{ console.error('Copy failed:', err); this.innerText="❌ 複製失敗"; }} finally {{ setTimeout(() => {{ this.innerText="📋 複製這 {num_logs} 條日誌"; }}, 2000); }} }})()'''.replace("\n", " ")
+
+        button_html = f'<button onclick=\'{onclick_js}\' style="padding: 6px 12px; margin: 12px 0; cursor: pointer; border: 1px solid #ccc; border-radius: 5px; background-color: #fff;">📋 複製這 {num_logs} 條日誌</button>'
+
+        # 為了顯示，我們仍然需要 HTML 逸出
+        escaped_log_content = html.escape("\n".join(log_history))
+
+        return f'''
+        <details style="margin-top: 15px; margin-bottom: 15px; border: 1px solid #e0e0e0; padding: 12px; border-radius: 8px; background-color: #f9f9f9;">
+            <summary style="cursor: pointer; font-weight: bold; color: #333;">點此展開/收合最近 {num_logs} 條詳細日誌</summary>
+            <div style="margin-top: 12px;">
+                {button_html}
+                <pre style="background-color: #fff; padding: 12px; border: 1px solid #e0e0e0; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; font-family: monospace; font-size: 13px; color: #444;"><code>{escaped_log_content}</code></pre>
+                {button_html}
+            </div>
+        </details>
+        '''
+    except Exception as e:
+        return f"<p>❌ 產生最終日誌報告時發生錯誤: {e}</p>"
 
 if __name__ == "__main__":
     db_path = Path(f"launcher_logs_{PROJECT_FOLDER_NAME}.db")
@@ -325,6 +352,9 @@ if __name__ == "__main__":
     except Exception as e:
         log_manager.log("CRITICAL", "啟動器主流程發生致命錯誤。", exc_info=True)
     finally:
+        # 確保即使在 launch_application 之前失敗，也能顯示日誌
         if 'log_manager' in locals() and log_manager:
+            # 在 finally 的最末端才顯示，確保所有日誌都已產生
+            # 並且此時 log_manager 尚未關閉
             display(HTML(create_log_viewer_html(log_manager)))
             log_manager.close()
