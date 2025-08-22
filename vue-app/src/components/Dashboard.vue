@@ -46,7 +46,9 @@ import { useTasksStore } from '@/stores/tasks'
 const tasksStore = useTasksStore()
 
 // 從 store 中獲取系統狀態
-const systemStats = computed(() => tasksStore.systemStats)
+// 修正：增加一個後備空物件 {}，以防止在 systemStats getter 不存在時，
+// 模板存取 undefined 的屬性而導致渲染崩潰。
+const systemStats = computed(() => tasksStore.systemStats || {})
 const socketConnected = computed(() => tasksStore.socketConnected)
 const workerStatuses = computed(() => tasksStore.workerStatuses)
 

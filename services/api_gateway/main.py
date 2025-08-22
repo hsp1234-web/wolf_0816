@@ -94,10 +94,6 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
 
 # --- API 端點 ---
-@app.get("/")
-def read_root():
-    return {"status": "ok", "service": "API Gateway v2"}
-
 @app.post("/upload_for_transcription", summary="上傳檔案並觸發非同步轉錄", status_code=202)
 async def upload_and_transcribe(file: UploadFile = File(...)):
     task_id = str(uuid.uuid4())
