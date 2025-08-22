@@ -132,7 +132,9 @@ const tasksStore = useTasksStore()
 const activeTab = ref('transcribe')
 const workerStatuses = computed(() => tasksStore.workerStatuses)
 const operationStatus = computed(() => tasksStore.operationStatus)
-const initialSetup = computed(() => tasksStore.initialSetup)
+// 修正：增加一個後備物件，以防止在 initialSetup getter 不存在時，
+// 模板存取 undefined 的屬性而導致渲染崩潰。
+const initialSetup = computed(() => tasksStore.initialSetup || { completed: true })
 
 // --- 方法 ---
 

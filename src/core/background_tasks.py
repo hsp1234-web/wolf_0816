@@ -48,51 +48,18 @@ async def log_subprocess_output(process, name):
     log.info(f"服務 '{name}' 已終止，返回碼: {process.returncode}。")
 
 async def install_and_launch_workers():
-    log.info("--- [背景任務] 開始執行工作者安裝與啟動 ---")
+    """
+    簡化後的啟動流程。
+    假設所有依賴（包括 Huey 和工作者們的）都已由 `run_app.py`
+    安裝在主 Python 環境中。此函式現在只負責啟動 Huey consumer。
+    """
+    log.info("--- [背景任務] 開始啟動工作者 ---")
     await asyncio.sleep(1)
 
-    is_test_mode = os.environ.get("APP_ENV") == "test"
     python_executable = sys.executable
 
     try:
-        if is_test_mode:
-            log.info("🧪 偵測到測試模式，將跳過虛擬環境建立和依賴安裝。")
-        else:
-            worker_venv_name = "workers_env"
-            venv_path = VENV_DIR / worker_venv_name
-            log.info(f"為所有工作者建立共享虛擬環境於: {venv_path}")
-            await run_subprocess_for_install([sys.executable, "-m", "uv", "venv", str(venv_path)])
-
-            if sys.platform == "win32":
-                python_executable = venv_path / "Scripts" / "python.exe"
-            else:
-                python_executable = venv_path / "bin" / "python"
-
-            log.info("正在收集所有工作者和服務的依賴...")
-            all_reqs_path = ROOT_DIR / "all_workers_requirements.txt"
-
-            req_files = list(ROOT_DIR.glob("services/*/requirements.txt"))
-            req_files.extend(list(ROOT_DIR.glob("workers/requirements.txt")))
-            req_files = [f for f in req_files if 'api_gateway' not in str(f)]
-
-            with open(all_reqs_path, "w") as outfile:
-                for req_file in req_files:
-                    with open(req_file) as infile:
-                        outfile.write(f"# --- From {req_file.relative_to(ROOT_DIR)} ---\n")
-                        outfile.write(infile.read())
-                        outfile.write("\n")
-
-            log.info(f"所有依賴已合併至 {all_reqs_path}")
-
-            log.info(f"在 '{worker_venv_name}' 環境中安裝所有依賴...")
-            await run_subprocess_for_install([
-                sys.executable, "-m", "uv", "pip", "install",
-                "-r", str(all_reqs_path),
-                "--python", str(python_executable)
-            ])
-            log.info("✅ 所有工作者依賴已安裝。")
-
-        log.info("正在啟動 Huey consumer 來運行所有工作者...")
+        log.info("正在使用當前 Python 環境啟動 Huey consumer 來運行所有工作者...")
         consumer_script = ROOT_DIR / "huey_consumer.py"
         env = os.environ.copy()
         env["PYTHONPATH"] = str(ROOT_DIR)
