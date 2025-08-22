@@ -10,6 +10,8 @@ export function logAction(action, value = null) {
   const message = value !== null ? `${action}: ${value}` : action;
   console.log(`Logging action: ${message}`);
 
+  /*
+  // 暫時停用此功能，因為後端 API 端點 (/api/log/action) 尚未實作
   axios.post('/api/log/action', {
     action: message
   }).catch(err => {
@@ -17,6 +19,7 @@ export function logAction(action, value = null) {
     // 我們不在控制台中顯示它，以避免混淆。
     // console.error('logAction failed:', err);
   });
+  */
 }
 
 /**
