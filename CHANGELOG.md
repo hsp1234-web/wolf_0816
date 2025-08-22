@@ -1,3 +1,11 @@
+## 2025-08-22T10:24:41+08:00
+
+### 🚀 UI/UX 現代化 (UI/UX Modernization)
+- **完成「無彈窗」革命第一階段**: 根據 UI/UX 現代化計畫，此變更徹底移除了整個 Vue 應用程式中所有傳統的 `alert()` 彈出式視窗。
+    - **引入全域通知系統**: 實作並整合了一個基於 Pinia store 的非侵入式頁頂通知系統 (`NotificationHost.vue` 與 `stores/notifications.js`)。
+    - **全面替換 `alert()`**: 修改了 `Downloader.vue`, `LogViewer.vue`, `CompletedTasks.vue`, 和 `YouTubeReporter.vue`，將所有 `alert()` 呼叫替換為新的 `addNotification` 服務，用於顯示成功、錯誤和驗證訊息。
+    - **增強測試覆蓋**: 新增了單元測試 (`LogViewer.spec.js`) 來驗證 `LogViewer` 元件中複製日誌功能的通知行為，確保重構後的程式碼品質與穩定性。
+
 ## 2025-08-21T13:02:00+08:00
 
 ### ♻️ 重構與遷移 (Refactoring & Migration)
