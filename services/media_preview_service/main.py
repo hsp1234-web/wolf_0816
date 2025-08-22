@@ -38,4 +38,4 @@ async def stream_media(filename: str):
 
 if __name__ == "__main__":
     # 媒體預覽服務運行在 8009 連接埠
-    uvicorn.run("main:app", host="0.0.0.0", port=8009, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8009)

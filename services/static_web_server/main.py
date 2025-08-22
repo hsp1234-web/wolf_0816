@@ -5,14 +5,14 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pathlib import Path
-from background_tasks import install_heavy_dependencies
+from background_tasks import install_and_launch_services
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 在伺服器啟動時執行的程式碼
     print("INFO:     靜態網頁伺服器啟動...")
-    print("INFO:     觸發背景任務：安裝重量級依賴...")
-    asyncio.create_task(install_heavy_dependencies())
+    print("INFO:     觸發背景任務：安裝並啟動所有後端服務...")
+    asyncio.create_task(install_and_launch_services())
     yield
     # 在伺服器關閉時執行的程式碼
     print("INFO:     靜態網頁伺服器關閉。")

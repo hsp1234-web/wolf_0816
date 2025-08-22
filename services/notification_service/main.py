@@ -61,4 +61,4 @@ async def broadcast_message(message: BroadcastMessage):
 
 if __name__ == "__main__":
     # 通知服務運行在 8010 連接埠
-    uvicorn.run("main:app", host="0.0.0.0", port=8010, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8010)

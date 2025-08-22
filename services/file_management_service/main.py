@@ -160,4 +160,4 @@ async def list_files():
 if __name__ == "__main__":
     # 使用 uvicorn 來啟動服務，監聽在 8001 連接埠
     # 注意：在生產環境中，應使用 Gunicorn + Uvicorn workers 來管理
-    uvicorn.run("main:app", host="0.0.0.0", port=8001, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8001)
