@@ -1,3 +1,18 @@
+## 2025-08-22T15:58:00+08:00
+
+### 🧪 測試策略遷移與根本原因分析 (Test Strategy Migration & Root Cause Analysis)
+- **遷移 E2E 測試框架**: 為了實現前端測試的現代化，並解決在特定環境下執行的挑戰，對端對端測試策略進行了重大重構。
+    - **廢棄 `test.py`**: 移除了原有的、完全基於 Python 的 Playwright 測試腳本 `test.py`。
+    - **引入混合測試模式**:
+        - **建立 Python 流程控制器 (`run_e2e_test.py`)**: 新增了一個 Python 腳本，專門負責處理測試的環境設定，包括：啟動後端伺服器、清理資料庫、管理子程序等。
+        - **建立 JavaScript 測試執行器 (`run_browser_test.js`)**: 新增了一個獨立的、使用原生 `playwright` Node.js 套件的 JavaScript 腳本。此腳本包含了所有與瀏覽器互動的核心邏輯，實現了測試邏輯與環境控制的解耦。
+- **解決環境限制**:
+    - **繞過 `npm install` 限制**: 新的測試策略完全避免了在 `vue-app` 目錄下執行 `npm install`，從而成功繞過了因環境檔案數量限制而導致的 `node_modules` 安裝不完整問題。
+    - **最小化節點依賴**: 在專案根目錄下建立了一個最小化的 `package.json`，僅用於安裝 `playwright` Node.js 套件，確保了測試腳本的執行環境。
+- **成功定位根本問題**:
+    - 經過多輪除錯，新的測試流程最終成功運行，並產生了詳細的追蹤日誌 (`trace.zip`)。
+    - 測試結果確認了最初的失敗並非由測試執行器或環境設定引起，而是 **Vue 應用程式本身在 Playwright 的無頭瀏覽器環境中未能成功掛載 (mount)**，導致 `onMounted` 鉤子和後續的 WebSocket 初始化無法執行。這個發現為後續的前端除錯指明了清晰的方向。
+
 ## 2025-08-22T15:08:48+08:00
 
 ### 🏛️ 重大架構重構 (Major Architectural Refactoring)
