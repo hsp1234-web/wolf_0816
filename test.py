@@ -73,6 +73,34 @@ def run_and_verify():
             log.error(f"❌ 在 {URL_TIMEOUT} 秒內未能捕獲到 URL。啟動超時。")
             return None
 
+        # 增加一個健壯的埠號檢查迴圈，以取代固定的 sleep，從而更可靠地處理競爭條件
+        port = int(url.split(":")[-1].split("/")[0])
+        host = "127.0.0.1"
+        log.info(f"伺服器 URL 已捕獲。正在於 {host}:{port} 輪詢，等待服務啟動...")
+
+        import socket
+        start_poll_time = time.monotonic()
+        port_ready = False
+        while time.monotonic() - start_poll_time < 15: # 最多等待 15 秒
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(1)
+                try:
+                    s.connect((host, port))
+                    port_ready = True
+                    log.info(f"✅ 埠號 {port} 已開啟！服務已就緒。")
+                    break
+                except (socket.timeout, ConnectionRefusedError):
+                    log.info(f"埠號 {port} 尚未開啟，重試中...")
+                    time.sleep(1)
+
+        if not port_ready:
+            log.error(f"❌ 在 15 秒內，埠號 {port} 未能開啟。伺服器啟動失敗。")
+            # 為了除錯，我們嘗試讀取程序的剩餘輸出
+            proc.terminate()
+            stdout, _ = proc.communicate(timeout=5)
+            log.error(f"伺服器剩餘輸出:\n{stdout}")
+            return None
+
         log.info(f"--- [3/3] 使用 Playwright 驗證 URL ---")
         from playwright.sync_api import sync_playwright, expect
         with sync_playwright() as p:

@@ -294,7 +294,11 @@ def launch_application(project_path_str: str, log_manager: LogManager):
             raise RuntimeError("無法取得 Colab 代理連結。")
 
         log_manager.log("INFO", "應用程式已進入持續運行模式。")
-        server_proc.wait()
+        # 使用一個長時間的休眠迴圈來保持主執行緒存活，
+        # 這樣背景的 uvicorn 伺服器程序才能持續運行。
+        # 如果沒有這個迴圈，腳本會執行到 finally 區塊，導致伺服器被終止。
+        while True:
+            time.sleep(3600)
     except Exception as e:
         log_manager.log("CRITICAL", f"❌ launch_application 發生未預期的致命錯誤", exc_info=True)
         shared_stats['status'] = f"❌ 致命錯誤: {e}"
@@ -308,43 +312,69 @@ def launch_application(project_path_str: str, log_manager: LogManager):
         display(HTML(final_html))
 
 def create_log_viewer_html(log_manager):
-    """產生一個包含日誌內容的、功能獨立的 HTML 檢視器。"""
-    import json
+    """
+    產生一個包含日誌內容的、功能獨立的 HTML 檢視器。
+    此版本經過重構，以提高「複製」按鈕的穩定性。
+    """
     try:
         log_history = log_manager.get_full_history(limit=LOG_COPY_MAX_LINES)
-        # 將日誌歷史轉換為 JSON 字串，以便安全地嵌入 HTML
-        log_json_string = json.dumps("\n".join(log_history), ensure_ascii=False)
-
         num_logs = len(log_history)
         unique_id = f"log-area-{int(time.time() * 1000)}"
 
-        # 將日誌內容直接嵌入到 onclick 事件中
-        # 使用 textContent 而不是 innerText 來保留換行符
-        onclick_js = f'''(async () => {{ try {{ const logText = {log_json_string}; await navigator.clipboard.writeText(logText); this.innerText="✅ 已複製!"; }} catch (err) {{ console.error('Copy failed:', err); this.innerText="❌ 複製失敗"; }} finally {{ setTimeout(() => {{ this.innerText="📋 複製這 {num_logs} 條日誌"; }}, 2000); }} }})()'''.replace("\n", " ")
+        # 準備用於顯示和複製的日誌內容
+        log_content_string = "\n".join(log_history)
+        escaped_log_for_display = html.escape(log_content_string)
 
-        button_html = f'<button onclick=\'{onclick_js}\' style="padding: 6px 12px; margin: 12px 0; cursor: pointer; border: 1px solid #ccc; border-radius: 5px; background-color: #fff;">📋 複製這 {num_logs} 條日誌</button>'
+        # 1. 建立一個隱藏的 <textarea> 來儲存原始日誌文字。
+        #    這種方法將資料與 JS 邏輯分離，可避免因日誌內容包含特殊字元而破壞 onclick 屬性。
+        textarea_html = f'<textarea id="{unique_id}" style="position:absolute; left: -9999px; top: -9999px;" readonly>{escaped_log_for_display}</textarea>'
 
-        # 為了顯示，我們仍然需要 HTML 逸出
-        escaped_log_content = html.escape("\n".join(log_history))
+        # 2. 建立 onclick 的 JavaScript 程式碼。
+        #    它會從 textarea 讀取內容，而不是直接將內容嵌入 JS 字串中。
+        onclick_js = f'''(async () => {{
+            const textarea = document.getElementById('{unique_id}');
+            if (!textarea) {{ console.error('找不到日誌源'); return; }}
+            try {{
+                await navigator.clipboard.writeText(textarea.value);
+                this.innerText = "✅ 已複製!";
+            }} catch (err) {{
+                console.error('複製失敗:', err);
+                this.innerText = "❌ 複製失敗";
+            }} finally {{
+                setTimeout(() => {{ this.innerText = "📋 複製這 {num_logs} 條日誌"; }}, 2000);
+            }}
+        }})()'''.replace("\n", " ").strip()
 
+        # 3. 建立按鈕 HTML
+        button_html = f'<button onclick="{html.escape(onclick_js)}" style="padding: 6px 12px; margin: 12px 0; cursor: pointer; border: 1px solid #ccc; border-radius: 5px; background-color: #fff;">📋 複製這 {num_logs} 條日誌</button>'
+
+        # 4. 組裝最終的 HTML
         return f'''
         <details style="margin-top: 15px; margin-bottom: 15px; border: 1px solid #e0e0e0; padding: 12px; border-radius: 8px; background-color: #f9f9f9;">
             <summary style="cursor: pointer; font-weight: bold; color: #333;">點此展開/收合最近 {num_logs} 條詳細日誌</summary>
             <div style="margin-top: 12px;">
+                {textarea_html}
                 {button_html}
-                <pre style="background-color: #fff; padding: 12px; border: 1px solid #e0e0e0; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; font-family: monospace; font-size: 13px; color: #444;"><code>{escaped_log_content}</code></pre>
+                <pre style="background-color: #fff; padding: 12px; border: 1px solid #e0e0e0; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; font-family: monospace; font-size: 13px; color: #444;"><code>{escaped_log_for_display}</code></pre>
                 {button_html}
             </div>
         </details>
         '''
     except Exception as e:
-        return f"<p>❌ 產生最終日誌報告時發生錯誤: {e}</p>"
+        # 確保錯誤訊息也能被正確顯示
+        return f"<p>❌ 產生最終日誌報告時發生錯誤: {html.escape(str(e))}</p>"
 
 if __name__ == "__main__":
     db_path = Path(f"launcher_logs_{PROJECT_FOLDER_NAME}.db")
     log_manager = LogManager(max_lines=LOG_DISPLAY_LINES, timezone_str=TIMEZONE, db_path=str(db_path))
     try:
-        project_path = download_repository(log_manager)
+        # 檢查是否處於測試模式，如果是，則跳過下載，直接使用當前目錄
+        if os.environ.get('IN_TEST_MODE') == '1':
+            project_path = str(Path('.').resolve())
+            log_manager.log("INFO", "測試模式啟用：跳過 Git 下載，使用當前目錄作為專案路徑。")
+        else:
+            project_path = download_repository(log_manager)
+
         if project_path:
             launch_application(project_path_str=project_path, log_manager=log_manager)
         else:

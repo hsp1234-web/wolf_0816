@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pathlib import Path
-from .background_tasks import install_heavy_dependencies
+from background_tasks import install_heavy_dependencies
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

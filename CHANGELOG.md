@@ -1,3 +1,14 @@
+## 2025-08-22T11:34:41+08:00
+
+### 🐛 修復與穩定性增強 (Bug Fixes & Stability Improvements)
+- **修正 Colab 啟動器過早終止問題**:
+    - 在 `Colabpro.py` 的 `launch_application` 函式中，將 `server_proc.wait()` 替換為一個無限迴圈 (`while True: time.sleep(3600)`)。
+    - 此修改確保了主執行緒在背景伺服器啟動後能保持存活，從而防止腳本過早退出並終止服務，讓應用程式能進入真正的持續運行模式。
+- **修復日誌檢視器的「複製」按鈕**:
+    - 重構了 `Colabpro.py` 中的 `create_log_viewer_html` 函式，以提高其穩健性。
+    - 新的實作方式是將日誌內容儲存在一個隱藏的 `<textarea>` 中，並讓按鈕的 JavaScript 從該元素讀取內容進行複製。
+    - 此舉將資料與程式碼邏輯分離，徹底解決了因日誌內容包含特殊字元而導致 `onclick` 屬性損壞、按鈕功能失效的問題。
+
 ## 2025-08-22T11:13:05+08:00
 
 ### 🏛️ 架構重構與穩定性修復 (Architectural Refactoring & Stability Fixes)
