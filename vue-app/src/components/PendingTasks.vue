@@ -3,9 +3,9 @@
     <h2>🔄 進行中任務</h2>
     <div id="ongoing-tasks" class="task-list">
       <!-- 如果沒有進行中的任務，顯示提示訊息 -->
-      <p v-if="pendingTasks.length === 0" id="no-ongoing-task-msg">暫無執行中任務</p>
+      <p v-show="pendingTasks.length === 0" id="no-ongoing-task-msg">暫無執行中任務</p>
       <!-- 使用 v-for 渲染任務列表 -->
-      <div v-else v-for="task in pendingTasks" :key="task.task_id" class="task-item">
+      <div v-if="pendingTasks.length > 0" v-for="task in pendingTasks" :key="task.task_id" class="task-item">
         <div style="flex-grow: 1; overflow: hidden; margin-right: 10px; min-width: 0;">
           <span class="task-filename" :title="task.payload.original_filename || task.task_id">
             {{ task.payload.original_filename || task.task_id }}

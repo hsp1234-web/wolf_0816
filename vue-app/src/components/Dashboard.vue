@@ -91,12 +91,8 @@ const translateWorkerStatus = (status) => {
   return translations[status] || status;
 }
 
-onMounted(() => {
-  // 元件掛載時，主動獲取一次初始狀態
-  // 後續的更新將由 WebSocket 推送
-  tasksStore.fetchSystemStats()
-  tasksStore.fetchWorkerStatuses()
-})
+// onMounted hook is no longer needed as the WebSocket now pushes all state updates.
+// Keeping the onMounted logic would result in errors as the fetch actions have been removed from the store.
 </script>
 
 <style scoped>

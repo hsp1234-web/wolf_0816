@@ -1,51 +1,41 @@
 import { defineStore } from 'pinia'
 import axios from 'axios'
+import { applyPatch } from 'fast-json-patch'
 
-// 在 Vue App 中，API 的基本 URL 通常是相對路徑，指向同一個主機
 const API_BASE_URL = '/api'
 
+// 輔助函式：提供一個結構完整的、乾淨的初始狀態物件。
+// 這能確保元件在第一次渲染時就有一個可預測的狀態結構。
+const getInitialState = () => ({
+  appState: {
+    pending_tasks: [],
+    completed_tasks: [],
+    worker_statuses: {},
+    operation_status: { in_progress: false, message: '', progress: 0 },
+    local_models: { available: [], checking: true },
+  },
+  socket: null,
+  socketConnected: false,
+});
+
 export const useTasksStore = defineStore('tasks', {
-  state: () => ({
-    // 進行中的任務列表
-    pendingTasks: [],
-    // 已完成的任務列表
-    completedTasks: [],
-    // WebSocket 實例
-    socket: null,
-    // WebSocket 連線狀態
-    socketConnected: false,
-    // 系統狀態
-    systemStats: {},
-    // 工作者狀態
-    workerStatuses: {},
-    // 重構：統一的全域操作狀態
-    // 用於顯示任何阻擋使用者互動的全域進度，例如：模型下載、工作者安裝等。
-    operationStatus: {
-      inProgress: false, // 是否有操作正在進行
-      message: '',      // 顯示給使用者的訊息
-      progress: 0,      // 進度百分比 (0-100)
-    },
-    // JULES'S NEW FEATURE: 新增日誌狀態
-    logs: [],
-    logSourceFilter: 'all', // 'all', 'frontend_action', 'api_server', etc.
-    // JULES'S NEW FEATURE: 本地 Whisper 模型狀態
-    localModels: {
-      available: [],
-      checking: true,
-    },
-    // JULES'S NEW FEATURE: 初始設定倒數計時
-    initialSetup: {
-      countdown: 60,
-      timerId: null,
-      completed: false,
-      cancelled: false,
-    }
-  }),
+  state: () => getInitialState(),
+
+  // Getters to provide convenient access to the nested appState
+  getters: {
+    // 由於 state 現在結構完整，我們不再需要 || [] 作為後備
+    pendingTasks: (state) => state.appState.pending_tasks,
+    completedTasks: (state) => state.appState.completed_tasks,
+    workerStatuses: (state) => state.appState.worker_statuses,
+    operationStatus: (state) => state.appState.operation_status,
+    localModels: (state) => state.appState.local_models,
+  },
+
   actions: {
-    // 初始化 WebSocket 連線
     initializeSystem() {
-      this.connectToWebSocket('/api/ws');
-      this.startInitialCountdown();
+      if (!this.socket || this.socket.readyState === WebSocket.CLOSED) {
+        this.connectToWebSocket('/ws'); // API Gateway 的 WebSocket 代理
+      }
     },
 
     connectToWebSocket(endpoint) {
@@ -63,9 +53,6 @@ export const useTasksStore = defineStore('tasks', {
       this.socket.onopen = () => {
         console.log(`WebSocket 連線成功: ${endpoint}`);
         this.socketConnected = true;
-        // 連線成功後，立即獲取初始狀態
-        this.fetchTasks();
-        this.fetchWorkerStatuses();
       };
 
       this.socket.onmessage = (event) => {
@@ -79,315 +66,58 @@ export const useTasksStore = defineStore('tasks', {
 
       this.socket.onclose = () => {
         console.log(`WebSocket 連線已關閉: ${endpoint}`);
-        this.socket = null;
-        this.socketConnected = false;
-        // 可選：在這裡實作主伺服器的重連邏輯
+        // 使用 this.$reset() 來恢復到 getInitialState() 定義的初始狀態
+        this.$reset();
+        setTimeout(() => {
+          console.log("正在嘗試重新連線...");
+          this.initializeSystem();
+        }, 5000);
       };
 
       this.socket.onerror = (error) => {
         console.error(`WebSocket 發生錯誤: ${endpoint}`, error);
-        this.socketConnected = false;
       };
     },
 
     handleSocketMessage(message) {
-      console.log('收到 WebSocket 訊息:', message);
       const { type, payload } = message;
 
-      // --- All other message handling remains the same ---
-
-      if (type === 'SYSTEM_STATS_UPDATE') {
-        this.systemStats = payload;
-        return;
-      }
-
-      if (type === 'LOCAL_MODELS_STATUS') {
-        this.localModels.available = payload.models || [];
-        this.localModels.checking = false;
-        return;
-      }
-
-      if (type === 'ALL_WORKERS_STATUS_UPDATE') {
-        this.workerStatuses = payload;
-        console.log('已接收並初始化所有工作者的狀態:', this.workerStatuses);
-        return;
-      }
-
-      if (type === 'WORKER_STATUS_UPDATE') {
-        const { worker, status, last_error } = payload;
-        if (this.workerStatuses[worker]) {
-          this.workerStatuses[worker].status = status;
-          this.workerStatuses[worker].last_error = last_error;
-        } else {
-          this.workerStatuses[worker] = { status, last_error };
-        }
-        console.log(`工作者狀態更新: ${worker} -> ${status}`);
-
-        // 同步更新全域操作狀態
-        if (status === 'INSTALLING') {
-          this.operationStatus.inProgress = true;
-          this.operationStatus.message = `正在準備 ${worker} 工作者...`;
-          this.operationStatus.progress = 0; // 安裝過程通常沒有精確進度
-        } else if (this.operationStatus.message.includes(worker)) {
-          // 如果當前操作是關於這個工作者的，且它已完成或失敗，則清除狀態
-          this.operationStatus.inProgress = false;
-          this.operationStatus.message = '';
-          this.operationStatus.progress = 0;
-        }
-        return;
-      }
-
-      if (type === 'DOWNLOAD_STATUS') {
-        const { status, percent, progress, description, error, model } = payload;
-
-        this.operationStatus.inProgress = (status === 'starting' || status === 'downloading');
-        this.operationStatus.progress = percent || progress || 0;
-        this.operationStatus.message = description || error || `正在處理 '${model}'...`;
-
-        if (status === 'completed' || status === 'failed') {
-          // 完成或失敗後，短暫顯示訊息然後清除
-          setTimeout(() => {
-            this.operationStatus.inProgress = false;
-            this.operationStatus.message = '';
-            this.operationStatus.progress = 0;
-          }, 5000);
-        }
-        return;
-      }
-
-      if (!payload || !payload.task_id) {
-        return;
-      }
-
-      const taskIndex = this.pendingTasks.findIndex(t => t.task_id === payload.task_id);
-
-      if (taskIndex !== -1) {
-        const task = this.pendingTasks[taskIndex];
-        Object.assign(task, payload);
-        if (payload.status) {
-            task.status = payload.status;
-        }
-        if (payload.result) {
-          const newTitle = payload.result.video_title || payload.result.original_filename;
-          if (newTitle) {
-            if (!task.payload) {
-              task.payload = {};
-            }
-            task.payload.video_title = newTitle;
-            task.payload.original_filename = newTitle;
-          }
-        }
-        if (task.status === 'completed' || task.status === 'failed') {
-          const [completedTask] = this.pendingTasks.splice(taskIndex, 1);
-          this.completedTasks.push(completedTask);
-        } else {
-           this.pendingTasks[taskIndex] = { ...task };
+      if (type === 'full_state') {
+        console.log("接收到完整狀態，正在更新...");
+        // 使用 $patch 來確保響應性
+        this.$patch({ appState: payload });
+      } else if (type === 'patch') {
+        try {
+          // 直接在 document 上操作，因為 this.appState 是一個 proxy
+          const newDoc = applyPatch(this.appState, payload, true).newDocument;
+          this.$patch({ appState: newDoc });
+        } catch (e) {
+          console.error("應用補丁失敗:", e);
         }
       } else {
-        console.warn(`在 pendingTasks 中找不到任務 ID: ${payload.task_id}，可能任務已完成或尚未同步。`);
+        console.warn(`收到未知的訊息類型: ${type}`);
       }
     },
 
-    // --- All other actions like fetchTasks, startTranscription, etc. remain the same ---
-    async fetchTasks() {
+    // --- 保留觸發後端操作的 Actions ---
+    async uploadForTranscription(formData) {
       try {
-        const response = await axios.get(`${API_BASE_URL}/tasks`);
-        const tasks = response.data;
-        this.pendingTasks = [];
-        this.completedTasks = [];
-        if (Array.isArray(tasks)) {
-          tasks.forEach(task => {
-            if (task.result) {
-              const newTitle = task.result.video_title || task.result.original_filename;
-              if (newTitle) {
-                if (!task.payload) task.payload = {};
-                task.payload.video_title = newTitle;
-                task.payload.original_filename = newTitle;
-              }
-            }
-            if (task.status === 'completed' || task.status === 'failed') {
-              this.completedTasks.push(task);
-            } else {
-              this.pendingTasks.push(task);
-            }
-          });
-        } else {
-          console.warn('/api/tasks did not return an array, received:', tasks);
-        }
-        console.log('任務歷史紀錄已載入:', { pending: this.pendingTasks.length, completed: this.completedTasks.length });
-      } catch (error) {
-        console.error('獲取任務歷史紀錄時發生錯誤:', error);
-      }
-    },
-    async startTranscription(formData) {
-      try {
-        const response = await axios.post(`${API_BASE_URL}/transcribe`, formData, {
+        await axios.post(`/upload_for_transcription`, formData, {
           headers: { 'Content-Type': 'multipart/form-data' }
         });
-        const task = response.data;
-        if (task.type === 'transcribe') {
-          this.sendSocketMessage({ type: 'START_TRANSCRIPTION', payload: { task_id: task.task_id } });
-        } else if (task.type === 'download') {
-          this.sendSocketMessage({ type: 'START_DOWNLOAD', payload: { task_id: task.task_id } });
-        }
       } catch (error) {
-        console.error('開始轉錄時發生錯誤:', error);
+        console.error('上傳檔案以進行轉錄時發生錯誤:', error);
         throw error;
       }
     },
-    sendSocketMessage(message) {
-      if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
-        console.error('WebSocket 未連線，無法發送訊息。');
-        return;
-      }
-      this.socket.send(JSON.stringify(message));
-    },
-    async renameTask(taskId, newFilename) {
-      try {
-        const response = await axios.post(`${API_BASE_URL}/rename/${taskId}`, { new_filename: newFilename });
-        const result = response.data;
-        const taskIndex = this.completedTasks.findIndex(t => t.task_id === taskId);
-        if (taskIndex !== -1) {
-          const oldFilename = this.completedTasks[taskIndex].payload.original_filename || '';
-          const extension = oldFilename.slice(oldFilename.lastIndexOf('.'));
-          this.completedTasks[taskIndex].payload.original_filename = result.new_filename + extension;
-        }
-      } catch (error) {
-        console.error('重新命名任務時發生錯誤:', error);
-        throw new Error(error.response?.data?.detail || '重新命名失敗');
-      }
-    },
-    async fetchSystemStats() {
-      try {
-        const response = await axios.get(`${API_BASE_URL}/system_stats`);
-        this.systemStats = response.data;
-      } catch (error) {
-        // Suppress console error for this frequent, non-critical fetch
-      }
-    },
-    async startDownload(options) {
-      const { urls, downloadType } = options;
-      const requests = urls.map(url => ({ url: url, filename: '' }));
-      const payload = {
-          requests: requests,
-          download_only: true,
-          model: null,
-          download_type: downloadType
-      };
-      try {
-        const response = await axios.post(`${API_BASE_URL}/youtube/process`, payload);
-        const result = response.data;
-        result.tasks.forEach(task => {
-            this.sendSocketMessage({ type: 'START_YOUTUBE_PROCESSING', payload: { task_id: task.task_id }});
-        });
-      } catch (error) {
-        console.error('建立下載任務時發生錯誤:', error);
-        throw new Error(error.response?.data?.detail || '建立下載任務失敗');
-      }
-    },
-    async validateApiKey(apiKey) {
-      try {
-        const response = await axios.post(`${API_BASE_URL}/youtube/validate_api_key`, { api_key: apiKey });
-        return response.data;
-      } catch (error) {
-        return {
-          valid: false,
-          detail: error.response?.data?.detail || '無法連線至後端進行驗證'
-        };
-      }
-    },
-    async fetchGeminiModels(apiKey) {
-      try {
-        const response = await axios.post(`${API_BASE_URL}/youtube/models`, { api_key: apiKey });
-        return response.data.models || [];
-      } catch (error) {
-        console.error('獲取 Gemini 模型列表時發生錯誤:', error);
-        throw new Error(error.response?.data?.detail || '無法載入模型列表');
-      }
-    },
-    async processYoutubeRequest(options) {
+
+    async processYoutubeRequest(youtubeUrl) {
         try {
-            const response = await axios.post(`${API_BASE_URL}/youtube/process`, options);
-            const result = response.data;
-            result.tasks.forEach(task => {
-                this.sendSocketMessage({ type: 'START_YOUTUBE_PROCESSING', payload: { task_id: task.task_id }});
-            });
+            await axios.post(`/transcribe_youtube`, { youtube_url: youtubeUrl });
         } catch (error) {
             console.error('處理 YouTube 請求時發生錯誤:', error);
-            throw new Error(error.response?.data?.detail || '建立 YouTube 分析任務失敗');
+            throw error;
         }
-    },
-    async fetchWorkerStatuses() {
-      try {
-        const response = await axios.get(`${API_BASE_URL}/workers/status`);
-        this.workerStatuses = response.data;
-        console.log('工作者狀態已更新:', this.workerStatuses);
-      } catch (error) {
-        console.error('獲取工作者狀態時發生錯誤:', error);
-      }
-    },
-    async launchWorker(workerName) {
-      try {
-        console.log(`正在請求啟動工作者: ${workerName}`);
-        await axios.post(`${API_BASE_URL}/workers/launch/${workerName}`);
-      } catch (error) {
-        console.error(`啟動工作者 ${workerName} 時發生錯誤:`, error);
-        if (this.workerStatuses[workerName]) {
-          this.workerStatuses[workerName].status = 'FAILED';
-          this.workerStatuses[workerName].last_error = '啟動請求失敗';
-        }
-      }
-    },
-    async fetchLogs() {
-      try {
-        const response = await axios.get(`${API_BASE_URL}/logs`);
-        this.logs = response.data;
-        console.log(`已獲取 ${this.logs.length} 條日誌紀錄。`);
-      } catch (error) {
-        console.error('獲取系統日誌時發生錯誤:', error);
-        // 可選：使用 notification store 顯示錯誤
-      }
-    },
-    checkLocalModels() {
-      this.localModels.checking = true;
-      this.sendSocketMessage({ type: 'CHECK_LOCAL_MODELS' });
-    },
-    downloadModel(modelName) {
-      this.sendSocketMessage({ type: 'DOWNLOAD_MODEL', payload: { model: modelName } });
-    },
-    startInitialCountdown() {
-      if (this.initialSetup.timerId || this.initialSetup.completed) return;
-
-      this.initialSetup.timerId = setInterval(() => {
-        if (this.initialSetup.countdown > 0) {
-          this.initialSetup.countdown--;
-        } else {
-          clearInterval(this.initialSetup.timerId);
-        }
-      }, 1000);
-
-      setTimeout(() => {
-        if (this.initialSetup.cancelled) return;
-
-        clearInterval(this.initialSetup.timerId);
-        this.initialSetup.completed = true;
-
-        // 檢查 'tiny' 模型是否已存在
-        if (!this.localModels.available.includes('tiny')) {
-          console.log("自動下載 'tiny' 模型...");
-          this.downloadModel('tiny');
-        } else {
-          console.log("'tiny' 模型已存在，無需自動下載。");
-        }
-      }, 60000);
-    },
-    cancelInitialCountdown() {
-      if (this.initialSetup.timerId) {
-        clearInterval(this.initialSetup.timerId);
-      }
-      this.initialSetup.cancelled = true;
-      this.initialSetup.completed = true; // 將其視為已完成，以隱藏 UI
-      console.log("使用者已取消自動下載。");
     },
   }
 })
