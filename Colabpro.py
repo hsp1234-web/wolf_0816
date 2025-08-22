@@ -7,7 +7,7 @@
 #@markdown **後端程式碼倉庫 (REPOSITORY_URL)**
 REPOSITORY_URL = "https://github.com/hsp1234-web/wolf_0816.git" #@param {type:"string"}
 #@markdown **後端版本分支或標籤 (TARGET_BRANCH_OR_TAG)**
-TARGET_BRANCH_OR_TAG = "566" #@param {type:"string"}
+TARGET_BRANCH_OR_TAG = "569" #@param {type:"string"}
 #@markdown **專案資料夾名稱 (PROJECT_FOLDER_NAME)**
 PROJECT_FOLDER_NAME = "WEB1" #@param {type:"string"}
 #@markdown **強制刷新後端程式碼 (FORCE_REPO_REFRESH)**
@@ -36,8 +36,8 @@ ENABLE_CLEAR_OUTPUT = True #@param {type:"boolean"}
 # ==                                  開發者日誌                                  ==
 # ======================================================================================
 #
-# 版本: 2.2 (架構: 穩定性修復 + 優雅關機)
-# 日期: 2025-08-22T11:51:00+08:00
+# 版本: 2.3 (架構: 日誌系統穩定性修復)
+# 日期: 2025-08-22T12:20:00+08:00
 #
 # 🔴 **禁止直接執行**: 本檔案 (Colabpro.py) 被設計為一個程式庫 (library)，
 #    由 Colab Notebook 環境導入並呼叫。請勿透過 `python Colabpro.py` 直接執行。
@@ -47,8 +47,9 @@ ENABLE_CLEAR_OUTPUT = True #@param {type:"boolean"}
 #    - **禁止修改**: 絕對不要更動任何與使用者介面 (ipywidgets)、參數輸入、
 #      UI 顯示設計，以及最終 HTML 報告產生與複製按鈕相關的程式碼。
 #
-# 本次變更專注於提升使用者體驗和程式穩定性，特別是改善了手動中斷 Colab
-# 儲存格時的關機流程，使其能更優雅地處理中斷訊號並關閉背景服務。
+# 本次變更修正了因日誌資料庫路徑設定不當，導致在「強制刷新」模式下
+# 發生「唯讀資料庫」錯誤的問題。已將日誌資料庫移回專案外部，確保
+# 在刪除專案資料夾時，日誌系統仍能正常運作。
 #
 # ======================================================================================
 
@@ -381,11 +382,8 @@ def create_log_viewer_html(log_manager):
         return f"<p>❌ 產生最終日誌報告時發生錯誤: {html.escape(str(e))}</p>"
 
 if __name__ == "__main__":
-    # 將日誌資料庫的路徑設定在專案資料夾內部
-    project_dir_path = Path(PROJECT_FOLDER_NAME)
-    # 確保日誌的父目錄存在，然後才初始化 LogManager
-    project_dir_path.mkdir(exist_ok=True)
-    db_path = project_dir_path / f"launcher_logs_{PROJECT_FOLDER_NAME}.db"
+    # 將日誌資料庫的路徑設定在根目錄，以避免在強制刷新專案時發生衝突
+    db_path = Path(f"launcher_logs_{PROJECT_FOLDER_NAME}.db")
     log_manager = LogManager(max_lines=LOG_DISPLAY_LINES, timezone_str=TIMEZONE, db_path=str(db_path))
     try:
         # 檢查是否處於測試模式，如果是，則跳過下載，直接使用當前目錄
