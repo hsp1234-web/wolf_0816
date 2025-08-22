@@ -7,7 +7,7 @@
 #@markdown **後端程式碼倉庫 (REPOSITORY_URL)**
 REPOSITORY_URL = "https://github.com/hsp1234-web/wolf_0816.git" #@param {type:"string"}
 #@markdown **後端版本分支或標籤 (TARGET_BRANCH_OR_TAG)**
-TARGET_BRANCH_OR_TAG = "563" #@param {type:"string"}
+TARGET_BRANCH_OR_TAG = "566" #@param {type:"string"}
 #@markdown **專案資料夾名稱 (PROJECT_FOLDER_NAME)**
 PROJECT_FOLDER_NAME = "WEB1" #@param {type:"string"}
 #@markdown **強制刷新後端程式碼 (FORCE_REPO_REFRESH)**
@@ -36,8 +36,8 @@ ENABLE_CLEAR_OUTPUT = True #@param {type:"boolean"}
 # ==                                  開發者日誌                                  ==
 # ======================================================================================
 #
-# 版本: 2.1 (架構: 極速啟動 + 穩定性修復)
-# 日期: 2025-08-22T11:22:25+08:00
+# 版本: 2.2 (架構: 穩定性修復 + 優雅關機)
+# 日期: 2025-08-22T11:51:00+08:00
 #
 # 🔴 **禁止直接執行**: 本檔案 (Colabpro.py) 被設計為一個程式庫 (library)，
 #    由 Colab Notebook 環境導入並呼叫。請勿透過 `python Colabpro.py` 直接執行。
@@ -47,7 +47,8 @@ ENABLE_CLEAR_OUTPUT = True #@param {type:"boolean"}
 #    - **禁止修改**: 絕對不要更動任何與使用者介面 (ipywidgets)、參數輸入、
 #      UI 顯示設計，以及最終 HTML 報告產生與複製按鈕相關的程式碼。
 #
-# 本次變更已將核心啟動邏輯重構為「兩階段啟動模式」，以實現快速載入。
+# 本次變更專注於提升使用者體驗和程式穩定性，特別是改善了手動中斷 Colab
+# 儲存格時的關機流程，使其能更優雅地處理中斷訊號並關閉背景服務。
 #
 # ======================================================================================
 
@@ -294,57 +295,106 @@ def launch_application(project_path_str: str, log_manager: LogManager):
             raise RuntimeError("無法取得 Colab 代理連結。")
 
         log_manager.log("INFO", "應用程式已進入持續運行模式。")
-        server_proc.wait()
+        # 使用一個長時間的休眠迴圈來保持主執行緒存活，
+        # 這樣背景的 uvicorn 伺服器程序才能持續運行。
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        log_manager.log("WARN", "收到使用者中斷指令，正在優雅地關閉所有服務...")
+        shared_stats['status'] = "使用者手動關閉中..."
     except Exception as e:
         log_manager.log("CRITICAL", f"❌ launch_application 發生未預期的致命錯誤", exc_info=True)
         shared_stats['status'] = f"❌ 致命錯誤: {e}"
     finally:
-        if server_proc and server_proc.poll() is None: server_proc.terminate()
-        display_manager.stop()
-        print("\n".join(display_manager._build_output_buffer()))
-        # 在關閉 log_manager 之前，先產生 HTML
-        final_html = create_log_viewer_html(log_manager)
-        log_manager.close()
-        display(HTML(final_html))
+        # 新增一個內層 try/except 來防止清理過程本身被中斷
+        try:
+            log_manager.log("INFO", "開始執行最終清理程序...")
+            if server_proc and server_proc.poll() is None:
+                log_manager.log("INFO", f"正在終止網頁伺服器 (PID: {server_proc.pid})...")
+                server_proc.terminate()
+                # 移除了 server_proc.wait()，讓關閉程序能立即回應，避免使用者感覺卡頓。
+
+            display_manager.stop()
+            print("\n".join(display_manager._build_output_buffer()))
+
+            # 在關閉 log_manager 之前，先產生 HTML
+            final_html = create_log_viewer_html(log_manager)
+            log_manager.close()
+            display(HTML(final_html))
+        except KeyboardInterrupt:
+            log_manager.log("WARN", "清理程序被再次中斷，可能會有殘留的背景程序。")
+            print("\n[WARN] 清理程序被強制中斷。")
+        except Exception as final_e:
+            log_manager.log("ERROR", f"清理程序中發生未預期錯誤: {final_e}")
 
 def create_log_viewer_html(log_manager):
-    """產生一個包含日誌內容的、功能獨立的 HTML 檢視器。"""
-    import json
+    """
+    產生一個包含日誌內容的、功能獨立的 HTML 檢視器。
+    此版本經過重構，以提高「複製」按鈕的穩定性。
+    """
     try:
         log_history = log_manager.get_full_history(limit=LOG_COPY_MAX_LINES)
-        # 將日誌歷史轉換為 JSON 字串，以便安全地嵌入 HTML
-        log_json_string = json.dumps("\n".join(log_history), ensure_ascii=False)
-
         num_logs = len(log_history)
         unique_id = f"log-area-{int(time.time() * 1000)}"
 
-        # 將日誌內容直接嵌入到 onclick 事件中
-        # 使用 textContent 而不是 innerText 來保留換行符
-        onclick_js = f'''(async () => {{ try {{ const logText = {log_json_string}; await navigator.clipboard.writeText(logText); this.innerText="✅ 已複製!"; }} catch (err) {{ console.error('Copy failed:', err); this.innerText="❌ 複製失敗"; }} finally {{ setTimeout(() => {{ this.innerText="📋 複製這 {num_logs} 條日誌"; }}, 2000); }} }})()'''.replace("\n", " ")
+        # 準備用於顯示和複製的日誌內容
+        log_content_string = "\n".join(log_history)
+        escaped_log_for_display = html.escape(log_content_string)
 
-        button_html = f'<button onclick=\'{onclick_js}\' style="padding: 6px 12px; margin: 12px 0; cursor: pointer; border: 1px solid #ccc; border-radius: 5px; background-color: #fff;">📋 複製這 {num_logs} 條日誌</button>'
+        # 1. 建立一個隱藏的 <textarea> 來儲存原始日誌文字。
+        #    這種方法將資料與 JS 邏輯分離，可避免因日誌內容包含特殊字元而破壞 onclick 屬性。
+        textarea_html = f'<textarea id="{unique_id}" style="position:absolute; left: -9999px; top: -9999px;" readonly>{escaped_log_for_display}</textarea>'
 
-        # 為了顯示，我們仍然需要 HTML 逸出
-        escaped_log_content = html.escape("\n".join(log_history))
+        # 2. 建立 onclick 的 JavaScript 程式碼。
+        #    它會從 textarea 讀取內容，而不是直接將內容嵌入 JS 字串中。
+        onclick_js = f'''(async () => {{
+            const textarea = document.getElementById('{unique_id}');
+            if (!textarea) {{ console.error('找不到日誌源'); return; }}
+            try {{
+                await navigator.clipboard.writeText(textarea.value);
+                this.innerText = "✅ 已複製!";
+            }} catch (err) {{
+                console.error('複製失敗:', err);
+                this.innerText = "❌ 複製失敗";
+            }} finally {{
+                setTimeout(() => {{ this.innerText = "📋 複製這 {num_logs} 條日誌"; }}, 2000);
+            }}
+        }})()'''.replace("\n", " ").strip()
 
+        # 3. 建立按鈕 HTML
+        button_html = f'<button onclick="{html.escape(onclick_js)}" style="padding: 6px 12px; margin: 12px 0; cursor: pointer; border: 1px solid #ccc; border-radius: 5px; background-color: #fff;">📋 複製這 {num_logs} 條日誌</button>'
+
+        # 4. 組裝最終的 HTML
         return f'''
         <details style="margin-top: 15px; margin-bottom: 15px; border: 1px solid #e0e0e0; padding: 12px; border-radius: 8px; background-color: #f9f9f9;">
             <summary style="cursor: pointer; font-weight: bold; color: #333;">點此展開/收合最近 {num_logs} 條詳細日誌</summary>
             <div style="margin-top: 12px;">
+                {textarea_html}
                 {button_html}
-                <pre style="background-color: #fff; padding: 12px; border: 1px solid #e0e0e0; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; font-family: monospace; font-size: 13px; color: #444;"><code>{escaped_log_content}</code></pre>
+                <pre style="background-color: #fff; padding: 12px; border: 1px solid #e0e0e0; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; font-family: monospace; font-size: 13px; color: #444;"><code>{escaped_log_for_display}</code></pre>
                 {button_html}
             </div>
         </details>
         '''
     except Exception as e:
-        return f"<p>❌ 產生最終日誌報告時發生錯誤: {e}</p>"
+        # 確保錯誤訊息也能被正確顯示
+        return f"<p>❌ 產生最終日誌報告時發生錯誤: {html.escape(str(e))}</p>"
 
 if __name__ == "__main__":
-    db_path = Path(f"launcher_logs_{PROJECT_FOLDER_NAME}.db")
+    # 將日誌資料庫的路徑設定在專案資料夾內部
+    project_dir_path = Path(PROJECT_FOLDER_NAME)
+    # 確保日誌的父目錄存在，然後才初始化 LogManager
+    project_dir_path.mkdir(exist_ok=True)
+    db_path = project_dir_path / f"launcher_logs_{PROJECT_FOLDER_NAME}.db"
     log_manager = LogManager(max_lines=LOG_DISPLAY_LINES, timezone_str=TIMEZONE, db_path=str(db_path))
     try:
-        project_path = download_repository(log_manager)
+        # 檢查是否處於測試模式，如果是，則跳過下載，直接使用當前目錄
+        if os.environ.get('IN_TEST_MODE') == '1':
+            project_path = str(Path('.').resolve())
+            log_manager.log("INFO", "測試模式啟用：跳過 Git 下載，使用當前目錄作為專案路徑。")
+        else:
+            project_path = download_repository(log_manager)
+
         if project_path:
             launch_application(project_path_str=project_path, log_manager=log_manager)
         else:
@@ -357,4 +407,28 @@ if __name__ == "__main__":
             # 在 finally 的最末端才顯示，確保所有日誌都已產生
             # 並且此時 log_manager 尚未關閉
             display(HTML(create_log_viewer_html(log_manager)))
+
+            # 新增：將完整日誌儲存一份到 /content/paper/
+            try:
+                log_content = "\n".join(log_manager.get_full_history(limit=LOG_COPY_MAX_LINES))
+
+                # 建立儲存目錄 /content/paper
+                paper_dir = Path("/content/paper")
+                paper_dir.mkdir(exist_ok=True)
+
+                # 使用台北時區的 ISO 時間戳命名檔案
+                timestamp_str = datetime.now(pytz.timezone(TIMEZONE)).isoformat(timespec='seconds')
+                log_filename = f"{timestamp_str}.md"
+                log_save_path = paper_dir / log_filename
+
+                with open(log_save_path, "w", encoding="utf-8") as f:
+                    f.write(f"# 執行日誌：{timestamp_str}\n\n")
+                    f.write("```\n")
+                    f.write(log_content)
+                    f.write("\n```\n")
+
+                log_manager.log("INFO", f"完整日誌副本已儲存至: {log_save_path}")
+            except Exception as e:
+                log_manager.log("WARN", f"無法儲存日誌檔案副本: {e}")
+
             log_manager.close()
