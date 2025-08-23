@@ -1,3 +1,23 @@
+## 2025-08-23T15:54:31+08:00
+
+### 🐛 核心功能修復與架構統一 (Core Feature Fixes & Architectural Unification)
+
+- **修復 API 金鑰驗證與模型載入問題**:
+    - **問題**: 「YouTube 轉報告」功能中，提交 API 金鑰時出現 405 錯誤，導致 Gemini 模型列表無法載入。
+    - **根本原因**: 經過深入調查，發現專案啟動腳本 (`run_app.py`) 實際上運行的是 `services/api_gateway/main.py`，但我先前修改的 `src/api/api_server.py` 是一個已棄用的檔案。
+    - **解決方案**:
+        - 將 API 金鑰驗證 (`VALIDATE_API_KEY`) 和模型列表獲取 (`FETCH_GEMINI_MODELS`) 的邏輯從 HTTP `POST` 請求完全重構為基於 WebSocket 的請求/回應模式。這徹底繞過了在 Colab 環境中不穩定的 HTTP 呼叫。
+        - 將 `src/api/api_server.py` 中的所有最新邏輯（包括 WebSocket 處理）轉移並整合到 `services/api_gateway/main.py` 中。
+        - 刪除了已棄用的 `src/api/api_server.py`，以統一後端入口點，避免未來混淆。
+
+- **修復本地檔案轉錄流程卡死問題**:
+    - **問題**: 在「本機檔案轉錄」功能中，模型下載按鈕始終處於禁用狀態，導致使用者無法下載必要的模型。
+    - **根本原因**: 前端 Pinia store (`stores/tasks.js`) 中的 `checkLocalModels` 函式是一個為測試而設的模擬函式，它總是錯誤地回報所有模型都已存在。
+    - **解決方案**: 移除了該模擬函式，並實作了真實的 WebSocket 邏輯。現在前端會發送 `CHECK_LOCAL_MODELS` 訊息給後端，並根據後端回傳的真實狀態來正確更新 UI，恢復了模型下載與轉錄的完整流程。
+
+- **確保前端建置即時性**:
+    - 確認 `run_app.py` 啟動腳本中已包含強制建置 Vue.js 前端的步驟 (`bun run build`)。結合上述的後端入口點統一，確保了每次啟動時，使用者都能獲取到最新的前端程式碼，杜絕了因建置過時導致的潛在錯誤。
+
 ## 2025-08-23T15:40:36+08:00
 
 ### 🚀 架構強化與核心功能修復 (Architectural Hardening & Core Feature Restoration)
