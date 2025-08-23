@@ -9,7 +9,7 @@ REPOSITORY_URL = "https://github.com/hsp1234-web/wolf_0816.git" #@param {type:"s
 #@markdown **後端版本分支或標籤 (TARGET_BRANCH_OR_TAG)**
 TARGET_BRANCH_OR_TAG = "645" #@param {type:"string"}
 #@markdown **專案資料夾名稱 (PROJECT_FOLDER_NAME)**
-PROJECT_FOLDER_NAME = "WEB1" #@param {type:"string"}
+PROJECT_FOLDER_NAME = "wolf_project" #@param {type:"string"}
 #@markdown **強制刷新後端程式碼 (FORCE_REPO_REFRESH)**
 #@markdown > **如果勾選，每次執行都會先刪除舊的專案資料夾，再重新下載。**
 FORCE_REPO_REFRESH = True #@param {type:"boolean"}

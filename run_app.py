@@ -178,10 +178,23 @@ def run_app_flow():
         api_proc = subprocess.Popen(api_command, cwd=API_GATEWAY_DIR, env=env, text=True, encoding='utf-8')
         processes_to_manage.append(api_proc)
 
-        # 簡短等待以確保 Uvicorn 綁定埠號
-        time.sleep(3)
+        # 5.4: 等待 API Gateway 就緒
+        log.info("等待 API Gateway 上線...")
+        api_ready = False
+        wait_start_time = time.monotonic()
+        while time.monotonic() - wait_start_time < 30: # 最多等待 30 秒
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=1):
+                    log.info("✅ API Gateway 已上線！")
+                    api_ready = True
+                    break
+            except (socket.timeout, ConnectionRefusedError):
+                time.sleep(0.5)
 
-        # 5.4: 啟動 Huey Consumer (背景工作處理器)
+        if not api_ready:
+            raise RuntimeError("API Gateway 未能在 30 秒內上線，啟動失敗。")
+
+        # 5.5: 啟動 Huey Consumer (背景工作處理器)
         log.info("[6/6] 啟動 Huey 背景工作消費者...")
         huey_command = [
             sys.executable,

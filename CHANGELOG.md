@@ -1,3 +1,17 @@
+## 2025-08-24T07:07:46+08:00
+
+### 🐛 核心穩定性修復：解決啟動時序與環境相容性問題 (Core Stability Fix: Resolved Startup Timing & Environment Compatibility Issues)
+
+- **修復服務啟動競爭條件 (Fixed Service Startup Race Condition)**:
+    - **問題**: `run_app.py` 在啟動 API 伺服器後，僅使用固定的短暫延遲就啟動背景工作處理器，導致在 API 未完全就緒時，背景處理器因連線失敗而崩潰，進而使整個應用程式提前退出。
+    - **解決方案**: 在 `run_app.py` 中，以一個可靠的 TCP 健康檢查迴圈取代了固定的 `time.sleep(3)`。此迴圈會持續偵測 API 埠號，直到連線成功或超時，確保了服務啟動的正確時序。
+    - **成果**: 解決了應用程式在成功顯示網址後立即退出的問題，顯著提高了啟動流程的健壯性。
+
+- **降低沙箱環境目錄建立風險 (Mitigated Sandbox Directory Creation Risk)**:
+    - **問題**: `Colabpro.py` 使用的專案資料夾名稱 `WEB1` 與已知的、會導致沙箱崩潰的測試腳本所用名稱相同。在首次執行時，`git clone` 操作會建立此目錄，可能觸發致命的環境 Bug。
+    - **解決方案**: 將 `Colabpro.py` 中的 `PROJECT_FOLDER_NAME` 從 `"WEB1"` 更改為 `"wolf_project"`，以避開潛在的、與特定名稱相關的檔案系統監控問題。
+    - **成果**: 降低了在新環境中首次執行此腳本時，遭遇永久性沙箱鎖死的風險。
+
 ## 2025-08-23T23:20:39+08:00
 
 ### 🔬 診斷與研究：發現並記錄沙箱環境穩定性問題 (Diagnostics & Research: Uncovered and Documented Sandbox Environment Instability)
