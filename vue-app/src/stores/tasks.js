@@ -14,6 +14,8 @@ const getInitialState = () => ({
   },
   socket: null,
   socketConnected: false,
+  // JULES'S FIX: 用於追蹤透過 WebSocket 發送的請求
+  pendingRequests: new Map(),
 });
 
 export const useTasksStore = defineStore('tasks', {
@@ -43,15 +45,45 @@ export const useTasksStore = defineStore('tasks', {
     // --- WebSocket Actions ---
     initializeSystem() {
       if (!this.socket || this.socket.readyState === WebSocket.CLOSED) {
-        this.connectToWebSocket('/ws');
+        this.connectToWebSocket('/api/ws');
       }
+    },
+    sendMessage(type, payload = {}) {
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            this.socket.send(JSON.stringify({ type, payload }));
+        } else {
+            console.error('WebSocket is not connected.');
+        }
+    },
+    // JULES'S NEW FEATURE: 一個更穩健的、基於 Promise 的 WebSocket 請求/回應模式
+    sendRequest(type, payload = {}, timeout = 10000) {
+        return new Promise((resolve, reject) => {
+            if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+                return reject(new Error('WebSocket is not connected.'));
+            }
+            const request_id = `req_${Date.now()}_${Math.random()}`;
+            this.pendingRequests.set(request_id, { resolve, reject });
+
+            // 設定超時
+            setTimeout(() => {
+                if (this.pendingRequests.has(request_id)) {
+                    this.pendingRequests.delete(request_id);
+                    reject(new Error(`Request timed out after ${timeout / 1000}s`));
+                }
+            }, timeout);
+
+            this.socket.send(JSON.stringify({ type, payload: { ...payload, request_id } }));
+        });
     },
     connectToWebSocket(endpoint) {
       if (this.socket && this.socket.readyState === WebSocket.OPEN) return;
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${wsProtocol}//${window.location.host}${endpoint}`;
       this.socket = new WebSocket(wsUrl);
-      this.socket.onopen = () => { this.socketConnected = true; };
+      this.socket.onopen = () => {
+        this.socketConnected = true;
+        this.checkLocalModels();
+      };
       this.socket.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
@@ -59,35 +91,62 @@ export const useTasksStore = defineStore('tasks', {
         } catch (error) { console.error('處理 WebSocket 訊息時發生錯誤:', error); }
       };
       this.socket.onclose = () => {
+        this.socketConnected = false;
         this.$reset();
         setTimeout(() => { this.initializeSystem(); }, 5000);
       };
       this.socket.onerror = (error) => { console.error(`WebSocket 發生錯誤: ${endpoint}`, error); };
     },
     handleSocketMessage(message) {
-      const { type, payload } = message;
-      if (type === 'full_state') {
-        this.$patch({ appState: payload });
-      } else if (type === 'patch') {
-        try {
-          const newDoc = applyPatch(this.appState, payload, true).newDocument;
-          this.$patch({ appState: newDoc });
-        } catch (e) { console.error("應用補丁失敗:", e); }
+      const { type, payload, request_id } = message;
+
+      // JULES'S FIX: 優先處理帶有 request_id 的、點對點的回應
+      if (request_id && this.pendingRequests.has(request_id)) {
+          const { resolve, reject } = this.pendingRequests.get(request_id);
+          if (payload && (payload.success === false || payload.valid === false)) {
+              reject(payload);
+          } else {
+              resolve(payload);
+          }
+          this.pendingRequests.delete(request_id);
+          return; // 處理完畢，直接返回
+      }
+
+      // 處理廣播或無特定目標的訊息
+      switch (type) {
+        case 'full_state':
+          this.$patch({ appState: payload });
+          break;
+        case 'patch':
+          try {
+            const newDoc = applyPatch(this.appState, payload, true).newDocument;
+            this.$patch({ appState: newDoc });
+          } catch (e) { console.error("應用補丁失敗:", e); }
+          break;
+        case 'LOCAL_MODELS_STATUS':
+          this.$patch(state => {
+            state.appState.local_models.available = payload.models || [];
+            state.appState.local_models.checking = false;
+          });
+          break;
+        default:
+          break;
       }
     },
 
     // --- 後端 API Actions ---
     checkLocalModels() {
-      // 這是為了修復測試而新增的模擬函式
-      // 它會模擬一個成功的 API 呼叫，並將所有模型標示為可用
-      console.log("正在執行模擬的 checkLocalModels...");
+      console.log("正在透過 WebSocket 請求本地模型列表...");
       this.$patch(state => {
-        state.appState.local_models.available = ['tiny', 'base', 'small', 'medium', 'large-v2', 'large-v3'];
-        state.appState.local_models.checking = false;
+        state.appState.local_models.checking = true;
       });
+      this.sendMessage('CHECK_LOCAL_MODELS');
+    },
+    downloadModel(model) {
+      console.log(`正在透過 WebSocket 請求下載模型: ${model}`);
+      this.sendMessage('DOWNLOAD_MODEL', { model });
     },
     fetchLogs() {
-      // 為了修復測試而新增的模擬函式
       console.log("正在執行模擬的 fetchLogs...");
       return [];
     },
@@ -134,9 +193,7 @@ export const useTasksStore = defineStore('tasks', {
     // --- 新增的下載 Action ---
     async startDownload(payload) {
       const { urls, downloadType } = payload;
-
       const requests = urls.map(url => ({ url, filename: null }));
-
       try {
         const response = await axios.post('/api/youtube/process', {
           requests,
@@ -146,7 +203,6 @@ export const useTasksStore = defineStore('tasks', {
         return response.data;
       } catch (error) {
         console.error('啟動下載任務時發生錯誤:', error);
-        // 將後端回傳的錯誤訊息往上拋，以便 UI 層可以顯示
         if (error.response && error.response.data && error.response.data.detail) {
           throw new Error(error.response.data.detail);
         }
@@ -154,24 +210,26 @@ export const useTasksStore = defineStore('tasks', {
       }
     },
 
-    // --- YouTube Reporter Actions ---
+    // --- YouTube Reporter Actions (WebSocket Refactor) ---
     async validateApiKey(apiKey) {
       try {
-        const response = await axios.post('/api/youtube/validate_api_key', { api_key: apiKey });
-        return { valid: true, ...response.data };
+        // 使用新的 WebSocket 請求/回應模式
+        const response = await this.sendRequest('VALIDATE_API_KEY', { api_key: apiKey });
+        return response; // 後端直接回傳 { valid: true/false, detail: '...' }
       } catch (error) {
-        return { valid: false, detail: error.response?.data?.detail || '驗證時發生未知錯誤' };
+        return { valid: false, detail: error.detail || error.message || '驗證時發生未知錯誤' };
       }
     },
 
     async fetchGeminiModels(apiKey) {
       try {
-        const response = await axios.post('/api/youtube/models', { api_key: apiKey });
-        // 後端回傳的結構是 { "models": [...] }
-        return response.data.models || [];
+        // 使用新的 WebSocket 請求/回應模式
+        const response = await this.sendRequest('FETCH_GEMINI_MODELS', { api_key: apiKey });
+        // 後端成功時回傳 { success: true, models: [...] }
+        return response.models || [];
       } catch (error) {
-        console.error('獲取 Gemini 模型時發生錯誤:', error);
-        throw error; // 將錯誤拋出，讓呼叫者可以處理
+        console.error('獲取 Gemini 模型時發生錯誤:', error.detail || error.message);
+        throw new Error(error.detail || '無法獲取 Gemini 模型列表');
       }
     },
   }

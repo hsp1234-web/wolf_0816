@@ -5,6 +5,7 @@ from pathlib import Path
 import logging
 import os
 import socket
+import shutil
 
 # --- 基本設定 ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -76,7 +77,17 @@ def run_app_flow():
         # --- 步驟 4: 建置前端應用程式 ---
         log.info("[4/5] 準備建置前端 Vue 應用程式...")
         vue_app_dir = ROOT_DIR / "vue-app"
+        dist_dir = vue_app_dir / "dist"
+        vite_cache_dir = vue_app_dir / "node_modules" / ".vite"
         try:
+            # 強制刪除舊的建置目錄和快取以確保是最新的
+            if dist_dir.exists():
+                shutil.rmtree(dist_dir)
+                log.info(f"已強制刪除舊的前端建置目錄: {dist_dir}")
+            if vite_cache_dir.exists():
+                shutil.rmtree(vite_cache_dir)
+                log.info(f"已強制刪除舊的 Vite 快取目錄: {vite_cache_dir}")
+
             log.info("正在安裝前端依賴 (bun install)...")
             subprocess.run(["bun", "install"], cwd=vue_app_dir, check=True, capture_output=True, text=True, encoding='utf-8')
             log.info("✅ 前端依賴安裝成功。")

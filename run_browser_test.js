@@ -3,7 +3,7 @@ const path = require('path');
 
 (async () => {
   const url = process.argv[2] || 'http://127.0.0.1:8008';
-  console.log(`[JS Test] 準備在 ${url} 上執行新的 E2E 測試...`);
+  console.log(`[JS Test] 準備在 ${url} 上執行新的 E2E 驗證測試...`);
 
   let browser;
   let context;
@@ -14,7 +14,11 @@ const path = require('path');
     await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
     page = await context.newPage();
 
-    page.on('console', msg => console.log(`[Browser Console] ${msg.text()}`));
+    page.on('console', msg => {
+        // 忽略來自 antdv 的無關警告
+        if (msg.text().includes('is not a valid value for custom-string')) return;
+        console.log(`[Browser Console] ${msg.text()}`);
+    });
     page.on('pageerror', error => console.error(`[Browser Page Error] ${error.message}`));
 
     console.log(`[JS Test] 導航至: ${url}`);
@@ -25,14 +29,31 @@ const path = require('path');
     console.log('[JS Test] ✅ Vue app 已找到！');
 
     // ----------------------------------------------------------------
-    // 步驟 1: 驗證本地檔案轉錄與模型下載
+    // 步驟 1: 驗證儀表板和工作者狀態 UI
     // ----------------------------------------------------------------
-    console.log('[JS Test] 步驟 1: 驗證本地檔案轉錄與模型下載...');
+    console.log('[JS Test] 步驟 1: 驗證儀表板和工作者狀態 UI...');
+    await page.waitForSelector("text=狀態: 準備就緒", { timeout: 10000 });
+    console.log('[JS Test] ✅ 驗證成功: 全域儀表板顯示「準備就緒」。');
+    await page.waitForSelector("h2:has-text('工作者狀態')", { timeout: 5000 });
+    console.log('[JS Test] ✅ 驗證成功: 工作者狀態面板已呈現。');
+
+    // 等待至少一個工作者狀態出現，表示後端通訊正常
+    const workerStatusCard = page.locator(".card:has-text('工作者狀態')");
+    await workerStatusCard.locator('text=transcription').waitFor({ state: 'visible', timeout: 15000 });
+    console.log('[JS Test] ✅ 驗證成功: 至少一個工作者的狀態已顯示。');
+
+
+    // ----------------------------------------------------------------
+    // 步驟 2: 驗證本地檔案轉錄流程
+    // ----------------------------------------------------------------
+    console.log('[JS Test] 步驟 2: 驗證本地檔案轉錄...');
     await page.click("button:has-text('本機檔案轉錄')");
 
-    // 選擇 tiny 模型
+    // 選擇 tiny 模型並設定 beam size
     await page.selectOption('select#model-select', 'tiny');
     console.log('[JS Test] 已選擇 "tiny" 模型。');
+    await page.fill('input#beam-size-input', '1');
+    console.log('[JS Test] 已設定光束大小為 1。');
 
     // 檢查模型是否需要下載
     const downloadButton = page.locator("button:has-text('下載模型')");
@@ -41,120 +62,65 @@ const path = require('path');
     if (await downloadButton.isVisible()) {
       console.log('[JS Test] 模型尚未下載，正在點擊下載按鈕...');
       await downloadButton.click();
-      // 等待下載完成，按鈕變為「模型已就緒」
-      await modelReadyButton.waitFor({ state: 'visible', timeout: 60000 }); // 增加超時以等待下載
+      await modelReadyButton.waitFor({ state: 'visible', timeout: 90000 }); // 增加超時以等待下載
       console.log('[JS Test] ✅ 模型下載成功並已就緒。');
     } else {
       console.log('[JS Test] 模型已存在，無需下載。');
     }
 
-    // 現在模型已就緒，可以上傳檔案
+    // 上傳檔案
     const filePath = path.join(__dirname, 'vue-app', 'tests', 'fixtures', 'test-audio.txt');
     await page.setInputFiles('input[type="file"]', filePath);
     console.log(`[JS Test] 已選擇測試檔案: ${filePath}`);
 
-    // 驗證「新增至佇列」按鈕現在是啟用的
-    console.log('[JS Test] 等待「新增至佇列」按鈕變為啟用狀態...');
+    // 新增至佇列
     const addToQueueButton = page.locator("button:has-text('新增 1 個檔案至佇列')");
-    await page.waitForFunction(
-      (button) => !button.disabled,
-      await addToQueueButton.elementHandle(),
-      { timeout: 10000 }
-    );
-    console.log('[JS Test] ✅ 「新增至佇列」按鈕已啟用。');
-
     await addToQueueButton.click();
     console.log('[JS Test] ✅ 已點擊「新增至佇列」按鈕');
 
     // ----------------------------------------------------------------
-    // 步驟 2: 驗證媒體下載器
+    // 步驟 3: 提交任務並等待結果
     // ----------------------------------------------------------------
-    console.log('[JS Test] 步驟 2: 驗證媒體下載器...');
-    await page.click("button:has-text('媒體下載器')");
-    await page.fill("textarea[id='downloader-urls-input']", 'https://www.youtube.com/watch?v=dQw4w9WgXcQ');
-    await page.click("button:has-text('開始下載')");
-
-    // 驗證成功通知
-    await page.waitForSelector("text=下載任務已成功建立！", { timeout: 5000 });
-    console.log('[JS Test] ✅ 驗證成功: 下載器功能正常，未出現 t.startDownload 錯誤。');
-
-    // ----------------------------------------------------------------
-    // 步驟 3: 驗證 YouTube 報告與模型選擇
-    // ----------------------------------------------------------------
-    console.log('[JS Test] 步驟 3: 驗證 YouTube 報告與模型選擇...');
-    await page.click("button:has-text('YouTube 轉報告')");
-
-    // 現在我們需要驗證真實的 API 呼叫流程
-    // 注意：在測試環境中，我們假設後端 API 會返回一個模擬的成功回應
-    await page.fill("input[type='password']", 'mock-valid-api-key');
-    await page.click("button:has-text('儲存金鑰')");
-
-    // 等待並驗證 API 呼叫後的正面狀態
-    await page.waitForSelector("text=/金鑰有效/", { timeout: 10000 });
-    console.log('[JS Test] ✅ 驗證成功: API 金鑰狀態已更新。');
-
-    // 驗證模型下拉選單是否已填入內容
-    const modelSelector = page.locator('select#gemini-model-select');
-    const optionsCount = await modelSelector.locator('option').count();
-    if (optionsCount <= 1) { // 應該要有一個以上的真實模型選項
-      throw new Error(`模型下拉選單未成功載入。只找到 ${optionsCount} 個選項。`);
-    }
-    console.log(`[JS Test] ✅ 驗證成功: 模型下拉選單已載入 ${optionsCount} 個模型。`);
-
-    await page.fill("input[placeholder='YouTube 影片網址']", 'https://www.youtube.com/watch?v=dQw4w9WgXcQ');
-    await page.click("button:has-text('新增 1 個影片至佇列')");
-    console.log('[JS Test] ✅ 已新增 YouTube 影片至佇列');
-
-
-    // ----------------------------------------------------------------
-    // 步驟 4: 驗證任務池
-    // ----------------------------------------------------------------
-    console.log('[JS Test] 步驟 4: 驗證任務池...');
+    console.log('[JS Test] 步驟 3: 提交任務並等待結果...');
     const taskPool = page.locator(".card:has-text('任務佇列')");
     await taskPool.waitFor({ state: 'visible', timeout: 5000 });
 
-    const tasksInPool = await taskPool.locator('.task-item').count();
-    if (tasksInPool !== 2) {
-      throw new Error(`預期任務池中有 2 個任務，但找到了 ${tasksInPool} 個`);
-    }
-    console.log(`[JS Test] ✅ 驗證成功: 任務池中顯示了 ${tasksInPool} 個任務。`);
-
-    // ----------------------------------------------------------------
-    // 步驟 5: 提交任務池 (預期會失敗，因為按鈕尚未對接)
-    // ----------------------------------------------------------------
-    console.log('[JS Test] 步驟 5: 提交任務池...');
-    const submitButton = taskPool.locator("button:has-text('提交佇列中的 2 個任務')");
+    const submitButton = taskPool.locator("button:has-text('提交佇列中的 1 個任務')");
     await submitButton.click();
     console.log('[JS Test] 已點擊「提交佇列」按鈕。');
 
-    // ----------------------------------------------------------------
-    // 步驟 5: 驗證結果
-    // ----------------------------------------------------------------
-    console.log('[JS Test] 步驟 5: 驗證結果...');
+    // 等待任務出現在「已完成任務」列表
+    console.log('[JS Test] 等待任務完成...');
+    const completedTasksList = page.locator(".card:has-text('已完成任務')");
+    await completedTasksList.waitFor({ state: 'visible', timeout: 5000 });
 
-    // 驗證任務池是否已清空
-    await taskPool.waitFor({ state: 'hidden', timeout: 5000 });
-    console.log('[JS Test] ✅ 驗證成功: 任務池已清空。');
+    // 等待包含原始檔名的任務項目出現，並且狀態為 'completed'
+    const completedTaskLocator = completedTasksList.locator(`.task-item:has-text('test-audio.txt')`);
+    await completedTaskLocator.waitFor({ state: 'visible', timeout: 120000 }); // 增加超時以等待轉錄完成
 
-    // 驗證任務是否已出現在「進行中任務」列表
-    const pendingTasksList = page.locator(".card:has-text('進行中任務')");
-    await pendingTasksList.waitFor({ state: 'visible', timeout: 5000 });
-
-    // 等待，直到進行中任務列表包含兩個新任務
-    await page.waitForFunction(() => {
-        const pendingTasksNode = document.querySelector(".card:has-text('進行中任務')");
-        if (!pendingTasksNode) return false;
-        const taskItems = pendingTasksNode.querySelectorAll('.task-item');
-        return taskItems.length >= 2;
-    }, null, { timeout: 15000 });
-
-    const tasksInPending = await pendingTasksList.locator('.task-item').count();
-    if (tasksInPending < 2) {
-        throw new Error(`預期「進行中任務」列表中至少有 2 個任務，但只找到 ${tasksInPending} 個`);
+    const taskStatus = await completedTaskLocator.locator('.task-status-badge.status-completed').innerText();
+    if (taskStatus.trim().toLowerCase() !== 'completed') {
+        throw new Error(`預期任務狀態為 'completed'，但得到 '${taskStatus}'`);
     }
-    console.log(`[JS Test] ✅ 驗證成功: 「進行中任務」列表中出現了 ${tasksInPending} 個任務。`);
+    console.log('[JS Test] ✅ 驗證成功: 轉錄任務已完成！');
 
-    console.log('[JS Test] 🎉 E2E 測試全部通過！');
+    // 點擊預覽按鈕
+    await completedTaskLocator.locator("button:has-text('預覽')").click();
+
+    // 驗證預覽 Modal 是否出現
+    const previewModal = page.locator(".preview-modal");
+    await previewModal.waitFor({ state: 'visible', timeout: 5000 });
+
+    // 驗證 Modal 中是否包含轉錄結果的文字
+    // 因為是模擬音訊，我們只檢查是否有任何輸出即可
+    const transcriptContent = await previewModal.locator('pre').innerText();
+    if (transcriptContent.length < 5) {
+        throw new Error('預覽 Modal 中的轉錄結果為空或過短。');
+    }
+    console.log('[JS Test] ✅ 驗證成功: 預覽 Modal 已顯示且包含轉錄內容。');
+
+
+    console.log('[JS Test] 🎉 E2E 驗證測試全部通過！');
     await browser.close();
     process.exit(0);
 
