@@ -1,3 +1,15 @@
+## 2025-08-23T18:55:19.023356+08:00
+
+### 🔧 前端建置修復與部署流程修正 (Frontend Build Fix & Deployment Process Correction)
+
+- **修復前端與後端 API 不同步問題**:
+    - **問題**: 應用程式出現多種前端故障，包括 API 金鑰提交時的 405 錯誤、模型列表無法載入，以及本地轉錄按鈕無反應。
+    - **根本原因**: 部署在伺服器上的前端應用程式 (`vue-app/dist`) 是一個過時的建置版本，其還在嘗試呼叫已被後端重構為 WebSocket 的舊版 HTTP API。
+    - **解決方案**:
+        1.  在 `vue-app` 目錄中執行 `bun install` 和 `bun run build`，強制重新建置前端應用程式，確保其與最新的後端 API 保持同步。
+        2.  修改 `vue-app/.gitignore` 檔案，將 `dist` 目錄從忽略列表中移除。
+        3.  將新產生的 `dist` 目錄提交至版本庫，以確保在 Colab 環境中能直接拉取並運行最新的、功能正常的版本，簡化部署流程。
+
 ## 2025-08-23T18:11:13+08:00
 
 ### 🐛 核心功能修復與架構統一 (Core Feature Fixes & Architectural Unification)
