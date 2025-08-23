@@ -1,3 +1,14 @@
+## 2025-08-23T23:09:29+08:00
+
+### 🚀 依賴管理升級：全面改用 uv (Dependency Upgrade: Switched to uv)
+
+- **動機**: 為了提升 Python 依賴安裝的速度和可靠性，將主要的依賴管理工具從 `pip` 更換為 `uv`。
+- **主要變更**:
+    - 在 `run_app.py` 中新增了 `ensure_uv_installed` 函式，用於在啟動時自動檢查並安裝 `uv`，模仿了現有的 `ensure_bun_installed` 邏輯。
+    - 將 `run_app.py` 中的 `pip install -r` 指令全面替換為 `uv pip install -r`。
+    - 更新了相關的日誌訊息以反映此變更。
+- **成果**: 預期將顯著縮短應用程式啟動時的依賴安裝時間，並提高在不同環境中的安裝成功率。
+
 ## 2025-08-23T14:34:05+08:00
 
 ### 🐛 核心架構修復：恢復儀表板與背景工作程序 (Core Architecture Fix: Restore Dashboard & Background Workers)

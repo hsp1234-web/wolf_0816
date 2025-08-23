@@ -49,6 +49,30 @@ def ensure_bun_installed():
             log.error("請手動訪問 https://bun.sh 來安裝 Bun，然後重新執行此腳本。")
             raise
 
+def ensure_uv_installed():
+    """檢查 uv 是否已安裝，如果沒有，則自動安裝。"""
+    try:
+        subprocess.run(["uv", "--version"], check=True, capture_output=True)
+        log.info("✅ uv 已安裝。")
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        log.warning("⚠️ uv 未安裝，正在嘗試自動安裝...")
+        try:
+            # 使用官方指令碼進行安裝
+            install_command = "curl -LsSf https://astral.sh/uv/install.sh | sh"
+            subprocess.run(install_command, shell=True, check=True, capture_output=True, text=True)
+
+            # 安裝指令碼會將 uv 加入到 ~/.cargo/bin，我們將其手動加入到 PATH
+            uv_path = str(Path.home() / ".cargo" / "bin")
+            os.environ["PATH"] = f"{uv_path}{os.pathsep}{os.environ['PATH']}"
+
+            log.info("✅ uv 已成功安裝。")
+            # 再次驗證
+            subprocess.run(["uv", "--version"], check=True, capture_output=True)
+        except Exception as e:
+            log.error(f"❌ 自動安裝 uv 失敗: {e}")
+            log.error("請手動訪問 https://astral.sh/uv 來安裝 uv，然後重新執行此腳本。")
+            raise
+
 def run_app_flow():
     """執行完整的應用程式啟動流程"""
     log.info("====== 開始執行應用程式啟動流程 ======")
@@ -62,19 +86,20 @@ def run_app_flow():
 
         # --- 步驟 2: 安裝後端依賴 ---
         log.info("[1/5] 安裝後端 Python 依賴...")
+        ensure_uv_installed() # 確保 uv 已安裝
         server_requirements_path = API_GATEWAY_DIR / "requirements.txt"
         worker_requirements_path = ROOT_DIR / "requirements-worker.txt"
         try:
-            log.info("正在安裝伺服器依賴...")
-            subprocess.run([sys.executable, "-m", "pip", "install", "-r", str(server_requirements_path)], check=True)
+            log.info("正在使用 uv 安裝伺服器依賴...")
+            subprocess.run(["uv", "pip", "install", "-r", str(server_requirements_path)], check=True)
             log.info("✅ 伺服器依賴安裝成功。")
 
-            log.info("正在安裝工作程序依賴...")
-            subprocess.run([sys.executable, "-m", "pip", "install", "-r", str(worker_requirements_path)], check=True)
+            log.info("正在使用 uv 安裝工作程序依賴...")
+            subprocess.run(["uv", "pip", "install", "-r", str(worker_requirements_path)], check=True)
             log.info("✅ 工作程序依賴安裝成功。")
 
         except subprocess.CalledProcessError as e:
-            log.error(f"❌ 後端依賴安裝失敗: {e}")
+            log.error(f"❌ 使用 uv 進行後端依賴安裝失敗: {e}")
             raise
 
         # --- 步驟 3: 清理環境 ---
