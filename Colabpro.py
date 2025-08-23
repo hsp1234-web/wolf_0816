@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-#@title 📥🐺 善狼一鍵啟動器 (v8.0 - 高可用性代理) 🐺
+#@title 📥🐺 善狼一鍵啟動器 (v8) 🐺
 #@markdown ---
 #@markdown ### **(1) 專案來源設定**
 #@markdown > **請提供 Git 倉庫的網址、要下載的分支或標籤，以及本地資料夾名稱。**
@@ -7,7 +7,7 @@
 #@markdown **後端程式碼倉庫 (REPOSITORY_URL)**
 REPOSITORY_URL = "https://github.com/hsp1234-web/wolf_0816.git" #@param {type:"string"}
 #@markdown **後端版本分支或標籤 (TARGET_BRANCH_OR_TAG)**
-TARGET_BRANCH_OR_TAG = "630" #@param {type:"string"}
+TARGET_BRANCH_OR_TAG = "365" #@param {type:"string"}
 #@markdown **專案資料夾名稱 (PROJECT_FOLDER_NAME)**
 PROJECT_FOLDER_NAME = "WEB1" #@param {type:"string"}
 #@markdown **強制刷新後端程式碼 (FORCE_REPO_REFRESH)**
@@ -36,8 +36,8 @@ ENABLE_CLEAR_OUTPUT = True #@param {type:"boolean"}
 # ==                                  開發者日誌                                  ==
 # ======================================================================================
 #
-# 版本: 8.1 (架構: 高可用性代理)
-# 日期: 2025-08-23T15:40:36+08:00
+# 版本: 8.0 (架構: 穩定啟動與診斷)
+# 日期: 2025-08-23T19:03:00+08:00
 #
 # 🔴 **禁止直接執行**: 本檔案 (Colabpro.py) 被設計為一個程式庫 (library)，
 #    由 Colab Notebook 環境導入並呼叫。請勿透過 `python Colabpro.py` 直接執行。
@@ -47,10 +47,11 @@ ENABLE_CLEAR_OUTPUT = True #@param {type:"boolean"}
 #    - **禁止修改**: 絕對不要更動任何與使用者介面 (ipywidgets)、參數輸入、
 #      UI 顯示設計，以及最終 HTML 報告產生與複製按鈕相關的程式碼。
 #
-# 本次變更根據「Colab Pro 高可用性代理策略技術報告」實作了併發競速代理
-# 獲取策略。現在系統會同時嘗試啟動 Colab、localtunnel 和 Cloudflare
-# Tunnel，並將所有成功的網址都顯示出來，以應對 Colab 環境的不穩定。
-# 同時，預設分支已更新至 630。
+# 本次變更重點:
+# 1. **修復啟動流程**: 徹底解決了因 DB Manager 未啟動而導致 API Gateway
+#    超時崩潰的根本問題。現在 `run_app.py` 會確保服務按正確順序啟動。
+# 2. **整合診斷工具**: 加入了環境健康診斷功能，提前發現問題。
+# 3. **整合併發代理**: 引入了併發代理獲取機制，提升連線成功率。
 #
 # ======================================================================================
 
@@ -154,7 +155,7 @@ class DisplayManager:
         self._full_history.append(f"[{now.isoformat()}] [{level.upper():^8}] {message}")
 
     def _build_output_buffer(self) -> list[str]:
-        output_buffer = ["🐺 善狼一鍵啟動器 (v8.0 - 高可用性代理) 🐺", ""]
+        output_buffer = ["📥🐺 善狼一鍵啟動器 (v8) 🐺", ""]
         for log in self._log_deque:
             ts, level, message = log['timestamp'].strftime('%H:%M:%S'), log['level'], log['message']
             output_buffer.append(f"[{ts}] {colorize(f'[{level:^8}]', level)} {message}")
@@ -187,98 +188,196 @@ class DisplayManager:
     def stop(self): self._stop_event.set(); self._thread.join(timeout=1)
 
 # ==============================================================================
-# PART 3: 高可用性代理獲取器 (High-Availability Proxy Getter)
+# PART 3: 環境健康診斷儀 (Environment Health Diagnostics)
+# ==============================================================================
+def _run_health_check(log_manager, check_func, *args, **kwargs):
+    """執行單個健康檢查並記錄結果的輔助函式。"""
+    check_name = check_func.__doc__
+    log_manager.log("INFO", f"🩺 {check_name}...")
+    try:
+        passed, message = check_func(*args, **kwargs)
+        if passed:
+            log_manager.log("SUCCESS", f"✅ {check_name}: 通過 ({message})")
+            return True
+        else:
+            log_manager.log("CRITICAL", f"❌ {check_name}: 失敗 ({message})")
+            return False
+    except Exception as e:
+        log_manager.log("CRITICAL", f"❌ {check_name}: 執行時發生無法預期的錯誤: {e}")
+        return False
+
+def check_external_network():
+    """檢查外部網路連線"""
+    import socket
+    try:
+        with socket.create_connection(("google.com", 80), timeout=5):
+            return True, "能夠成功連線到 google.com"
+    except OSError as e:
+        return False, str(e)
+
+def check_port_allocation():
+    """檢查內部埠號分配"""
+    import socket
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(('', 0))
+            port = s.getsockname()[1]
+            if port > 0:
+                return True, f"成功分配到埠號 {port}"
+            else:
+                return False, "作業系統回傳了無效的埠號 0"
+    except Exception as e:
+        return False, str(e)
+
+def check_communication_pipe():
+    """檢查 Colab 前後端通訊管道"""
+    try:
+        result = colab_output.eval_js("'pong'", timeout_sec=15)
+        if result == 'pong':
+            return True, "成功收到 'pong' 回應"
+        else:
+            return False, f"預期收到 'pong'，但收到了: {result}"
+    except Exception as e:
+        return False, f"通訊管道完全中斷: {e}"
+
+def run_all_diagnostics(log_manager):
+    """執行所有前置健康檢查。"""
+    log_manager.log("INFO", "="*40)
+    log_manager.log("INFO", "🚀 開始執行 Colab 環境健康診斷...")
+    log_manager.log("INFO", "="*40)
+
+    checks = [
+        check_external_network,
+        check_port_allocation,
+        check_communication_pipe,
+    ]
+
+    all_passed = True
+    for check_func in checks:
+        if not _run_health_check(log_manager, check_func):
+            all_passed = False
+
+    log_manager.log("INFO", "="*40)
+    if all_passed:
+        log_manager.log("SUCCESS", "✅ 所有健康檢查項目均已通過！")
+    else:
+        log_manager.log("CRITICAL", "❌ 部分健康檢查失敗，建議中斷執行並檢查環境。")
+    log_manager.log("INFO", "="*40)
+
+    return all_passed
+
+# ==============================================================================
+# PART 4: 高可用性代理獲取器 (High-Availability Proxy Getter)
 # ==============================================================================
 class HAProxyGetter:
-    def __init__(self, port, log_manager):
+    def __init__(self, port, log_manager, timeout=15):
         self.port = port
         self.log = log_manager.log
-        self.results = queue.Queue()
-        self.processes = []
-
-    def _install_tool(self, cmd, name, check_cmd):
-        try:
-            # 檢查工具是否已安裝
-            if subprocess.run(check_cmd, shell=True, capture_output=True).returncode == 0:
-                self.log("INFO", f"✅ 工具 '{name}' 已安裝。")
-                return True
-            self.log("INFO", f"正在安裝 {name}...")
-            proc = subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True)
-            self.log("SUCCESS", f"✅ {name} 安裝成功。")
-            return True
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            self.log("ERROR", f"❌ {name} 安裝失敗: {e.stderr if hasattr(e, 'stderr') else e}")
-            return False
+        self.timeout = timeout
+        self.results_queue = queue.Queue()
+        self.active_processes = []
 
     def _get_colab_url(self):
+        method_name = "Colab 官方代理"
+        self.log("INFO", f"-> {method_name} 競速開始...")
         try:
-            js_get_url_script = f"google.colab.kernel.proxyPort({self.port}, {{'cache': false}})"
-            url = colab_output.eval_js(js_get_url_script)
-            if url and "googleusercontent.com" in url:
-                self.results.put(("Colab 官方代理", url))
-                self.log("SUCCESS", f"✅ 成功獲取 Colab 代理: {url}")
+            result = colab_output.eval_js(f"google.colab.kernel.proxyPort({self.port}, {{'cache': false}})", timeout_sec=self.timeout)
+            if isinstance(result, str) and result.startswith('http'):
+                self.results_queue.put({'method': method_name, 'url': result})
+                self.log("SUCCESS", f"✅ {method_name} 成功: {result}")
             else:
-                self.log("WARN", "Colab 代理返回了無效的 URL。")
+                 self.log("WARN", f"⚠️ {method_name} 未回傳有效網址 (收到: {result})")
         except Exception as e:
-            self.log("WARN", f"獲取 Colab 代理失敗: {e}")
+            self.log("WARN", f"⚠️ {method_name} 失敗: {e}")
 
-    def _get_cloudflare_url(self):
-        if not self._install_tool(
-            "wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O /usr/local/bin/cloudflared && chmod +x /usr/local/bin/cloudflared",
-            "Cloudflared",
-            "command -v cloudflared"
-        ): return
+    def _run_tunnel_service(self, method_name, cmd, pattern):
+        self.log("INFO", f"-> {method_name} 競速開始...")
+        proc = None
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
+            self.active_processes.append(proc)
 
-        cmd = f"cloudflared tunnel --url http://127.0.0.1:{self.port}"
-        proc = subprocess.Popen(cmd.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        self.processes.append(proc)
-        for line in iter(proc.stderr.readline, ''):
-            if "trycloudflare.com" in line:
-                url = re.search(r'(https?://\S+\.trycloudflare\.com)', line)
-                if url:
-                    self.results.put(("Cloudflare Tunnel", url.group(1)))
-                    self.log("SUCCESS", f"✅ 成功獲取 Cloudflare 代理: {url.group(1)}")
-                    # 找到後即可，但讓它繼續運行
-                    return
+            start_time = time.monotonic()
+            while time.monotonic() - start_time < self.timeout:
+                line = proc.stdout.readline()
+                if not line: break
+                match = re.search(pattern, line)
+                if match:
+                    url = match.group(1)
+                    self.results_queue.put({'method': method_name, 'url': url})
+                    self.log("SUCCESS", f"✅ {method_name} 成功: {url}")
+                    return # 讓子程序在背景繼續運行
+                time.sleep(0.1)
+            self.log("WARN", f"⚠️ {method_name} 在時限內未輸出網址。")
+        except Exception as e:
+            self.log("ERROR", f"❌ {method_name} 執行時發生錯誤: {e}")
+        # 不在此處終止 proc，讓 get_urls 決定何時清理
 
     def _get_localtunnel_url(self):
-        if not self._install_tool("npm install -g localtunnel", "Localtunnel", "command -v lt"): return
-        cmd = f"lt --port {self.port}"
-        proc = subprocess.Popen(cmd.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        self.processes.append(proc)
-        for line in iter(proc.stdout.readline, ''):
-            if "your url is:" in line:
-                url = line.split()[-1]
-                self.results.put(("Localtunnel", url))
-                self.log("SUCCESS", f"✅ 成功獲取 Localtunnel 代理: {url}")
-                return
+        try:
+            # 檢查並安裝
+            if shutil.which('npm') is None:
+                self.log("INFO", "安裝 Node.js 和 npm...")
+                subprocess.run(['apt-get', 'install', '-qqy', 'nodejs', 'npm'], check=True, capture_output=True)
+            if shutil.which('lt') is None:
+                 self.log("INFO", "安裝 localtunnel...")
+                 subprocess.run(['npm', 'install', '-g', 'localtunnel'], check=True, capture_output=True)
 
-    def get_urls(self, timeout=15):
-        threads = [
+            cmd = ['lt', '--port', str(self.port)]
+            self._run_tunnel_service("Localtunnel", cmd, r'(https?://\S+\.loca\.lt)')
+        except Exception as e:
+            self.log("ERROR", f"❌ Localtunnel 前置作業失敗: {e}")
+
+
+    def _get_cloudflare_url(self):
+        try:
+            # 檢查並安裝
+            if not Path('./cloudflared').exists():
+                self.log("INFO", "下載 Cloudflared...")
+                subprocess.run(['wget', '-q', 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64', '-O', 'cloudflared'], check=True)
+                subprocess.run(['chmod', '+x', 'cloudflared'], check=True)
+
+            cmd = ['./cloudflared', 'tunnel', '--url', f'http://127.0.0.1:{self.port}']
+            self._run_tunnel_service("Cloudflare Tunnel", cmd, r'(https?://\S+\.trycloudflare\.com)')
+        except Exception as e:
+            self.log("ERROR", f"❌ Cloudflared 前置作業失敗: {e}")
+
+    def get_urls(self):
+        racers = [
             threading.Thread(target=self._get_colab_url),
-            threading.Thread(target=self._get_cloudflare_url),
             threading.Thread(target=self._get_localtunnel_url),
+            threading.Thread(target=self._get_cloudflare_url),
         ]
-        for t in threads:
-            t.start()
 
-        start_time = time.time()
-        while time.time() - start_time < timeout and any(t.is_alive() for t in threads):
-            for t in threads:
-                t.join(0.1)
+        self.log("INFO", "🚀 開始併發獲取代理網址...")
+        for r in racers:
+            r.start()
 
-        for proc in self.processes:
-            if proc.poll() is None:
-                proc.terminate() # 清理仍在運行的隧道進程
+        # 等待所有線程跑完或超時
+        for r in racers:
+            r.join(timeout=self.timeout + 2) # 給予額外2秒的緩衝
 
+        # 從佇列中收集所有成功結果
         urls = []
-        while not self.results.empty():
-            urls.append(self.results.get())
+        while not self.results_queue.empty():
+            try:
+                result = self.results_queue.get_nowait()
+                urls.append((result['method'], result['url']))
+            except queue.Empty:
+                break
+
         return sorted(urls, key=lambda x: x[0])
+
+    def stop_tunnels(self):
+        self.log("INFO", "正在關閉所有隧道服務...")
+        for proc in self.active_processes:
+            if proc.poll() is None:
+                proc.terminate()
+        self.log("INFO", "隧道服務已關閉。")
 
 
 # ==============================================================================
-# PART 4: 主啟動器邏輯
+# PART 5: 主啟動器邏輯
 # ==============================================================================
 def launch_application(project_path_str: str, log_manager: DisplayManager):
     project_path = Path(project_path_str)
@@ -286,6 +385,15 @@ def launch_application(project_path_str: str, log_manager: DisplayManager):
     display_manager = log_manager
     display_manager._stats = shared_stats
     display_manager.start()
+
+    # --- 步驟 1: 執行環境健康診斷 ---
+    if not run_all_diagnostics(display_manager):
+        shared_stats['status'] = "❌ 環境診斷失敗"
+        display_manager.log("CRITICAL", "環境診斷未通過，已中止應用程式啟動。")
+        # 讓 display_manager 繼續運行一會兒，以便使用者能看到日誌
+        time.sleep(5)
+        # 透過 finally 區塊來確保正常關閉
+        raise RuntimeError("環境診斷失敗，中止啟動。")
 
     server_proc = None
     try:
@@ -309,6 +417,7 @@ def launch_application(project_path_str: str, log_manager: DisplayManager):
                 display_manager.log("SUCCESS", f"偵測到應用程式埠號: {app_port}")
                 break # 找到埠號後就跳出
 
+        proxy_getter = None # 在 try 區塊外初始化
         if app_port:
             shared_stats['status'] = "併發獲取代理網址中..."
             proxy_getter = HAProxyGetter(app_port, display_manager)
@@ -334,6 +443,8 @@ def launch_application(project_path_str: str, log_manager: DisplayManager):
         traceback.print_exc()
         shared_stats['status'] = f"❌ 致命錯誤"
     finally:
+        if proxy_getter:
+            proxy_getter.stop_tunnels()
         if server_proc and server_proc.poll() is None:
             display_manager.log("INFO", f"正在終止中央啟動腳本 (PID: {server_proc.pid})...")
             server_proc.terminate()
