@@ -25,38 +25,91 @@ const path = require('path');
     console.log('[JS Test] ✅ Vue app 已找到！');
 
     // ----------------------------------------------------------------
-    // 步驟 1: 新增檔案轉錄任務
+    // 步驟 1: 驗證本地檔案轉錄與模型下載
     // ----------------------------------------------------------------
-    console.log('[JS Test] 步驟 1: 新增檔案轉錄任務...');
+    console.log('[JS Test] 步驟 1: 驗證本地檔案轉錄與模型下載...');
     await page.click("button:has-text('本機檔案轉錄')");
 
+    // 選擇 tiny 模型
+    await page.selectOption('select#model-select', 'tiny');
+    console.log('[JS Test] 已選擇 "tiny" 模型。');
+
+    // 檢查模型是否需要下載
+    const downloadButton = page.locator("button:has-text('下載模型')");
+    const modelReadyButton = page.locator("button:has-text('模型已就緒')");
+
+    if (await downloadButton.isVisible()) {
+      console.log('[JS Test] 模型尚未下載，正在點擊下載按鈕...');
+      await downloadButton.click();
+      // 等待下載完成，按鈕變為「模型已就緒」
+      await modelReadyButton.waitFor({ state: 'visible', timeout: 60000 }); // 增加超時以等待下載
+      console.log('[JS Test] ✅ 模型下載成功並已就緒。');
+    } else {
+      console.log('[JS Test] 模型已存在，無需下載。');
+    }
+
+    // 現在模型已就緒，可以上傳檔案
     const filePath = path.join(__dirname, 'vue-app', 'tests', 'fixtures', 'test-audio.txt');
     await page.setInputFiles('input[type="file"]', filePath);
     console.log(`[JS Test] 已選擇測試檔案: ${filePath}`);
 
-    await page.click("button:has-text('新增 1 個檔案至佇列')");
+    // 驗證「新增至佇列」按鈕現在是啟用的
+    console.log('[JS Test] 等待「新增至佇列」按鈕變為啟用狀態...');
+    const addToQueueButton = page.locator("button:has-text('新增 1 個檔案至佇列')");
+    await page.waitForFunction(
+      (button) => !button.disabled,
+      await addToQueueButton.elementHandle(),
+      { timeout: 10000 }
+    );
+    console.log('[JS Test] ✅ 「新增至佇列」按鈕已啟用。');
+
+    await addToQueueButton.click();
     console.log('[JS Test] ✅ 已點擊「新增至佇列」按鈕');
 
     // ----------------------------------------------------------------
-    // 步驟 2: 新增 YouTube 報告任務
+    // 步驟 2: 驗證媒體下載器
     // ----------------------------------------------------------------
-    console.log('[JS Test] 步驟 2: 新增 YouTube 報告任務...');
+    console.log('[JS Test] 步驟 2: 驗證媒體下載器...');
+    await page.click("button:has-text('媒體下載器')");
+    await page.fill("textarea[id='downloader-urls-input']", 'https://www.youtube.com/watch?v=dQw4w9WgXcQ');
+    await page.click("button:has-text('開始下載')");
+
+    // 驗證成功通知
+    await page.waitForSelector("text=下載任務已成功建立！", { timeout: 5000 });
+    console.log('[JS Test] ✅ 驗證成功: 下載器功能正常，未出現 t.startDownload 錯誤。');
+
+    // ----------------------------------------------------------------
+    // 步驟 3: 驗證 YouTube 報告與模型選擇
+    // ----------------------------------------------------------------
+    console.log('[JS Test] 步驟 3: 驗證 YouTube 報告與模型選擇...');
     await page.click("button:has-text('YouTube 轉報告')");
 
-    // 由於我們註解掉了驗證邏輯，現在只需輸入即可
-    await page.fill("input[type='password']", 'test-api-key');
+    // 現在我們需要驗證真實的 API 呼叫流程
+    // 注意：在測試環境中，我們假設後端 API 會返回一個模擬的成功回應
+    await page.fill("input[type='password']", 'mock-valid-api-key');
     await page.click("button:has-text('儲存金鑰')");
-    await page.waitForSelector("text=金鑰已儲存 (未驗證)");
-    console.log('[JS Test] 已輸入並儲存 API 金鑰');
+
+    // 等待並驗證 API 呼叫後的正面狀態
+    await page.waitForSelector("text=/金鑰有效/", { timeout: 10000 });
+    console.log('[JS Test] ✅ 驗證成功: API 金鑰狀態已更新。');
+
+    // 驗證模型下拉選單是否已填入內容
+    const modelSelector = page.locator('select#gemini-model-select');
+    const optionsCount = await modelSelector.locator('option').count();
+    if (optionsCount <= 1) { // 應該要有一個以上的真實模型選項
+      throw new Error(`模型下拉選單未成功載入。只找到 ${optionsCount} 個選項。`);
+    }
+    console.log(`[JS Test] ✅ 驗證成功: 模型下拉選單已載入 ${optionsCount} 個模型。`);
 
     await page.fill("input[placeholder='YouTube 影片網址']", 'https://www.youtube.com/watch?v=dQw4w9WgXcQ');
     await page.click("button:has-text('新增 1 個影片至佇列')");
     console.log('[JS Test] ✅ 已新增 YouTube 影片至佇列');
 
+
     // ----------------------------------------------------------------
-    // 步驟 3: 驗證任務池
+    // 步驟 4: 驗證任務池
     // ----------------------------------------------------------------
-    console.log('[JS Test] 步驟 3: 驗證任務池...');
+    console.log('[JS Test] 步驟 4: 驗證任務池...');
     const taskPool = page.locator(".card:has-text('任務佇列')");
     await taskPool.waitFor({ state: 'visible', timeout: 5000 });
 
@@ -67,9 +120,9 @@ const path = require('path');
     console.log(`[JS Test] ✅ 驗證成功: 任務池中顯示了 ${tasksInPool} 個任務。`);
 
     // ----------------------------------------------------------------
-    // 步驟 4: 提交任務池 (預期會失敗，因為按鈕尚未對接)
+    // 步驟 5: 提交任務池 (預期會失敗，因為按鈕尚未對接)
     // ----------------------------------------------------------------
-    console.log('[JS Test] 步驟 4: 提交任務池...');
+    console.log('[JS Test] 步驟 5: 提交任務池...');
     const submitButton = taskPool.locator("button:has-text('提交佇列中的 2 個任務')");
     await submitButton.click();
     console.log('[JS Test] 已點擊「提交佇列」按鈕。');

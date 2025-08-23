@@ -688,6 +688,7 @@ async def upload_cookies_file(file: UploadFile = File(...)):
 # --- YouTube 功能相關 API ---
 
 @app.post("/api/youtube/validate_api_key")
+@app.post("/api/youtube/validate_api_key/") # 增加此行以處理結尾斜線
 async def validate_api_key(request: Request):
     """接收前端傳來的 API Key 並進行驗證。"""
     try:
