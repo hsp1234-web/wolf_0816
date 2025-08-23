@@ -1,3 +1,30 @@
+## 2025-08-23T20:13:58.339178+08:00
+
+### ✨ 功能增強：自動獲取並顯示 Localtunnel 密碼 (Feature: Auto-Fetch and Display Localtunnel Password)
+
+- **適應 Localtunnel 安全策略**:
+    - **背景**: `localtunnel.me` 服務新增了一項安全措施，要求訪客輸入隧道的公開 IP 位址作為密碼才能存取。
+    - **解決方案**:
+        1.  **自動獲取密碼**: 修改了 `Colabpro.py` 中的 `HAProxyGetter` 類別。在 `localtunnel` 成功建立通道後，會自動執行 `curl https://loca.lt/mytunnelpassword` 來獲取所需的密碼。
+        2.  **清晰顯示密碼**: 修改了 `DisplayManager` 類別，使其能夠在 UI 上自動將獲取到的密碼附加到 `localtunnel` 的網址後面，格式為 `(密碼: xxx.xxx.xxx.xxx)`。
+    - **成果**: 使用者無需再手動查詢或輸入密碼，顯著簡化了操作流程，並確保了在 `localtunnel` 政策變更後服務的可用性。
+
+## 2025-08-23T19:46:18.755933+08:00
+
+### 🧪 建立 `Colabpro.py` 的本地測試框架 (Local Testing Framework for `Colabpro.py`)
+
+- **新增穩定測試環境**:
+    - **問題**: `Colabpro.py` 缺乏一個本地測試方案，直接執行會因環境不符、網路依賴和缺少超時機制而提前退出或無限期掛起，導致無法進行快速、可靠的迭代開發。
+    - **解決方案**:
+        1.  **建立專用測試腳本**: 新增 `runner/run_colabpro_test.py`，作為 `Colabpro.py` 的官方本地測試啟動器。
+        2.  **智慧型模擬 (Intelligent Mocking)**:
+            - **繞過網路依賴**: 使用 `unittest.mock.patch` 動態替換了 `google.colab.output.eval_js` 和 `Colabpro.HAProxyGetter.get_urls`。這不僅能回應健康檢查 (`'pong'`)，還徹底避免了在測試過程中下載大型二進位檔案 (`cloudflared`) 的問題。
+            - **繞過檔案系統依賴**: 測試腳本會自動建立一個假的專案目錄並傳入 `launch_application`，完全繞過了真實的 Git 下載流程。
+        3.  **實作超時監控**:
+            - 採用 `multiprocessing` 將應用程式放在獨立的子進程中運行。
+            - 主進程會監控子進程，若總執行時間超過 120 秒或日誌輸出停滯超過 20 秒，將自動終止測試，有效防止了先前遇到的掛起問題。
+    - **成果**: 此框架提供了一個快速、穩定且獨立的測試環境，確保了 `Colabpro.py` 的核心啟動邏輯可以被有效驗證。
+
 ## 2025-08-23T18:55:19.023356+08:00
 
 ### 🔧 前端建置修復與部署流程修正 (Frontend Build Fix & Deployment Process Correction)
