@@ -7,7 +7,7 @@
 #@markdown **後端程式碼倉庫 (REPOSITORY_URL)**
 REPOSITORY_URL = "https://github.com/hsp1234-web/wolf_0816.git" #@param {type:"string"}
 #@markdown **後端版本分支或標籤 (TARGET_BRANCH_OR_TAG)**
-TARGET_BRANCH_OR_TAG = "365" #@param {type:"string"}
+TARGET_BRANCH_OR_TAG = "645" #@param {type:"string"}
 #@markdown **專案資料夾名稱 (PROJECT_FOLDER_NAME)**
 PROJECT_FOLDER_NAME = "WEB1" #@param {type:"string"}
 #@markdown **強制刷新後端程式碼 (FORCE_REPO_REFRESH)**
@@ -73,6 +73,7 @@ import queue
 import traceback
 import types
 import json
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 def _setup_colab_mocks():
     """如果不在真實的 Colab 環境中，則建立虛假的 google.colab 模組以避免 ImportError。"""
@@ -174,14 +175,28 @@ class DisplayManager:
         mins, secs = divmod(elapsed, 60)
         output_buffer.extend(["", f"⏱️ {int(mins):02d}分{int(secs):02d}秒 | 💻 CPU: {cpu} | 🧠 RAM: {ram} | 🔥 狀態: {self._stats.get('status', '初始化...')}", ""])
 
-        # **修改**: 顯示所有可用的代理網址
+        # **修改**: 顯示所有可用的代理網址，並包含密碼資訊
         proxy_urls = self._stats.get('proxy_urls', [])
         if not proxy_urls:
             output_buffer.append("⏳ 正在啟動服務並生成連結...")
         else:
             output_buffer.append("✅ 應用程式連結 (點擊開啟):")
-            for name, url in proxy_urls:
+            # 增加一個空行，讓連結區塊更清晰
+            output_buffer.append("")
+            for proxy_info in proxy_urls:
+                name = proxy_info.get('method', 'N/A')
+                url = proxy_info.get('url', 'N/A')
+                password = proxy_info.get('password')
+
+                # 顯示服務名稱和網址
                 output_buffer.append(f"  - {name+':':<20} {url}")
+
+                # 如果有密碼，則在下一行縮排顯示
+                if password:
+                    output_buffer.append(f"    {'密碼:':<20} {password}")
+
+                # 在每個條目後增加一個空行以分隔
+                output_buffer.append("")
         return output_buffer
 
     def _run(self):
@@ -247,6 +262,52 @@ def check_communication_pipe():
     except Exception as e:
         return False, f"通訊管道完全中斷: {e}"
 
+import socket
+
+class _SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
+    def do_GET(self): self.send_response(200); self.end_headers(); self.wfile.write(b"OK")
+    def log_message(self, format, *args): return
+
+class _StoppableHTTPServer(HTTPServer):
+    def run(self):
+        try:
+            self.serve_forever()
+        except Exception:
+            pass # Suppress errors on shutdown
+    def stop(self):
+        # shutdown is not instant, so run in a thread
+        threading.Thread(target=self.shutdown, daemon=True).start()
+
+def _find_available_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('', 0)); return s.getsockname()[1]
+
+def check_colab_proxy_availability():
+    """檢查 Colab 官方代理服務是否能正常運作"""
+    port = _find_available_port()
+    if not port:
+        return False, "無法找到可用埠號來啟動測試伺服器。"
+
+    server = _StoppableHTTPServer(("127.0.0.1", port), _SimpleHTTPRequestHandler)
+    server_thread = threading.Thread(target=server.run, daemon=True)
+    server_thread.start()
+    time.sleep(0.5) # 給予伺服器啟動時間
+
+    try:
+        # 使用一個較短的超時來進行此項檢查
+        result = colab_output.eval_js(f"google.colab.kernel.proxyPort({port}, {{'cache': false}})", timeout_sec=20)
+
+        if isinstance(result, str) and result.startswith('http'):
+            return True, f"成功獲取測試伺服器的代理網址"
+        else:
+            return False, f"無法獲取代理網址 (eval_js 回傳了非預期的值: {result})"
+    except Exception as e:
+        return False, f"獲取代理網址時發生錯誤: {e}"
+    finally:
+        server.stop()
+        server_thread.join(timeout=2) # 等待伺服器線程結束
+
+
 def run_all_diagnostics(log_manager):
     """執行所有前置健康檢查。"""
     log_manager.log("INFO", "="*40)
@@ -257,6 +318,7 @@ def run_all_diagnostics(log_manager):
         check_external_network,
         check_port_allocation,
         check_communication_pipe,
+        check_colab_proxy_availability,
     ]
 
     all_passed = True
@@ -287,15 +349,34 @@ class HAProxyGetter:
     def _get_colab_url(self):
         method_name = "Colab 官方代理"
         self.log("INFO", f"-> {method_name} 競速開始...")
-        try:
-            result = colab_output.eval_js(f"google.colab.kernel.proxyPort({self.port}, {{'cache': false}})", timeout_sec=self.timeout)
-            if isinstance(result, str) and result.startswith('http'):
-                self.results_queue.put({'method': method_name, 'url': result})
-                self.log("SUCCESS", f"✅ {method_name} 成功: {result}")
-            else:
-                 self.log("WARN", f"⚠️ {method_name} 未回傳有效網址 (收到: {result})")
-        except Exception as e:
-            self.log("WARN", f"⚠️ {method_name} 失敗: {e}")
+        max_retries = 10
+        retry_delay_seconds = 8
+
+        for attempt in range(max_retries):
+            try:
+                # 在每次嘗試時記錄日誌
+                if attempt > 0:
+                    self.log("INFO", f"-> {method_name} 正在進行第 {attempt + 1}/{max_retries} 次嘗試...")
+
+                result = colab_output.eval_js(f"google.colab.kernel.proxyPort({self.port}, {{'cache': false}})", timeout_sec=self.timeout)
+
+                if isinstance(result, str) and result.startswith('http'):
+                    self.results_queue.put({'method': method_name, 'url': result})
+                    self.log("SUCCESS", f"✅ {method_name} 在第 {attempt + 1} 次嘗試後成功: {result}")
+                    return # 成功後立即退出函式
+                else:
+                    self.log("WARN", f"⚠️ {method_name} 第 {attempt + 1}/{max_retries} 次嘗試未回傳有效網址 (收到: {result})")
+
+            except Exception as e:
+                self.log("WARN", f"⚠️ {method_name} 第 {attempt + 1}/{max_retries} 次嘗試時發生錯誤: {e}")
+
+            # 如果不是最後一次嘗試，則等待後重試
+            if attempt < max_retries - 1:
+                self.log("INFO", f"-> 將在 {retry_delay_seconds} 秒後重試...")
+                time.sleep(retry_delay_seconds)
+
+        # 如果迴圈正常結束（表示所有嘗試都失敗了）
+        self.log("CRITICAL", f"❌ {method_name} 在 {max_retries} 次嘗試後徹底失敗。")
 
     def _run_tunnel_service(self, method_name, cmd, pattern):
         self.log("INFO", f"-> {method_name} 競速開始...")
@@ -311,7 +392,24 @@ class HAProxyGetter:
                 match = re.search(pattern, line)
                 if match:
                     url = match.group(1)
-                    self.results_queue.put({'method': method_name, 'url': url})
+                    result_data = {'method': method_name, 'url': url}
+
+                    # 如果是 Localtunnel，額外獲取密碼
+                    if method_name == "Localtunnel":
+                        self.log("INFO", "-> 正在為 Localtunnel 獲取隧道密碼...")
+                        try:
+                            # 使用 curl 獲取作為密碼的公開 IP 位址
+                            pass_proc = subprocess.run(['curl', 'https://loca.lt/mytunnelpassword'], capture_output=True, text=True, timeout=10)
+                            if pass_proc.returncode == 0 and pass_proc.stdout.strip():
+                                password = pass_proc.stdout.strip()
+                                result_data['password'] = password
+                                self.log("SUCCESS", f"✅ Localtunnel 密碼已獲取: {password}")
+                            else:
+                                self.log("WARN", "⚠️ 無法獲取 Localtunnel 密碼。")
+                        except Exception as e:
+                            self.log("ERROR", f"❌ 獲取 Localtunnel 密碼時出錯: {e}")
+
+                    self.results_queue.put(result_data)
                     self.log("SUCCESS", f"✅ {method_name} 成功: {url}")
                     return # 讓子程序在背景繼續運行
                 time.sleep(0.1)
@@ -369,11 +467,13 @@ class HAProxyGetter:
         while not self.results_queue.empty():
             try:
                 result = self.results_queue.get_nowait()
-                urls.append((result['method'], result['url']))
+                # 直接附加整個字典，而不是只附加元組，以保留密碼等額外資訊
+                urls.append(result)
             except queue.Empty:
                 break
 
-        return sorted(urls, key=lambda x: x[0])
+        # 按 method 名稱排序，以確保顯示順序一致
+        return sorted(urls, key=lambda x: x['method'])
 
     def stop_tunnels(self):
         self.log("INFO", "正在關閉所有隧道服務...")
@@ -477,19 +577,37 @@ def create_log_viewer_html(display_manager: DisplayManager) -> str:
     except Exception as e:
         return f"<p>❌ 產生最終日誌報告時發生錯誤: {html.escape(str(e))}</p>"
 
-if __name__ == "__main__":
-    print("--- Colabpro.py 本地測試模式 ---")
-    display_manager = DisplayManager(stats_dict={}, refresh_rate=UI_REFRESH_SECONDS)
+# ==============================================================================
+# FINAL EXECUTION BLOCK (貼上到 Colab 後執行的程式碼)
+# ==============================================================================
+# 主要執行流程
+# 建立日誌管理器
+main_display_manager = DisplayManager(
+    stats_dict={},
+    refresh_rate=UI_REFRESH_SECONDS
+)
+
+# 下載專案
+project_path = download_repository(log_manager=main_display_manager)
+
+# 如果專案下載成功，則啟動應用程式
+if project_path:
     try:
-        os.environ['IN_TEST_MODE'] = '1'
-        _setup_colab_mocks()
-        project_path = download_repository(log_manager=display_manager)
-        if project_path:
-            launch_application(project_path_str=project_path, log_manager=display_manager)
-        else:
-            display_manager.log("CRITICAL", "專案準備失敗，無法繼續啟動程序。")
+        launch_application(
+            project_path_str=project_path,
+            log_manager=main_display_manager
+        )
     except Exception as e:
-        print(f"\n--- 致命錯誤 ---")
+        # launch_application 內部已經有自己的異常處理和日誌記錄
+        # 但為了以防萬一，我們在這裡再加一層
+        main_display_manager.log("CRITICAL", f"啟動程序發生頂層未捕獲錯誤: {e}")
         traceback.print_exc()
-    finally:
-        print("\n--- 本地測試結束 ---")
+        main_display_manager.stop() # 確保在意外失敗時停止
+else:
+    # 如果下載失敗
+    main_display_manager.log("CRITICAL", "專案下載失敗，無法啟動應用程式。")
+    main_display_manager.stop() # 停止日誌更新
+    # 顯示最終日誌
+    final_html = create_log_viewer_html(main_display_manager)
+    display(HTML(final_html))
+    print("\n--- 執行因錯誤而終止 ---")
