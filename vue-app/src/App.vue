@@ -99,6 +99,9 @@
         <LogViewer />
       </div>
 
+      <!-- 任務佇列 -->
+      <TaskPool />
+
       <!-- 任務列表 (所有分頁共用) -->
       <div class="grid-2-col" style="margin-top: 24px;">
         <PendingTasks />
@@ -124,6 +127,7 @@ import PendingTasks from './components/PendingTasks.vue'
 import CompletedTasks from './components/CompletedTasks.vue'
 import TranscriptOutput from './components/TranscriptOutput.vue'
 import NotificationHost from './components/NotificationHost.vue'
+import TaskPool from './components/TaskPool.vue'
 
 // 獲取 Pinia store 的實例
 const tasksStore = useTasksStore()

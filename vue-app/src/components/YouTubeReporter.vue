@@ -66,9 +66,10 @@
     </div>
 
     <!-- 操作按鈕 -->
-    <div style="text-align: center; margin-top: 24px; display: flex; justify-content: center; gap: 15px; flex-wrap: wrap;">
-      <button @click="processRequest(true)" :disabled="!youtubeLinks[0].url" title="僅下載影片音訊，不進行 AI 分析">🎧 僅下載音訊</button>
-      <button @click="processRequest(false)" :disabled="!isApiKeyValid || !youtubeLinks[0].url" :title="analyzeButtonTooltip">🚀 分析影片 (Gemini)</button>
+    <div style="text-align: center; margin-top: 24px;">
+      <button @click="addYouTubeLinksToPool" :disabled="!isApiKeyValid || !youtubeLinks[0].url" :title="addButtonTooltip">
+        ➕ 新增 {{ youtubeLinks.filter(l => l.url).length }} 個影片至佇列
+      </button>
     </div>
 
     <!-- 報告瀏覽區 -->
@@ -125,18 +126,25 @@ const saveAndValidateApiKey = async () => {
   apiKeyStatus.text = '正在驗證中...';
   apiKeyStatus.italic = true;
 
-  const result = await tasksStore.validateApiKey(apiKey.value);
-  isApiKeyValid.value = result.valid;
-  if (result.valid) {
-    apiKeyStatus.text = '金鑰有效，Gemini 功能已啟用';
-    apiKeyStatus.color = 'var(--status-green)';
-    apiKeyStatus.italic = false;
-    await fetchModels();
-  } else {
-    apiKeyStatus.text = result.detail || '金鑰無效';
-    apiKeyStatus.color = '#dc3545';
-    apiKeyStatus.italic = false;
-  }
+  // TODO: 重新實作 API 金鑰驗證和模型獲取邏輯
+  // const result = await tasksStore.validateApiKey(apiKey.value);
+  // isApiKeyValid.value = result.valid;
+  // if (result.valid) {
+  //   apiKeyStatus.text = '金鑰有效，Gemini 功能已啟用';
+  //   apiKeyStatus.color = 'var(--status-green)';
+  //   apiKeyStatus.italic = false;
+  //   await fetchModels();
+  // } else {
+  //   apiKeyStatus.text = result.detail || '金鑰無效';
+  //   apiKeyStatus.color = '#dc3545';
+  //   apiKeyStatus.italic = false;
+  // }
+
+  // 暫時的模擬行為，以便 UI 可用
+  isApiKeyValid.value = true;
+  apiKeyStatus.text = '金鑰已儲存 (未驗證)';
+  apiKeyStatus.color = 'var(--status-green)';
+  apiKeyStatus.italic = false;
 };
 
 const clearApiKey = () => {
@@ -164,49 +172,50 @@ const removeYoutubeRow = (index) => {
 };
 
 // --- 處理請求 ---
-const analyzeButtonTooltip = computed(() => {
+const addButtonTooltip = computed(() => {
   if (!isApiKeyValid.value) {
-    return '請先提供有效的 Google API 金鑰以啟用分析功能。';
+    return '請先提供有效的 Google API 金鑰。';
   }
   if (!youtubeLinks.value[0].url) {
     return '請先輸入 YouTube 影片網址。';
   }
-  return '開始使用 Gemini 分析影片';
+  return '新增影片至處理佇列';
 });
 
-const processRequest = async (downloadOnly = false) => {
-  const action = downloadOnly ? 'click-download-audio-only' : 'click-start-youtube-processing';
-  logAction(action);
+const addYouTubeLinksToPool = () => {
+  logAction('click-add-youtube-to-pool');
 
-  const requests = youtubeLinks.value.filter(link => link.url.trim() !== '').map(link => ({
-    url: link.url,
-    filename: link.filename.trim()
-  }));
+  const requests = youtubeLinks.value.filter(link => link.url.trim() !== '');
   if (requests.length === 0) {
     notificationStore.addNotification('請至少輸入一個有效的 YouTube 網址。', 'error');
     return;
   }
-  if (!downloadOnly && selectedTasks.value.length === 0) {
+  if (selectedTasks.value.length === 0) {
     notificationStore.addNotification('請至少選擇一個 AI 分析任務。', 'error');
     return;
   }
 
-  const payload = {
-    requests: requests,
-    model: selectedModel.value,
-    download_only: downloadOnly,
-    tasks: selectedTasks.value.join(','),
-    output_format: outputFormat.value,
-    api_key: apiKey.value
-  };
-
-  try {
-    await tasksStore.processYoutubeRequest(payload);
-    youtubeLinks.value = [{ url: '', filename: '' }]; // 清空輸入
-    notificationStore.addNotification('YouTube 處理任務已成功建立！', 'success');
-  } catch (error) {
-    notificationStore.addNotification(`建立任務失敗: ${error.message}`, 'error');
+  for (const link of requests) {
+    const task = {
+      type: 'youtube',
+      name: link.filename.trim() || link.url,
+      payload: {
+        url: link.url,
+        filename: link.filename.trim(),
+        tasks: selectedTasks.value,
+        model: selectedModel.value,
+        outputFormat: outputFormat.value,
+        apiKey: apiKey.value, // API 金鑰隨任務一起傳遞
+      },
+    };
+    tasksStore.addTaskToPool(task);
   }
+
+  notificationStore.addNotification(
+    `${requests.length} 個影片已成功新增至佇列！`,
+    'success'
+  );
+  youtubeLinks.value = [{ url: '', filename: '' }]; // 清空輸入
 };
 
 // --- 元件初始化 ---

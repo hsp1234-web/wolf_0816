@@ -64,14 +64,13 @@
     </div>
     <div style="text-align: center; margin-top: 24px;">
       <button
-        id="start-processing-btn"
+        id="add-to-queue-btn"
         :disabled="uploadedFiles.length === 0 || !isModelAvailable"
-        @click="startProcessing"
+        @click="addFilesToPool"
         :title="!isModelAvailable ? '請先下載或確認所選模型' : ''"
       >
-        {{ uploadedFiles.length > 0 ? `✨ 開始處理 ${uploadedFiles.length} 個檔案` : '✨ 請先選擇檔案' }}
+        {{ uploadedFiles.length > 0 ? `➕ 新增 ${uploadedFiles.length} 個檔案至佇列` : '請先選擇檔案' }}
       </button>
-      <!-- TODO: 上傳進度條邏輯 -->
     </div>
   </div>
 </template>
@@ -83,12 +82,15 @@ import { useNotificationStore } from '@/stores/notifications'
 import { logAction } from '@/utils/logging'
 import eventBus from '@/utils/eventBus'
 
+console.log('[TaskUploader.vue] setting up...');
+
 const tasksStore = useTasksStore()
 const notificationStore = useNotificationStore()
 
 // 從 store 獲取狀態
-const modelDownloadStatus = computed(() => tasksStore.modelDownloadStatus)
-const localModels = computed(() => tasksStore.localModels)
+// 增加後備物件，防止在初始渲染時因 store 狀態尚未完全同步而存取 undefined 導致崩潰
+const modelDownloadStatus = computed(() => tasksStore.modelDownloadStatus || {})
+const localModels = computed(() => tasksStore.localModels || { available: [], checking: true })
 
 // --- 組件本地狀態 ---
 const model = ref('tiny')
@@ -166,29 +168,45 @@ onUnmounted(() => {
 
 
 // --- 按鈕事件處理 ---
-const startProcessing = async () => {
-  if (uploadedFiles.value.length === 0) return
-  logAction('click-start-processing', `files_count: ${uploadedFiles.value.length}`)
+const addFilesToPool = async () => {
+  if (uploadedFiles.value.length === 0) return;
+  logAction('click-add-files-to-pool', `files_count: ${uploadedFiles.value.length}`);
 
-  for (const file of uploadedFiles.value) {
-    const formData = new FormData()
-    formData.append('file', file)
-    formData.append('model_size', model.value)
-    formData.append('language', language.value)
-    formData.append('beam_size', beamSize.value)
+  const originalCount = uploadedFiles.value.length;
+  notificationStore.addNotification(`正在預處理 ${originalCount} 個檔案...`, 'info');
 
-    try {
-      // 呼叫 store action 來處理上傳和任務建立
-      await tasksStore.startTranscription(formData)
-    } catch (error) {
-      // 可以在此處顯示錯誤訊息給使用者
-      console.error(`處理檔案 ${file.name} 時失敗:`, error)
+  try {
+    for (const file of uploadedFiles.value) {
+      // 1. 上傳檔案到暫存區並獲取 file_id
+      const response = await tasksStore.stageFile(file);
+      const file_id = response.file_id;
+
+      // 2. 將帶有 file_id 的任務加入佇列
+      const task = {
+        type: 'transcription',
+        name: file.name,
+        payload: {
+          file_id: file_id, // 使用檔案ID，而不是整個檔案
+          original_filename: file.name,
+          model: model.value,
+          language: language.value,
+          beamSize: beamSize.value,
+        },
+      };
+      tasksStore.addTaskToPool(task);
     }
-  }
 
-  // 處理完畢後清空已上傳檔案列表
-  uploadedFiles.value = []
-}
+    notificationStore.addNotification(
+      `${originalCount} 個檔案已成功新增至佇列！`,
+      'success'
+    );
+  } catch (error) {
+    notificationStore.addNotification('預處理檔案時發生錯誤，請檢查主控台日誌。', 'error');
+  } finally {
+    // 無論成功或失敗，都清空已上傳檔案列表
+    uploadedFiles.value = [];
+  }
+};
 </script>
 
 <style scoped>

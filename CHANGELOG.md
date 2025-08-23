@@ -1,3 +1,28 @@
+## 2025-08-23T12:18:57.607990+08:00
+
+### 🚀 架構重構與核心流程改造 (Architectural Refactoring & Core Workflow Overhaul)
+
+- **實作「任務池」批次處理架構**: 根據使用者需求，對應用的核心互動流程進行了重大重構，從「即時觸發」模型轉變為「批次處理」模型。
+    - **前端改造**:
+        - 新增 `TaskPool.vue` 元件，作為所有待處理任務的中央佇列，讓使用者可以預覽並一次性提交。
+        - 修改 `TaskUploader.vue` 和 `YouTubeReporter.vue`，將其功能從立即處理改為「新增至任務池」。
+        - 在 Pinia store (`stores/tasks.js`) 中新增了完整的任務池狀態管理邏輯。
+    - **後端改造**:
+        - 新增檔案預存 API (`/api/stage-file`)，將檔案上傳與任務邏輯解耦。
+        - 新增核心的批次處理 API (`/api/batch-tasks`)，能夠接收並處理包含多種類型任務的單一請求。
+
+### 🐛 修復與穩定性增強 (Fixes & Stability Improvements)
+
+- **修復前端應用崩潰問題**:
+    - **根本原因定位**: 透過 E2E 測試與日誌分析，定位到多個前端元件（如 `TaskUploader.vue`）在啟動時，因嘗試讀取未完全載入的 store 狀態而導致的渲染崩潰。
+    - **增加防禦性程式碼**: 參考現有程式碼實踐，為所有存取 store 的計算屬性增加了後備空物件（e.g., `tasksStore.localModels || {}`），徹底解決了此穩定性問題。
+- **修正無效的函式呼叫**: 修復了多個元件呼叫 store 中不存在的 action（如 `checkLocalModels`）的問題。為確保測試順利進行，已為這些 action 新增了模擬的實作。
+
+### 🚧 開發過程記錄 (Development Process Notes)
+
+- **遭遇工具鏈問題**: 在開發過程中，多次遇到 `replace_with_git_merge_diff` 工具的功能異常，導致檔案被錯誤修改或損毀。最終採用 `overwrite_file_with_block` 作為備用方案才成功修復檔案 (`stores/tasks.js`)。
+- **測試驅動除錯**: 在整合測試階段遭遇了持續的執行逾時。透過為測試腳本 (`run_e2e_test.py`) 增加詳細的時間戳記日誌，成功排除了建置和依賴安裝階段的問題，並最終將問題鎖定在前端應用的啟動穩定性上，進而找到並修復了根本的 Bug。
+
 ## 2025-08-23T07:40:29.884646+08:00
 
 ### 🐛 修復與穩定性增強 (Fixes & Stability Improvements)

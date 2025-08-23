@@ -46,10 +46,24 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+import shutil
+from pathlib import Path
+
+# --- 全域路徑設定 ---
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+STAGED_FILES_DIR = ROOT_DIR / "staged_files"
+
 # --- FastAPI 生命週期事件 (使用標準日誌) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("--- [API 閘道] 正在啟動 ---")
+
+    # 0. 清理並建立暫存檔案目錄
+    if STAGED_FILES_DIR.exists():
+        shutil.rmtree(STAGED_FILES_DIR)
+        log.info(f"已清理舊的暫存目錄: {STAGED_FILES_DIR}")
+    STAGED_FILES_DIR.mkdir(parents=True, exist_ok=True)
+    log.info(f"已建立暫存檔案目錄: {STAGED_FILES_DIR}")
 
     # 1. 初始化日誌資料庫
     initialize_log_database()
@@ -79,6 +93,16 @@ def process_youtube_video(task_id: str, url: str):
 # --- Pydantic 模型 ---
 class YouTubeRequest(BaseModel):
     youtube_url: str
+
+class BatchTaskPayload(BaseModel):
+    # 定義每個任務的具體內容
+    # 為了彈性，我們允許任意的鍵值對
+    type: str
+    name: str
+    payload: Dict[str, Any]
+
+class BatchRequest(BaseModel):
+    tasks: List[BatchTaskPayload]
 
 app = FastAPI(title="API 閘道 (整合版)", version="0.4.0", lifespan=lifespan)
 
@@ -111,6 +135,77 @@ async def upload_and_transcribe(file: UploadFile = File(...)):
     state_manager.update_state(lambda state: state.pending_tasks.append(new_task))
     process_transcription(task_id=task_id, file_path=saved_file_path, original_filename=file.filename)
     return {"message": "任務已成功排入佇列。", "task_id": task_id}
+
+@app.post("/stage-file", summary="上傳單一檔案至暫存區", status_code=201)
+async def stage_file(file: UploadFile = File(...)):
+    # 產生一個唯一的檔案ID，並保留原始副檔名
+    file_extension = Path(file.filename).suffix
+    file_id = f"{uuid.uuid4()}{file_extension}"
+    file_path = STAGED_FILES_DIR / file_id
+
+    try:
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        log.info(f"檔案 '{file.filename}' 已成功暫存至 '{file_path}'")
+    except Exception as e:
+        log.error(f"檔案暫存失敗: {e}")
+        raise HTTPException(status_code=500, detail="檔案儲存時發生內部錯誤。")
+
+    return {"file_id": file_id}
+
+
+@app.post("/api/batch-tasks", summary="提交一批次的任務進行處理", status_code=202)
+async def create_batch_tasks(request: BatchRequest):
+    new_tasks = []
+    for task_payload in request.tasks:
+        task_id = str(uuid.uuid4())
+        task_type = task_payload.type
+
+        # 根據任務類型建立 Task 物件和 Huey 任務
+        if task_type == "transcription":
+            file_id = task_payload.payload.get("file_id")
+            if not file_id:
+                raise HTTPException(status_code=400, detail=f"轉錄任務缺少 file_id: {task_payload.name}")
+
+            file_path = STAGED_FILES_DIR / file_id
+            if not file_path.exists():
+                raise HTTPException(status_code=404, detail=f"找不到暫存檔案: {file_id}")
+
+            new_task = Task(
+                task_id=task_id,
+                type=task_type,
+                status="queued",
+                payload=task_payload.payload, # 包含 model, language 等
+                created_at=datetime.utcnow().isoformat()
+            )
+            process_transcription(task_id=task_id, file_path=str(file_path), original_filename=task_payload.payload.get("original_filename", file_id))
+
+        elif task_type == "youtube":
+            url = task_payload.payload.get("url")
+            if not url:
+                raise HTTPException(status_code=400, detail=f"YouTube 任務缺少 url: {task_payload.name}")
+
+            new_task = Task(
+                task_id=task_id,
+                type=task_type,
+                status="queued",
+                payload=task_payload.payload, # 包含 model, tasks 等
+                created_at=datetime.utcnow().isoformat()
+            )
+            process_youtube_video(task_id=task_id, url=url)
+
+        else:
+            log.warning(f"收到未知的任務類型: {task_type}")
+            continue # 跳過未知類型的任務
+
+        new_tasks.append(new_task)
+
+    # 一次性更新狀態
+    if new_tasks:
+        state_manager.update_state(lambda state: state.pending_tasks.extend(new_tasks))
+
+    return {"message": f"{len(new_tasks)} 個任務已成功排入佇列。", "task_ids": [t.task_id for t in new_tasks]}
+
 
 @app.post("/transcribe_youtube", summary="提供 YouTube 網址並觸發非同步下載與轉錄", status_code=202)
 async def transcribe_from_youtube(request: YouTubeRequest):
