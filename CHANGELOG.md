@@ -1,17 +1,22 @@
-## 2025-08-23T15:03:55+08:00
+## 2025-08-23T15:40:36+08:00
 
-### 🐛 修復與功能恢復 (Fixes & Feature Restoration)
-- **修復 YouTube 下載器功能**:
-  - 在 Pinia store (`stores/tasks.js`) 中實作了缺失的 `startDownload` action。
-  - 此 action 現在會正確地呼叫後端 API (`/api/youtube/process`)，並傳遞下載所需的 URL 和類型，解決了先前版本中點擊下載按鈕會報錯的問題。
-- **恢復 Gemini 模型選擇功能**:
-  - 在 `stores/tasks.js` 中新增了 `validateApiKey` 和 `fetchGeminiModels` 兩個 action，用於與後端 API 進行通訊。
-  - 移除了 `YouTubeReporter.vue` 中用於繞過驗證的臨時模擬程式碼，並恢復了原有的邏輯。現在，當使用者輸入有效的 API 金鑰後，前端會自動從後端獲取可用的 Gemini 模型列表並顯示於下拉選單中。
-- **修正後端啟動依賴問題**:
-  - 重新建立了在先前重構中被移除的 `requirements-server.txt` 和 `requirements-worker.txt` 檔案。
-  - 分析了專案原始碼以確定正確的依賴列表，確保本地啟動腳本 (`runner/localrun.py`) 能夠成功安裝所有必要的 Python 套件，解決了因 `ModuleNotFoundError` 導致的伺服器啟動失敗問題。
-- **修正 E2E 測試中的響應式問題**:
-  - 修正了 `stores/tasks.js` 中的 `checkLocalModels` 模擬函式，改用 `$patch` 來更新狀態，以確保 Vue 的響應式系統能被正確觸發。這解決了 E2E 測試中按鈕因狀態未更新而保持禁用狀態的問題。
+### 🚀 架構強化與核心功能修復 (Architectural Hardening & Core Feature Restoration)
+
+- **實作高可用性代理策略**:
+    - 根據使用者提供的技術報告，在 `Colabpro.py` 中完全重構了代理網址的獲取邏輯。
+    - 新策略會**併發**啟動 Colab 官方代理、`localtunnel` 和 `cloudflared` 三條獨立通道。
+    - 所有成功建立的代理網址都會被收集並清晰地展示在 UI 上，極大地提高了在不穩定 Colab 環境中的連線成功率和開發體驗。
+
+- **修復前端核心功能**:
+    - **媒體下載器**: 在 Pinia store (`stores/tasks.js`) 中實作了缺失的 `startDownload` action，解決了先前點擊下載會導致 JavaScript 錯誤的問題。
+    - **API 金鑰驗證**: 為後端 API 路由增加了對結尾斜線的支援，以解決提交金鑰時可能發生的 `405 Method Not Allowed` 錯誤。
+    - **模型選擇與下載**:
+        - 恢復了 `YouTubeReporter.vue` 中真實的 API 金鑰驗證與模型載入邏輯。
+        - 修正了 E2E 測試腳本 (`run_browser_test.js`)，使其能夠正確模擬「先檢查模型、若不存在則點擊下載、等待成功後再上傳檔案」的完整使用者流程。
+        - 修正了 Pinia store (`stores/tasks.js`) 中的一個響應式更新問題，確保元件狀態能被正確觸發。
+
+- **修正本地啟動環境**:
+    - 重新建立了 `requirements-server.txt` 和 `requirements-worker.txt`，解決了因缺少依賴而導致的 `ModuleNotFoundError`，使本地開發與測試環境恢復正常。
 
 ## 2025-08-23T13:44:58+08:00
 

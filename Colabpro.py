@@ -7,7 +7,7 @@
 #@markdown **後端程式碼倉庫 (REPOSITORY_URL)**
 REPOSITORY_URL = "https://github.com/hsp1234-web/wolf_0816.git" #@param {type:"string"}
 #@markdown **後端版本分支或標籤 (TARGET_BRANCH_OR_TAG)**
-TARGET_BRANCH_OR_TAG = "627" #@param {type:"string"}
+TARGET_BRANCH_OR_TAG = "630" #@param {type:"string"}
 #@markdown **專案資料夾名稱 (PROJECT_FOLDER_NAME)**
 PROJECT_FOLDER_NAME = "WEB1" #@param {type:"string"}
 #@markdown **強制刷新後端程式碼 (FORCE_REPO_REFRESH)**
@@ -36,8 +36,8 @@ ENABLE_CLEAR_OUTPUT = True #@param {type:"boolean"}
 # ==                                  開發者日誌                                  ==
 # ======================================================================================
 #
-# 版本: 8.0 (架構: 高可用性代理)
-# 日期: 2025-08-23T00:30:00+08:00
+# 版本: 8.1 (架構: 高可用性代理)
+# 日期: 2025-08-23T15:40:36+08:00
 #
 # 🔴 **禁止直接執行**: 本檔案 (Colabpro.py) 被設計為一個程式庫 (library)，
 #    由 Colab Notebook 環境導入並呼叫。請勿透過 `python Colabpro.py` 直接執行。
@@ -50,6 +50,7 @@ ENABLE_CLEAR_OUTPUT = True #@param {type:"boolean"}
 # 本次變更根據「Colab Pro 高可用性代理策略技術報告」實作了併發競速代理
 # 獲取策略。現在系統會同時嘗試啟動 Colab、localtunnel 和 Cloudflare
 # Tunnel，並將所有成功的網址都顯示出來，以應對 Colab 環境的不穩定。
+# 同時，預設分支已更新至 630。
 #
 # ======================================================================================
 
