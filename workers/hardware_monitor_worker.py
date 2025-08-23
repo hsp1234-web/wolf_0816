@@ -1,14 +1,11 @@
 import sys
 import os
-# JULES'S DEBUG: 印出 Python 搜尋模組的路徑，以確認環境是否正確
-print("--- hardware_monitor_worker.py sys.path ---")
-print(sys.path)
-print("-------------------------------------------")
 import time
 import psutil
 import requests
 import logging
 from src.core.queue_config import huey
+from huey import crontab
 
 # 設定日誌
 log = logging.getLogger('hardware_monitor_worker')

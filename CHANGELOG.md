@@ -1,3 +1,20 @@
+## 2025-08-24T07:22:03+08:00
+
+### 🐛 核心穩定性修復：解決啟動時序與環境相容性問題 (Core Stability Fix: Resolved Startup Timing & Environment Compatibility Issues)
+
+- **修復背景工作處理器啟動失敗 (Fixed Background Worker Startup Crash)**:
+    - **根本原因**: `hardware_monitor_worker.py` 在使用 `@huey.periodic_task(crontab(...))` 裝飾器時，遺漏了從 `huey` 函式庫中匯入 `crontab` 函式。這導致 `huey_consumer` 在匯入此模組時因 `NameError` 而崩潰，進而觸發整個應用程式連鎖關閉。
+    - **解決方案**: 在 `workers/hardware_monitor_worker.py` 頂部加入了 `from huey import crontab`。
+    - **成果**: 徹底解決了 `Huey` 消費者無法啟動的問題，確保了應用程式在顯示網址後能夠持續穩定運行。
+
+- **增強服務啟動時的穩健性 (Improved Service Startup Robustness)**:
+    - **問題**: `run_app.py` 在啟動 API 伺服器和背景工作處理器之間僅有固定的短暫延遲，在負載較高時會因競爭條件導致啟動失敗。
+    - **解決方案**: 以一個可靠的 TCP 健康檢查迴圈取代了固定延遲，確保 API 伺服器完全就緒後，才啟動依賴它的背景服務。
+
+- **降低沙箱環境目錄建立風險 (Mitigated Sandbox Directory Creation Risk)**:
+    - **問題**: `Colabpro.py` 使用的專案資料夾名稱 `WEB1` 與已知的、會導致沙箱崩潰的測試腳本所用名稱相同。
+    - **解決方案**: 將 `Colabpro.py` 中的 `PROJECT_FOLDER_NAME` 更改為 `"wolf_project"`，以避開潛在的檔案系統監控問題。
+
 ## 2025-08-24T07:07:46+08:00
 
 ### 🐛 核心穩定性修復：解決啟動時序與環境相容性問題 (Core Stability Fix: Resolved Startup Timing & Environment Compatibility Issues)

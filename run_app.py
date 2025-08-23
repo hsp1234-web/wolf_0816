@@ -203,7 +203,8 @@ def run_app_flow():
             "--workers", "4",          # 使用 4 個執行緒
             "--worker-type", "thread" # 使用執行緒模式
         ]
-        huey_proc = subprocess.Popen(huey_command, env=env, text=True, encoding='utf-8')
+        log.info("正在將 Huey Consumer 的 stderr 重新導向到 stdout 以便於除錯...")
+        huey_proc = subprocess.Popen(huey_command, env=env, text=True, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         processes_to_manage.append(huey_proc)
 
 
