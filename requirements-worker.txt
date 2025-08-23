@@ -11,3 +11,4 @@ ipython
 faster-whisper
 torch
 yt-dlp
+psutil

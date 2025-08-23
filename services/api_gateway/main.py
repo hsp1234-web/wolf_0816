@@ -209,6 +209,24 @@ async def websocket_endpoint(websocket: WebSocket):
         if websocket in manager.active_connections:
             manager.disconnect(websocket)
 
+# --- 內部 API 端點 (供工作程序使用) ---
+
+@app.post("/api/internal/system_update", status_code=200)
+async def system_update_broadcast(request: Request):
+    """
+    這是一個內部端點，供背景工作程序 (例如硬體監控) 呼叫。
+    它會接收一個 JSON 物件，並將其透過 WebSocket 廣播給所有前端用戶端。
+    """
+    try:
+        data = await request.json()
+        await manager.broadcast_json(data)
+        return {"status": "success", "message": "Broadcasted successfully"}
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+    except Exception as e:
+        log.error(f"內部廣播時發生錯誤: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error during broadcast")
+
 # --- HTTP API 端點 (保留用於相容性或特定目的) ---
 
 @app.post("/api/youtube/process", status_code=202)

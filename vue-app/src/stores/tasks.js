@@ -9,6 +9,14 @@ const getInitialState = () => ({
     pending_tasks: [],
     completed_tasks: [],
     worker_statuses: {},
+    // JULES'S FIX: 為系統狀態提供一個初始的、結構完整的物件，以防止前端渲染錯誤
+    system_stats: {
+      cpu_usage: null,
+      ram_usage: null,
+      gpu_name: null,
+      gpu_usage: null,
+      active_model: null
+    },
     operation_status: { in_progress: false, message: '', progress: 0 },
     local_models: { available: [], checking: true },
   },
@@ -25,6 +33,8 @@ export const useTasksStore = defineStore('tasks', {
     pendingTasks: (state) => state.appState.pending_tasks,
     completedTasks: (state) => state.appState.completed_tasks,
     workerStatuses: (state) => state.appState.worker_statuses,
+    // JULES'S FIX: 新增 systemStats getter 以修復儀表板的錯誤
+    systemStats: (state) => state.appState.system_stats,
     operationStatus: (state) => state.appState.operation_status,
     localModels: (state) => state.appState.local_models,
   },
@@ -128,6 +138,11 @@ export const useTasksStore = defineStore('tasks', {
             state.appState.local_models.available = payload.models || [];
             state.appState.local_models.checking = false;
           });
+          break;
+        // JULES'S FIX: 新增一個 case 來處理來自後端的系統狀態更新
+        case 'SYSTEM_STATS':
+          this.appState.system_stats.cpu_usage = payload.cpu_usage;
+          this.appState.system_stats.ram_usage = payload.ram_usage;
           break;
         default:
           break;

@@ -62,10 +62,17 @@ def run_app_flow():
 
         # --- 步驟 2: 安裝後端依賴 ---
         log.info("[1/5] 安裝後端 Python 依賴...")
-        requirements_path = API_GATEWAY_DIR / "requirements.txt"
+        server_requirements_path = API_GATEWAY_DIR / "requirements.txt"
+        worker_requirements_path = ROOT_DIR / "requirements-worker.txt"
         try:
-            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", str(requirements_path)], check=True)
-            log.info("✅ 後端依賴安裝成功。")
+            log.info("正在安裝伺服器依賴...")
+            subprocess.run([sys.executable, "-m", "pip", "install", "-r", str(server_requirements_path)], check=True)
+            log.info("✅ 伺服器依賴安裝成功。")
+
+            log.info("正在安裝工作程序依賴...")
+            subprocess.run([sys.executable, "-m", "pip", "install", "-r", str(worker_requirements_path)], check=True)
+            log.info("✅ 工作程序依賴安裝成功。")
+
         except subprocess.CalledProcessError as e:
             log.error(f"❌ 後端依賴安裝失敗: {e}")
             raise
@@ -83,27 +90,38 @@ def run_app_flow():
                 log.info(f"已刪除舊的資料庫檔案: {db_file}")
 
         # --- 步驟 4: 建置前端應用程式 ---
-        log.info("[3/5] 準備建置前端 Vue 應用程式...")
+        log.info("[3/6] 準備建置前端 Vue 應用程式...")
         vue_app_dir = ROOT_DIR / "vue-app"
         dist_dir = vue_app_dir / "dist"
-        if not dist_dir.exists(): # 只有在 dist 不存在時才建置，節省時間
+
+        log.info("正在清理舊的前端建置（若存在）...")
+        if dist_dir.exists():
             try:
-                log.info("偵測到 dist 目錄不存在，開始完整前端建置流程...")
-                log.info("正在安裝前端依賴 (bun install)...")
-                subprocess.run(["bun", "install"], cwd=vue_app_dir, check=True, capture_output=True, text=True, encoding='utf-8')
-                log.info("✅ 前端依賴安裝成功。")
-                log.info("正在建置前端應用 (bun run build)...")
-                subprocess.run(["bun", "run", "build"], cwd=vue_app_dir, check=True, capture_output=True, text=True, encoding='utf-8')
-                log.info("✅ 前端應用建置成功。")
-            except Exception as e:
-                log.error(f"❌ 前端建置過程中發生錯誤: {e}")
+                shutil.rmtree(dist_dir)
+                log.info(f"✅ 已成功刪除舊的 '{dist_dir}' 目錄。")
+            except OSError as e:
+                log.error(f"❌ 刪除舊的 dist 目錄失敗: {e}")
                 raise
-        else:
-            log.info("✅ 偵測到 dist 目錄已存在，跳過前端建置。")
+
+        try:
+            log.info("開始全新前端建置流程...")
+            log.info("正在安裝前端依賴 (bun install)...")
+            # JULES'S NOTE: 使用 capture_output=True 來避免在主控台印出過多 bun 的日誌
+            subprocess.run(["bun", "install"], cwd=vue_app_dir, check=True, capture_output=True, text=True, encoding='utf-8')
+            log.info("✅ 前端依賴安裝成功。")
+            log.info("正在建置前端應用 (bun run build)...")
+            subprocess.run(["bun", "run", "build"], cwd=vue_app_dir, check=True, capture_output=True, text=True, encoding='utf-8')
+            log.info("✅ 前端應用建置成功。")
+        except Exception as e:
+            log.error(f"❌ 前端建置過程中發生錯誤: {e}")
+            # 如果 bun 的輸出包含有用資訊，將其印出
+            if hasattr(e, 'stdout') and e.stdout: log.error(f"BUN STDOUT: {e.stdout}")
+            if hasattr(e, 'stderr') and e.stderr: log.error(f"BUN STDERR: {e.stderr}")
+            raise
 
 
         # --- 步驟 5: 依序啟動後端服務 ---
-        log.info("[4/5] 啟動核心後端服務...")
+        log.info("[4/6] 啟動核心後端服務...")
         env = os.environ.copy()
         env["PYTHONPATH"] = str(ROOT_DIR)
 
@@ -125,14 +143,31 @@ def run_app_flow():
             raise RuntimeError("DB Manager 未能在 20 秒內就緒，啟動失敗。")
 
         # 5.3: 啟動 API Gateway
-        log.info("[5/5] 啟動 API Gateway...")
+        log.info("[5/6] 啟動 API Gateway...")
         port = find_free_port()
+
+        # 將埠號設定到環境變數中，以便 Huey consumer 可以存取
+        env["API_PORT"] = str(port)
+
         api_command = [sys.executable, "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", str(port)]
         api_proc = subprocess.Popen(api_command, cwd=API_GATEWAY_DIR, env=env, text=True, encoding='utf-8')
         processes_to_manage.append(api_proc)
 
         # 簡短等待以確保 Uvicorn 綁定埠號
-        time.sleep(2)
+        time.sleep(3)
+
+        # 5.4: 啟動 Huey Consumer (背景工作處理器)
+        log.info("[6/6] 啟動 Huey 背景工作消費者...")
+        huey_command = [
+            sys.executable,
+            str(ROOT_DIR / "huey_consumer.py"),
+            "huey_consumer.huey",
+            "--workers", "4",          # 使用 4 個執行緒
+            "--worker-type", "thread" # 使用執行緒模式
+        ]
+        huey_proc = subprocess.Popen(huey_command, env=env, text=True, encoding='utf-8')
+        processes_to_manage.append(huey_proc)
+
 
         # For Colabpro to get the URL, we print it out.
         print(f"APP_URL: http://127.0.0.1:{port}", flush=True)

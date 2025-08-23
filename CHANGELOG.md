@@ -1,3 +1,24 @@
+## 2025-08-23T14:34:05+08:00
+
+### 🐛 核心架構修復：恢復儀表板與背景工作程序 (Core Architecture Fix: Restore Dashboard & Background Workers)
+
+- **問題**: 前端儀表板數據完全空白，且所有背景功能（如下載、轉錄）均顯示「未啟動」，應用程式核心功能癱瘓。
+- **根本原因分析**:
+    1.  **背景工作程序未啟動**: 經查核，主啟動腳本 (`run_app.py`) 在啟動 API 伺服器後，完全遺漏了啟動 `Huey` 背景消費者程序的步驟。這導致了所有背景任務（包括硬體監控）都無法執行。
+    2.  **硬體監控功能缺失**: 儀表板的 CPU/RAM 數據來源 `HardwareMonitorWorker` 不僅未被啟動，其程式碼檔案 (`workers/hardware_monitor_worker.py`) 也完全不存在於專案中。
+    3.  **依賴安裝不完整**: 啟動腳本只安裝了伺服器依賴，完全忽略了 `requirements-worker.txt` 中定義的工作程序專用依賴，導致即使工作程序被啟動也會因缺少模組 (`ModuleNotFoundError`) 而崩潰。
+    4.  **前端建置陳舊**: 啟動腳本只有在 `dist` 目錄不存在時才建置前端，這是一個潛在的風險，可能導致前後端 API 調用不同步。
+- **解決方案**:
+    1.  **建立硬體監控工作程序**: 從零開始建立了 `workers/hardware_monitor_worker.py`，實作了一個每 5 秒執行一次的週期性任務，使用 `psutil` 收集系統狀態。
+    2.  **建立內部 API 通訊**: 為了讓工作程序能與主程序通訊，在 `services/api_gateway/main.py` 中新增了一個內部 API 端點 (`/api/internal/system_update`)。硬體工作程序會將收集到的數據發送到此端點，然後由 API 伺服器透過 WebSocket 廣播給前端。
+    3.  **修復啟動腳本 (`run_app.py`)**:
+        - 新增了啟動 `huey_consumer.py` 的邏輯，並透過環境變數 (`API_PORT`) 將 API 埠號傳遞給它。
+        - 新增了安裝 `requirements-worker.txt` 的指令，確保工作程序依賴被正確安裝。
+        - 透過在建置前強制刪除舊的 `dist` 目錄，確保前端始終為最新版本。
+    4.  **修復前端 Store**: 修復了 `vue-app/src/stores/tasks.js` 中一個導致儀表板無法讀取 `systemStats` 的錯誤，並新增了處理 `SYSTEM_STATS` WebSocket 訊息的邏輯。
+    5.  **更新依賴**: 將 `psutil` 和 `requests` 加入到 `requirements-worker.txt` 中。
+- **成果**: 這一系列修復完整地恢復了後端架構，讓背景工作程序得以正常運作，並成功讓前端儀表板顯示即時的系統數據，解決了應用的核心癱瘓問題。
+
 ## 2025-08-23T20:58:42.898563+08:00
 
 ### 🚀 健壯性增強與設定更新 (Robustness Hardening & Configuration Update)
