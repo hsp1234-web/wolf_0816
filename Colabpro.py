@@ -477,19 +477,37 @@ def create_log_viewer_html(display_manager: DisplayManager) -> str:
     except Exception as e:
         return f"<p>❌ 產生最終日誌報告時發生錯誤: {html.escape(str(e))}</p>"
 
-if __name__ == "__main__":
-    print("--- Colabpro.py 本地測試模式 ---")
-    display_manager = DisplayManager(stats_dict={}, refresh_rate=UI_REFRESH_SECONDS)
+# ==============================================================================
+# FINAL EXECUTION BLOCK (貼上到 Colab 後執行的程式碼)
+# ==============================================================================
+# 主要執行流程
+# 建立日誌管理器
+main_display_manager = DisplayManager(
+    stats_dict={},
+    refresh_rate=UI_REFRESH_SECONDS
+)
+
+# 下載專案
+project_path = download_repository(log_manager=main_display_manager)
+
+# 如果專案下載成功，則啟動應用程式
+if project_path:
     try:
-        os.environ['IN_TEST_MODE'] = '1'
-        _setup_colab_mocks()
-        project_path = download_repository(log_manager=display_manager)
-        if project_path:
-            launch_application(project_path_str=project_path, log_manager=display_manager)
-        else:
-            display_manager.log("CRITICAL", "專案準備失敗，無法繼續啟動程序。")
+        launch_application(
+            project_path_str=project_path,
+            log_manager=main_display_manager
+        )
     except Exception as e:
-        print(f"\n--- 致命錯誤 ---")
+        # launch_application 內部已經有自己的異常處理和日誌記錄
+        # 但為了以防萬一，我們在這裡再加一層
+        main_display_manager.log("CRITICAL", f"啟動程序發生頂層未捕獲錯誤: {e}")
         traceback.print_exc()
-    finally:
-        print("\n--- 本地測試結束 ---")
+        main_display_manager.stop() # 確保在意外失敗時停止
+else:
+    # 如果下載失敗
+    main_display_manager.log("CRITICAL", "專案下載失敗，無法啟動應用程式。")
+    main_display_manager.stop() # 停止日誌更新
+    # 顯示最終日誌
+    final_html = create_log_viewer_html(main_display_manager)
+    display(HTML(final_html))
+    print("\n--- 執行因錯誤而終止 ---")
