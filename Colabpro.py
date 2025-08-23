@@ -103,8 +103,15 @@ except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "pytz"])
     import pytz
 
-from IPython.display import clear_output, display, HTML
 from google.colab import output as colab_output
+
+try:
+    from IPython.display import clear_output, display, HTML
+except ImportError:
+    print("警告: 未在 IPython 環境中執行，將使用模擬的 display 函式。")
+    def clear_output(wait=False): pass
+    def display(obj): print(f"[DISPLAY] {obj}")
+    def HTML(html_string): return f"HTML Content: {html_string}"
 
 # ==============================================================================
 # PART 1: GIT 下載器功能 (保持不變)
