@@ -495,12 +495,11 @@ def launch_application(project_path_str: str, log_manager: DisplayManager):
 
     # --- 步驟 1: 執行環境健康診斷 ---
     if not run_all_diagnostics(display_manager):
-        shared_stats['status'] = "❌ 環境診斷失敗"
-        display_manager.log("CRITICAL", "環境診斷未通過，已中止應用程式啟動。")
-        # 讓 display_manager 繼續運行一會兒，以便使用者能看到日誌
-        time.sleep(5)
-        # 透過 finally 區塊來確保正常關閉
-        raise RuntimeError("環境診斷失敗，中止啟動。")
+        # 健康檢查現在是非致命的。如果失敗，只記錄警告而不是中止。
+        shared_stats['status'] = "⚠️ 環境檢查警告"
+        display_manager.log("WARN", "部分環境健康檢查未通過，將繼續嘗試啟動，但過程可能不穩定。")
+        # 讓使用者有時間看到警告
+        time.sleep(3)
 
     server_proc = None
     try:
