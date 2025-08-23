@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+pydantic-settings
+huey
+requests
+python-multipart
+websockets
+jsonpatch
+pytz
+ipython

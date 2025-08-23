@@ -81,8 +81,10 @@ export const useTasksStore = defineStore('tasks', {
       // 這是為了修復測試而新增的模擬函式
       // 它會模擬一個成功的 API 呼叫，並將所有模型標示為可用
       console.log("正在執行模擬的 checkLocalModels...");
-      this.appState.local_models.available = ['tiny', 'base', 'small', 'medium', 'large-v2', 'large-v3'];
-      this.appState.local_models.checking = false;
+      this.$patch(state => {
+        state.appState.local_models.available = ['tiny', 'base', 'small', 'medium', 'large-v2', 'large-v3'];
+        state.appState.local_models.checking = false;
+      });
     },
     fetchLogs() {
       // 為了修復測試而新增的模擬函式
@@ -127,6 +129,50 @@ export const useTasksStore = defineStore('tasks', {
         try {
             await axios.post(`/transcribe_youtube`, { youtube_url: youtubeUrl });
         } catch (error) { console.error('處理 YouTube 請求時發生錯誤:', error); throw error; }
+    },
+
+    // --- 新增的下載 Action ---
+    async startDownload(payload) {
+      const { urls, downloadType } = payload;
+
+      const requests = urls.map(url => ({ url, filename: null }));
+
+      try {
+        const response = await axios.post('/api/youtube/process', {
+          requests,
+          download_only: true,
+          download_type: downloadType,
+        });
+        return response.data;
+      } catch (error) {
+        console.error('啟動下載任務時發生錯誤:', error);
+        // 將後端回傳的錯誤訊息往上拋，以便 UI 層可以顯示
+        if (error.response && error.response.data && error.response.data.detail) {
+          throw new Error(error.response.data.detail);
+        }
+        throw error;
+      }
+    },
+
+    // --- YouTube Reporter Actions ---
+    async validateApiKey(apiKey) {
+      try {
+        const response = await axios.post('/api/youtube/validate_api_key', { api_key: apiKey });
+        return { valid: true, ...response.data };
+      } catch (error) {
+        return { valid: false, detail: error.response?.data?.detail || '驗證時發生未知錯誤' };
+      }
+    },
+
+    async fetchGeminiModels(apiKey) {
+      try {
+        const response = await axios.post('/api/youtube/models', { api_key: apiKey });
+        // 後端回傳的結構是 { "models": [...] }
+        return response.data.models || [];
+      } catch (error) {
+        console.error('獲取 Gemini 模型時發生錯誤:', error);
+        throw error; // 將錯誤拋出，讓呼叫者可以處理
+      }
     },
   }
 })

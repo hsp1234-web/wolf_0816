@@ -1,3 +1,16 @@
+## 2025-08-23T14:43:13+08:00
+
+### 🐛 修復與功能恢復 (Fixes & Feature Restoration)
+- **修復 YouTube 下載器功能**:
+  - 在 Pinia store (`stores/tasks.js`) 中實作了缺失的 `startDownload` action。
+  - 此 action 現在會正確地呼叫後端 API (`/api/youtube/process`)，並傳遞下載所需的 URL 和類型，解決了先前版本中點擊下載按鈕會報錯的問題。
+- **恢復 Gemini 模型選擇功能**:
+  - 在 `stores/tasks.js` 中新增了 `validateApiKey` 和 `fetchGeminiModels` 兩個 action，用於與後端 API 進行通訊。
+  - 移除了 `YouTubeReporter.vue` 中用於繞過驗證的臨時模擬程式碼，並恢復了原有的邏輯。現在，當使用者輸入有效的 API 金鑰後，前端會自動從後端獲取可用的 Gemini 模型列表並顯示於下拉選單中。
+- **修正後端啟動依賴問題**:
+  - 重新建立了在先前重構中被移除的 `requirements-server.txt` 和 `requirements-worker.txt` 檔案。
+  - 分析了專案原始碼以確定正確的依賴列表，確保本地啟動腳本 (`runner/localrun.py`) 能夠成功安裝所有必要的 Python 套件，解決了因 `ModuleNotFoundError` 導致的伺服器啟動失敗問題。
+
 ## 2025-08-23T12:18:57.607990+08:00
 
 ### 🚀 架構重構與核心流程改造 (Architectural Refactoring & Core Workflow Overhaul)

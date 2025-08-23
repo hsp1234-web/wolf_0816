@@ -126,25 +126,24 @@ const saveAndValidateApiKey = async () => {
   apiKeyStatus.text = '正在驗證中...';
   apiKeyStatus.italic = true;
 
-  // TODO: 重新實作 API 金鑰驗證和模型獲取邏輯
-  // const result = await tasksStore.validateApiKey(apiKey.value);
-  // isApiKeyValid.value = result.valid;
-  // if (result.valid) {
-  //   apiKeyStatus.text = '金鑰有效，Gemini 功能已啟用';
-  //   apiKeyStatus.color = 'var(--status-green)';
-  //   apiKeyStatus.italic = false;
-  //   await fetchModels();
-  // } else {
-  //   apiKeyStatus.text = result.detail || '金鑰無效';
-  //   apiKeyStatus.color = '#dc3545';
-  //   apiKeyStatus.italic = false;
-  // }
+  const result = await tasksStore.validateApiKey(apiKey.value);
+  isApiKeyValid.value = result.valid;
 
-  // 暫時的模擬行為，以便 UI 可用
-  isApiKeyValid.value = true;
-  apiKeyStatus.text = '金鑰已儲存 (未驗證)';
-  apiKeyStatus.color = 'var(--status-green)';
-  apiKeyStatus.italic = false;
+  if (result.valid) {
+    apiKeyStatus.text = '金鑰有效，正在獲取模型列表...';
+    apiKeyStatus.color = 'var(--status-green)';
+    apiKeyStatus.italic = false;
+    await fetchModels(); // 獲取模型
+    // 在成功獲取模型後，更新狀態文字
+    if (models.value.length > 0) {
+        apiKeyStatus.text = '金鑰有效，Gemini 功能已啟用';
+    }
+  } else {
+    apiKeyStatus.text = result.detail || '金鑰無效';
+    apiKeyStatus.color = '#dc3545';
+    apiKeyStatus.italic = false;
+    models.value = []; // 確保在金鑰無效時清空模型列表
+  }
 };
 
 const clearApiKey = () => {
