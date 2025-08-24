@@ -7,12 +7,23 @@
 #@markdown **後端程式碼倉庫 (REPOSITORY_URL)**
 REPOSITORY_URL = "https://github.com/hsp1234-web/wolf_0816.git" #@param {type:"string"}
 #@markdown **後端版本分支或標籤 (TARGET_BRANCH_OR_TAG)**
-TARGET_BRANCH_OR_TAG = "686A" #@param {type:"string"}
+TARGET_BRANCH_OR_TAG = "688" #@param {type:"string"}
 #@markdown **專案資料夾名稱 (PROJECT_FOLDER_NAME)**
 PROJECT_FOLDER_NAME = "wolf_project" #@param {type:"string"}
 #@markdown **強制刷新後端程式碼 (FORCE_REPO_REFRESH)**
 #@markdown > **如果勾選，每次執行都會先刪除舊的專案資料夾，再重新下載。**
 FORCE_REPO_REFRESH = False #@param {type:"boolean"}
+#@markdown ---
+#@markdown ### **(2) 通用設定**
+#@markdown > **此處為儀表板顯示相關的常用設定。**
+#@markdown ---
+#@markdown **儀表板更新頻率 (秒)**
+UI_REFRESH_SECONDS = 0.5 #@param {type:"number"}
+#@markdown **時區設定**
+TIMEZONE = "Asia/Taipei" #@param {type:"string"}
+#@markdown **自動清理畫面 (ENABLE_CLEAR_OUTPUT)**
+#@markdown > **勾選後，儀表板會自動刷新，介面較為清爽。取消勾選則會保留所有日誌，方便除錯。**
+ENABLE_CLEAR_OUTPUT = True #@param {type:"boolean"}
 #@markdown ---
 #@markdown > **確認所有設定無誤後，點擊此儲存格左側的「執行」按鈕來啟動所有程序。**
 #@markdown ---
@@ -83,9 +94,9 @@ def download_repository(project_folder_name, repo_url, branch):
 # ==============================================================================
 # PART 2: 主啟動器邏輯
 # ==============================================================================
-def launch_application(project_path_str: str):
+def launch_application(project_path_str: str, deps_path_str: str):
     """
-    在指定的專案路徑中，執行核心的 run.py 腳本。
+    在指定的專案路徑中，執行核心的 run.py 腳本，並傳入所有必要的參數。
     """
     project_path = Path(project_path_str)
     run_script_path = project_path / "run.py"
@@ -105,19 +116,25 @@ def launch_application(project_path_str: str):
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
 
+        # 準備要傳遞給 run.py 的指令行參數
+        command = [
+            sys.executable, str(run_script_path),
+            "--deps-path", deps_path_str,
+            "--refresh-rate", str(UI_REFRESH_SECONDS),
+            "--timezone", TIMEZONE,
+        ]
+        if not ENABLE_CLEAR_OUTPUT:
+            command.append("--no-clear-output")
+
         # 執行 run.py 並等待其完成
-        # 這是一個阻塞操作，所有 run.py 的輸出都會直接顯示在儲存格中
         subprocess.run(
-            [sys.executable, str(run_script_path)],
+            command,
             cwd=project_path,
             check=True,
             env=env
         )
     except subprocess.CalledProcessError as e:
         print(f"\n--- ❌ 核心啟動器執行失敗 (返回碼: {e.returncode}) ---")
-        # 輸出 stdout 和 stderr 以便除錯
-        if e.stdout: print(f"--- STDOUT ---\n{e.stdout}")
-        if e.stderr: print(f"--- STDERR ---\n{e.stderr}")
     except KeyboardInterrupt:
         print("\n\n👋 偵測到手動中斷，程序已由使用者終止。")
     except Exception as e:
@@ -130,20 +147,29 @@ def launch_application(project_path_str: str):
 if __name__ == '__main__':
     print("--- 善狼一鍵啟動器 ---")
 
-    # 步驟 1: 下載專案程式碼
-    project_path = download_repository(
-        project_folder_name=PROJECT_FOLDER_NAME,
-        repo_url=REPOSITORY_URL,
-        branch=TARGET_BRANCH_OR_TAG
-    )
+    # 獲取當前工作目錄，以建構依賴檔案的絕對路徑
+    # 這是為了修復在 chdir 後找不到依賴檔案的問題
+    root_dir = Path.cwd()
+    deps_archive_path = root_dir / "dependencies.tar.gz"
 
-    # 步驟 2: 如果下載成功，則啟動應用程式
-    if project_path:
-        # 將工作目錄切換到專案根目錄
-        os.chdir(project_path)
-        # 執行主應用程式
-        launch_application(project_path)
+    if not deps_archive_path.exists():
+        print(f"❌ 致命錯誤：依賴壓縮檔 '{deps_archive_path}' 不存在。")
+        print("請確保 'dependencies.tar.gz' 檔案與此 Colab 筆記本位於同一目錄。")
     else:
-        print("\n--- ❌ 由於專案下載失敗，啟動程序已中止 ---")
+        # 步驟 1: 下載專案程式碼
+        project_path = download_repository(
+            project_folder_name=PROJECT_FOLDER_NAME,
+            repo_url=REPOSITORY_URL,
+            branch=TARGET_BRANCH_OR_TAG
+        )
+
+        # 步驟 2: 如果下載成功，則啟動應用程式
+        if project_path:
+            # 將工作目錄切換到專案根目錄
+            os.chdir(project_path)
+            # 執行主應用程式，並傳入依賴檔案的絕對路徑
+            launch_application(project_path, str(deps_archive_path))
+        else:
+            print("\n--- ❌ 由於專案下載失敗，啟動程序已中止 ---")
 
     print("\n--- 執行結束 ---")
