@@ -1,6 +1,6 @@
 import time
 import traceback
-from src.core.queue_config import huey
+from huey_consumer import huey
 from .logging_worker import add_log
 
 # 導入新的狀態管理器和 AppState 模型
