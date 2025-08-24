@@ -1,0 +1,46 @@
+{
+  "transcription_models": [
+    {
+      "id": "tiny",
+      "name": "Tiny (最快，通用)",
+      "provider": "faster-whisper",
+      "params": { "model_size": "tiny", "compute_type": "int8" },
+      "requirements": ["torch", "faster-whisper"],
+      "description": "適用於快速預覽和非關鍵任務。"
+    },
+    {
+      "id": "base",
+      "name": "Base (通用)",
+      "provider": "faster-whisper",
+      "params": { "model_size": "base", "compute_type": "int8" },
+      "requirements": ["torch", "faster-whisper"],
+      "description": "速度與品質的良好平衡。"
+    },
+    {
+      "id": "small",
+      "name": "Small (較準確)",
+      "provider": "faster-whisper",
+      "params": { "model_size": "small", "compute_type": "int8" },
+      "requirements": ["torch", "faster-whisper"],
+      "description": "提供更高的轉錄準確率。"
+    },
+    {
+      "id": "large-v3",
+      "name": "Large v3 (最準確)",
+      "provider": "faster-whisper",
+      "params": { "model_size": "large-v3", "compute_type": "float16" },
+      "requirements": ["torch", "faster-whisper"],
+      "description": "提供最高的轉錄準確率，但速度較慢。"
+    }
+  ],
+  "youtube_report_models": [
+    {
+      "id": "gemini-1.5-flash",
+      "name": "Gemini 1.5 Flash (推薦)",
+      "provider": "google-gemini",
+      "params": { "model_name": "gemini-1.5-flash-latest" },
+      "requirements": ["google-generativeai"],
+      "description": "速度與品質的絕佳平衡。"
+    }
+  ]
+}
