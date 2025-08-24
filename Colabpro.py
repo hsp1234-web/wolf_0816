@@ -118,6 +118,13 @@ except ImportError:
 # PART 1: GIT 下載器功能 (保持不變)
 # ==============================================================================
 def download_repository(log_manager):
+    # --- 新增的環境適應性檢查 ---
+    # 檢查核心啟動腳本是否已存在於當前目錄，以適應非標準的執行環境（例如，檔案已預先存在於根目錄）。
+    # 這可以避免在不應該建立子目錄的情況下，仍然嘗試 clone 到子目錄中。
+    if Path("run_app.py").exists() and Path("src").exists():
+        log_manager.log("INFO", "✅ 偵測到專案檔案已存在於當前目錄，將直接使用此目錄。")
+        return "." # 回傳當前目錄
+
     project_path = Path(PROJECT_FOLDER_NAME)
     log_manager.log("INFO", f"準備下載專案至 '{PROJECT_FOLDER_NAME}'...")
     log_manager.log("INFO", f"  - 倉庫 (Repository): {REPOSITORY_URL}")

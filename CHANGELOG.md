@@ -1,3 +1,14 @@
+## 2025-08-24T12:00:00+08:00
+
+### 🐛 環境適應性修復：解決因路徑不一致導致的後端啟動失敗 (Environment Adaptability Fix: Resolve Backend Startup Failure Due to Path Inconsistency)
+
+- **問題 (Problem)**: 在某些執行環境（例如，當專案檔案已預先存在於根目錄時），`Colabpro.py` 腳本仍然嘗試從 Git 下載專案到一個新的子目錄 (`wolf_project`)，並嘗試切換工作目錄到該處。由於該子目錄實際上並未被使用或建立，這導致了主啟動腳本 (`run_app.py`) 無法被找到，從而引發後端服務立即崩潰。
+- **根本原因 (Root Cause)**: 啟動腳本缺乏對其執行環境的檢查。它嚴格地假設自己總是需要先建立一個專案子目錄才能運作，而沒有考慮到檔案可能已經在正確的位置。
+- **解決方案 (Solution)**:
+    - 修改了 `Colabpro.py` 中的 `download_repository` 函式。
+    - 在函式開頭新增了一段檢查邏輯：如果核心檔案 (`run_app.py` 和 `src` 目錄) 已存在於當前工作目錄，則跳過所有 Git 操作，並直接將當前目錄 (`.`) 作為專案路徑回傳。
+- **成果 (Outcome)**: 此修復使得啟動器能夠智能地適應不同的檔案佈局。無論是在需要首次下載的標準 Colab 環境，還是在檔案已預先部署的測試環境中，腳本都能正確地找到並啟動後端服務，從而解決了先前版本中致命的啟動崩潰問題。
+
 ## 2025-08-23T20:28:00+08:00
 
 ### 🚀 架構重構：實現高頻率硬體監控 (Architectural Refactor: Enable High-Frequency Hardware Monitoring)
