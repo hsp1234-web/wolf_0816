@@ -9,8 +9,9 @@
 from src.core.queue_config import huey
 
 # To make tasks discoverable, we need to import the modules where they are defined.
+# NOTE: workers.hardware_monitor_worker is now run as a separate thread
+# directly from run_app.py, so it is no longer imported here.
 import workers.transcription_worker
 import workers.logging_worker
-import workers.hardware_monitor_worker
 
 # The `huey` object itself is the primary export for the consumer.

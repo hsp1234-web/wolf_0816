@@ -1,3 +1,16 @@
+## 2025-08-23T20:28:00+08:00
+
+### 🚀 架構重構：實現高頻率硬體監控 (Architectural Refactor: Enable High-Frequency Hardware Monitoring)
+
+- **問題**: 原有的硬體監控是透過 `Huey` 的週期性任務 (`periodic_task`) 實現的，但其使用的 `crontab` 功能不支援秒級的高頻率排程，導致在試圖設定為每 5 秒執行時，應用程式直接崩潰。
+
+- **解決方案**:
+    1.  **重構監控模組**: 將 `workers/hardware_monitor_worker.py` 從一個 `Huey` 任務徹底重構為一個獨立的、常駐的函式 (`run_hardware_monitor`)。此函式在一個 `while` 迴圈中運行，透過 `time.sleep()` 來精確控制高頻率的更新。
+    2.  **移除 `Huey` 依賴**: 在 `huey_consumer.py` 中移除了對 `hardware_monitor_worker` 的匯入，徹底解決了啟動時的崩潰問題。
+    3.  **整合至主啟動流程**: 修改 `run_app.py`，在啟動所有服務後，額外建立一個獨立的守護執行緒 (`threading.Thread`) 來運行新的 `run_hardware_monitor` 函式。
+    4.  **確保優雅關閉**: 在 `run_app.py` 的 `finally` 區塊中新增了邏輯，使用 `threading.Event` 來通知監控執行緒終止，並等待其結束，確保了資源的正常釋放。
+
+- **成果**: 此架構變更不僅從根本上解決了導致應用程式崩潰的 `TypeError`，還成功地滿足了使用者對高頻率（秒級或亞秒級）監控儀表板更新的需求，同時保持了系統的穩定性和健壯性。
 
 ## 2025-08-24T10:10  +08:00
 
@@ -172,7 +185,7 @@ D. 進行事前檢查 (可選)：如果測試需要啟動一個已知的記憶�
 
 - **新增 Colab 代理可用性健康檢查**:
     - **動機**: 為了在啟動早期階段就能偵測到 Colab 官方代理服務的潛在問題。
-    - **實作**: 新增了一個名為 `check_colab_proxy_availability` 的健康檢查項目。此檢查會啟動一個暫時的本地伺服器，並嘗試透過 `google.colab.kernel.proxyPort` 為其獲取一個公開網址。
+    - **實作**: 新增了一個名為 `check_colab_proxy_availability` の健康檢查項目。此檢查會啟動一個暫時的本地伺服器，並嘗試透過 `google.colab.kernel.proxyPort` 為其獲取一個公開網址。
 
 - **更新預設 Git 分支**:
     - 根據使用者要求，將預設下載的後端程式碼分支 `TARGET_BRANCH_OR_TAG` 從 `"365"` 更新為 `"645"`。
