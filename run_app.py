@@ -7,7 +7,6 @@ import os
 import socket
 import shutil
 import threading
-from workers.hardware_monitor_worker import run_hardware_monitor
 
 # --- 基本設定 ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -82,10 +81,10 @@ def run_app_flow():
         worker_requirements_path = ROOT_DIR / "requirements-worker.txt"
         try:
             log.info("正在使用 uv 安裝伺服器依賴...")
-            subprocess.run(["uv", "pip", "install", "-r", str(server_requirements_path)], check=True)
+            subprocess.run(["uv", "pip", "install", "--system", "-r", str(server_requirements_path)], check=True)
             log.info("✅ 伺服器依賴安裝成功。")
             log.info("正在使用 uv 安裝工作程序依賴...")
-            subprocess.run(["uv", "pip", "install", "-r", str(worker_requirements_path)], check=True)
+            subprocess.run(["uv", "pip", "install", "--system", "-r", str(worker_requirements_path)], check=True)
             log.info("✅ 工作程序依賴安裝成功。")
         except subprocess.CalledProcessError as e:
             log.error(f"❌ 使用 uv 進行後端依賴安裝失敗: {e}")
@@ -162,6 +161,7 @@ def run_app_flow():
 
         # 5.6: 啟動獨立的硬體監控執行緒
         log.info("[+] 啟動獨立的硬體監控執行緒...")
+        from workers.hardware_monitor_worker import run_hardware_monitor
         monitor_thread = threading.Thread(
             target=run_hardware_monitor,
             args=(stop_event, 0.5), # 傳入停止事件和 0.5 秒的更新頻率
