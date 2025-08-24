@@ -9,7 +9,7 @@ import sys
 import asyncio
 from typing import List
 from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -191,13 +191,18 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
 
 # --- 前端靜態檔案服務 ---
-# 這一行必須放在所有 API 路由之後
-# 它會將所有不匹配 API 路由的請求，都交給靜態檔案目錄處理。
-# directory: 指定靜態檔案的根目錄。
-# html=True: 啟用後，對於像 `/` 或 `/some/path` 這樣的請求，
-#            FastAPI 會自動尋找並回傳對應的 `index.html` 檔案。
-# name: 給這個靜態檔案路由一個唯一的名稱。
-app.mount("/", StaticFiles(directory=STATIC_FILES_DIR, html=True), name="static")
+# 為了完全避免路由衝突，我們採取以下策略：
+# 1. 在根路徑 ("/") 提供一個重新導向，將使用者指向前端應用的主路徑。
+# 2. 將前端應用掛載到一個明確的子路徑 ("/ui") 上。
+
+@app.get("/", include_in_schema=False)
+async def root_redirect():
+    """將根路徑重新導向至前端應用程式。"""
+    return RedirectResponse(url="/ui")
+
+# 關鍵修正：將 SPA 掛載到 "/ui" 子路徑下，並啟用 html=True 以支援前端路由。
+# 這必須是應用程式中最後一個掛載的路由。
+app.mount("/ui", StaticFiles(directory=STATIC_FILES_DIR, html=True), name="static-ui")
 
 # --- 主程式啟動 (用於本地測試) ---
 if __name__ == "__main__":
