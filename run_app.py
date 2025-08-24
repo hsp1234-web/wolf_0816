@@ -7,7 +7,6 @@ import os
 import socket
 import shutil
 import threading
-from workers.hardware_monitor_worker import run_hardware_monitor
 
 # --- 基本設定 ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -82,10 +81,10 @@ def run_app_flow():
         worker_requirements_path = ROOT_DIR / "requirements-worker.txt"
         try:
             log.info("正在使用 uv 安裝伺服器依賴...")
-            subprocess.run(["uv", "pip", "install", "-r", str(server_requirements_path)], check=True)
+            subprocess.run(["uv", "pip", "install", "--system", "-r", str(server_requirements_path)], check=True)
             log.info("✅ 伺服器依賴安裝成功。")
             log.info("正在使用 uv 安裝工作程序依賴...")
-            subprocess.run(["uv", "pip", "install", "-r", str(worker_requirements_path)], check=True)
+            subprocess.run(["uv", "pip", "install", "--system", "-r", str(worker_requirements_path)], check=True)
             log.info("✅ 工作程序依賴安裝成功。")
         except subprocess.CalledProcessError as e:
             log.error(f"❌ 使用 uv 進行後端依賴安裝失敗: {e}")
@@ -97,34 +96,14 @@ def run_app_flow():
              if signal_file.exists():
                 signal_file.unlink()
                 log.info(f"已刪除舊的信號檔案: {signal_file.name}")
-        for db_file in ["queue.db", "logs.db"]:
+        for db_file in ["logs.db"]:
             if (ROOT_DIR / db_file).exists():
                 (ROOT_DIR / db_file).unlink()
                 log.info(f"已刪除舊的資料庫檔案: {db_file}")
 
-        # --- 步驟 4: 建置前端應用程式 ---
-        log.info("[3/6] 準備建置前端 Vue 應用程式...")
-        vue_app_dir = ROOT_DIR / "vue-app"
-        dist_dir = vue_app_dir / "dist"
-        if dist_dir.exists():
-            try:
-                shutil.rmtree(dist_dir)
-                log.info(f"✅ 已成功刪除舊的 '{dist_dir}' 目錄。")
-            except OSError as e:
-                log.error(f"❌ 刪除舊的 dist 目錄失敗: {e}")
-                raise
-        try:
-            log.info("正在安裝前端依賴 (bun install)...")
-            subprocess.run(["bun", "install"], cwd=vue_app_dir, check=True, capture_output=True, text=True, encoding='utf-8')
-            log.info("✅ 前端依賴安裝成功。")
-            log.info("正在建置前端應用 (bun run build)...")
-            subprocess.run(["bun", "run", "build"], cwd=vue_app_dir, check=True, capture_output=True, text=True, encoding='utf-8')
-            log.info("✅ 前端應用建置成功。")
-        except Exception as e:
-            log.error(f"❌ 前端建置過程中發生錯誤: {e}")
-            if hasattr(e, 'stdout') and e.stdout: log.error(f"BUN STDOUT: {e.stdout}")
-            if hasattr(e, 'stderr') and e.stderr: log.error(f"BUN STDERR: {e.stderr}")
-            raise
+        # --- 步驟 4: 建置前端應用程式 (已因環境限制而停用) ---
+        log.info("[3/6] 跳過前端建置步驟。原因：此沙箱環境不允許建立新目錄。")
+        log.info("      將直接使用版本庫中預先建置好的靜態檔案。")
 
         # --- 步驟 5: 依序啟動後端服務 ---
         log.info("[4/6] 啟動核心後端服務...")
@@ -173,15 +152,22 @@ def run_app_flow():
 
         # 5.5: 啟動 Huey Consumer (背景工作處理器)
         log.info("[6/6] 啟動 Huey 背景工作消費者...")
+        # 注意：第一個參數是 huey 套件提供的可執行檔，而不是我們本地的 .py 檔案。
+        # 在啟動 consumer 前，先導入任務模組以註冊所有任務。
+        log.info("正在註冊 Huey 任務...")
+        import src.huey_tasks
+        log.info("✅ 所有任務已註冊。")
+
         huey_command = [
-            sys.executable, str(ROOT_DIR / "huey_consumer.py"), "huey_consumer.huey",
+            "huey_consumer.py", "huey_consumer.huey",
             "--workers", "4", "--worker-type", "thread"
         ]
-        huey_proc = subprocess.Popen(huey_command, env=env, text=True, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        huey_proc = subprocess.Popen(huey_command, env=env, text=True, encoding='utf-8')
         processes_to_manage.append(huey_proc)
 
         # 5.6: 啟動獨立的硬體監控執行緒
         log.info("[+] 啟動獨立的硬體監控執行緒...")
+        from workers.hardware_monitor_worker import run_hardware_monitor
         monitor_thread = threading.Thread(
             target=run_hardware_monitor,
             args=(stop_event, 0.5), # 傳入停止事件和 0.5 秒的更新頻率
