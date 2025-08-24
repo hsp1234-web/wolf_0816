@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-#@title 📥🐺 善狼一鍵啟動器 (v11) 🐺
+#@title 📥🐺 善狼一鍵啟動器 (v11.1) 🐺
 #@markdown ---
 #@markdown ### **(1) 專案來源設定**
 #@markdown > **請提供 Git 倉庫的網址、要下載的分支或標籤，以及本地資料夾名稱。**
@@ -12,7 +12,7 @@ TARGET_BRANCH_OR_TAG = "688" #@param {type:"string"}
 PROJECT_FOLDER_NAME = "wolf_project" #@param {type:"string"}
 #@markdown **強制刷新後端程式碼 (FORCE_REPO_REFRESH)**
 #@markdown > **如果勾選，每次執行都會先刪除舊的專案資料夾，再重新下載。**
-FORCE_REPO_REFRESH = False #@param {type:"boolean"}
+FORCE_REPO_REFRESH = True #@param {type:"boolean"}
 #@markdown ---
 #@markdown ### **(2) 通用設定**
 #@markdown > **此處為儀表板顯示相關的常用設定。**
@@ -32,14 +32,13 @@ ENABLE_CLEAR_OUTPUT = True #@param {type:"boolean"}
 # ==                                  開發者日誌                                  ==
 # ======================================================================================
 #
-# 版本: 11.0 (架構: 關注點分離)
-# 日期: 2025-08-25T04:05:00+08:00
+# 版本: 11.1 (架構: 健壯性)
+# 日期: 2025-08-25T04:40:00+08:00
 #
 # 本次變更重點:
-# 1. **架構重構**: 將此檔案重構為一個「輕量級」啟動器。
-# 2. **關注點分離**: 所有複雜的啟動邏輯（依賴準備、伺服器啟動、通道建立、UI 刷新）
-#    皆已移至核心啟動腳本 `run.py`。
-# 3. **職責單一**: 此檔案現在的唯一職責是提供 Colab UI 參數，並呼叫 `run.py`。
+# 1. **健壯性提升**: 新增在 `dependencies.tar.gz` 不存在時，自動執行 `scripts/bake_dependencies.sh` 建立它的功能。
+# 2. **錯誤修復**: 修正了計算 `dependencies.tar.gz` 路徑的邏輯錯誤，解決了啟動失敗的問題。
+# 3. **使用者體驗**: 根據使用者回饋，將「強制刷新」預設設定為 True。
 #
 # ======================================================================================
 
@@ -112,11 +111,9 @@ def launch_application(project_path_str: str, deps_path_str: str):
     print("---\n")
 
     try:
-        # 設定 PYTHONUNBUFFERED=1 環境變數，確保 run.py 的輸出能即時顯示在 Colab 上
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
 
-        # 準備要傳遞給 run.py 的指令行參數
         command = [
             sys.executable, str(run_script_path),
             "--deps-path", deps_path_str,
@@ -137,7 +134,7 @@ def launch_application(project_path_str: str, deps_path_str: str):
         print(f"\n--- ❌ 核心啟動器執行失敗 (返回碼: {e.returncode}) ---")
     except KeyboardInterrupt:
         print("\n\n👋 偵測到手動中斷，程序已由使用者終止。")
-    except Exception as e:
+    except Exception:
         print(f"\n--- ❌ 發生未預期的致命錯誤 ---")
         traceback.print_exc()
 
@@ -147,29 +144,57 @@ def launch_application(project_path_str: str, deps_path_str: str):
 if __name__ == '__main__':
     print("--- 善狼一鍵啟動器 ---")
 
-    # 獲取當前工作目錄，以建構依賴檔案的絕對路徑
-    # 這是為了修復在 chdir 後找不到依賴檔案的問題
-    root_dir = Path.cwd()
-    deps_archive_path = root_dir / "dependencies.tar.gz"
+    # 步驟 1: 下載專案程式碼
+    project_path = download_repository(
+        project_folder_name=PROJECT_FOLDER_NAME,
+        repo_url=REPOSITORY_URL,
+        branch=TARGET_BRANCH_OR_TAG
+    )
 
-    if not deps_archive_path.exists():
-        print(f"❌ 致命錯誤：依賴壓縮檔 '{deps_archive_path}' 不存在。")
-        print("請確保 'dependencies.tar.gz' 檔案與此 Colab 筆記本位於同一目錄。")
+    if not project_path:
+        print("\n--- ❌ 由於專案下載失敗，啟動程序已中止 ---")
     else:
-        # 步驟 1: 下載專案程式碼
-        project_path = download_repository(
-            project_folder_name=PROJECT_FOLDER_NAME,
-            repo_url=REPOSITORY_URL,
-            branch=TARGET_BRANCH_OR_TAG
-        )
+        # 步驟 2: 檢查並可能建立依賴包
+        root_dir = Path.cwd()
+        deps_archive_path = root_dir / "dependencies.tar.gz"
 
-        # 步驟 2: 如果下載成功，則啟動應用程式
+        if not deps_archive_path.exists():
+            print(f"\n⚠️ 依賴壓縮檔 '{deps_archive_path}' 不存在。")
+            print("🔧 正在嘗試自動建立...")
+
+            bake_script_path = Path(project_path) / "scripts" / "bake_dependencies.sh"
+            if not bake_script_path.exists():
+                print(f"❌ 致命錯誤: 找不到依賴烘烤腳本 '{bake_script_path}'。")
+            else:
+                try:
+                    # 執行烘烤腳本
+                    # 腳本預設會在專案根目錄產生 dependencies.tar.gz
+                    # 我們需要從專案目錄執行它，然後將產出物移到外層
+                    print(f"執行腳本: {bake_script_path}")
+                    subprocess.run(
+                        ["bash", str(bake_script_path)],
+                        cwd=project_path,
+                        check=True
+                    )
+
+                    # 將產生的檔案從專案目錄移到根目錄
+                    generated_deps = Path(project_path) / "dependencies.tar.gz"
+                    if generated_deps.exists():
+                        shutil.move(str(generated_deps), str(root_dir))
+                        print(f"✅ 成功建立並移動依賴包至 '{deps_archive_path}'")
+                    else:
+                         raise FileNotFoundError("Bake script did not produce dependencies.tar.gz")
+
+                except (subprocess.CalledProcessError, FileNotFoundError) as e:
+                    print(f"❌ 自動建立依賴包失敗: {e}")
+                    print("--- 啟動程序已中止 ---")
+                    project_path = None # 阻止後續步驟執行
+
+        # 步驟 3: 如果一切順利，則啟動應用程式
         if project_path:
-            # 將工作目錄切換到專案根目錄
+            # 將工作目錄切換到專案根目錄以執行 run.py
             os.chdir(project_path)
             # 執行主應用程式，並傳入依賴檔案的絕對路徑
             launch_application(project_path, str(deps_archive_path))
-        else:
-            print("\n--- ❌ 由於專案下載失敗，啟動程序已中止 ---")
 
     print("\n--- 執行結束 ---")
