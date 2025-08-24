@@ -191,18 +191,13 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
 
 # --- 前端靜態檔案服務 ---
-# 掛載 'assets' 目錄，讓 index.html 可以載入其 JS 和 CSS
-if (STATIC_FILES_DIR / "assets").is_dir():
-    app.mount("/assets", StaticFiles(directory=(STATIC_FILES_DIR / "assets")), name="assets")
-
-# 對於所有其他路徑，都回傳主 index.html
-# 這是處理 SPA (單頁應用) 路由的關鍵
-@app.get("/{full_path:path}", response_class=FileResponse, include_in_schema=False)
-async def serve_frontend_entry_point(full_path: str):
-    index_path = STATIC_FILES_DIR / "index.html"
-    if not index_path.is_file():
-        raise HTTPException(status_code=404, detail="Frontend entry point (index.html) not found.")
-    return FileResponse(index_path)
+# 這一行必須放在所有 API 路由之後
+# 它會將所有不匹配 API 路由的請求，都交給靜態檔案目錄處理。
+# directory: 指定靜態檔案的根目錄。
+# html=True: 啟用後，對於像 `/` 或 `/some/path` 這樣的請求，
+#            FastAPI 會自動尋找並回傳對應的 `index.html` 檔案。
+# name: 給這個靜態檔案路由一個唯一的名稱。
+app.mount("/", StaticFiles(directory=STATIC_FILES_DIR, html=True), name="static")
 
 # --- 主程式啟動 (用於本地測試) ---
 if __name__ == "__main__":

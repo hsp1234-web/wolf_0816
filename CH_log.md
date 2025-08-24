@@ -1,3 +1,14 @@
+## 2025-08-25T07:25:55+08:00
+
+### fix(gateway): 修正前端靜態檔案服務邏輯
+
+- **動機**: 解決因後端 API 閘道器 (`services/api_gateway/main.py`) 未能正確提供 Vue.js 單頁應用 (SPA) 而導致的「Frontend entry point (index.html) not found」或前端資源載入失敗問題。
+- **核心變更**:
+    1.  **移除錯誤的路由**: 刪除了先前分別處理 `/assets` 和 `/{full_path:path}` 的兩段式靜態檔案路由。此方法會錯誤地攔截對 JS/CSS 資源的請求，並回傳 `index.html`，導致應用無法啟動。
+    2.  **採用標準 SPA 服務方式**: 引入了單一的 `app.mount("/", StaticFiles(directory=STATIC_FILES_DIR, html=True), name="static")`。
+    -   `html=True` 參數是關鍵，它指示 FastAPI 自動處理 SPA 路由，對於任何不存在的檔案路徑，都會回傳 `index.html`，同時確保對 `*.js`, `*.css` 等真實檔案的請求能被正確處理。
+- **成果**: API 閘道器現在能夠以正確、高效的方式提供前端應用，徹底解決了網頁無法載入的問題。
+
 ## 2025-08-25T05:41:38+08:00
 
 ### feat(gateway): 建立並整合 API 閘道器以恢復前後端通訊
