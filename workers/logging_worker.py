@@ -1,4 +1,4 @@
-from huey_consumer import huey
+from src.core.queue_config import huey
 from src.core.log_manager import log_message as write_log_to_db
 
 @huey.task()
