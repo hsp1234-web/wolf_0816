@@ -1,91 +1,81 @@
 # -*- coding: utf-8 -*-
 """
-智慧啟動器 (Smart Launcher)
+核心 Web 伺服器啟動器
 
-此腳本為應用程式的唯一入口點。其主要職責是：
-1. 檢查 `dependencies.tar.gz` 是否存在。
-2. (後續步驟) 將依賴解壓縮到一個暫存目錄。
-3. (後續步驟) 將該暫存目錄注入到 sys.path。
-4. (後續步驟) 啟動主應用程式。
-
-這樣做可以確保應用程式在一個乾淨、隔離且一致的環境中運行。
+此腳本的唯一職責是：
+1. 根據傳入的路徑準備依賴環境。
+2. 啟動 uvicorn 伺服器並監聽指定埠號。
+3. 將正在監聽的埠號打印到 stdout，以便父程序可以捕獲它。
 """
-
 import os
 import sys
 import tarfile
 import tempfile
 import shutil
+from pathlib import Path
+import argparse
+import socket
+
+def find_available_port() -> int:
+    """尋找一個可用的 TCP 埠號。"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('', 0))
+        return s.getsockname()[1]
+
+def prepare_dependencies(deps_archive_path_str):
+    """
+    檢查並解壓縮指定的 `dependencies.tar.gz`，將其路徑注入 `sys.path`。
+    """
+    print("核心啟動器：正在準備依賴環境...")
+    deps_archive_path = Path(deps_archive_path_str)
+    if not deps_archive_path.is_file():
+        print(f"核心啟動器錯誤：依賴壓縮檔 '{deps_archive_path}' 不存在或不是一個檔案。", file=sys.stderr)
+        sys.exit(1)
+
+    deps_path = tempfile.mkdtemp(prefix="baked_deps_")
+    try:
+        with tarfile.open(deps_archive_path, "r:gz") as tar:
+            tar.extractall(path=deps_path)
+    except (tarfile.TarError, IOError) as e:
+        print(f"核心啟動器錯誤：解壓縮 '{deps_archive_path}' 時發生嚴重錯誤: {e}", file=sys.stderr)
+        shutil.rmtree(deps_path)
+        sys.exit(1)
+
+    sys.path.insert(0, deps_path)
+    print(f"核心啟動器：依賴已成功注入: {deps_path}")
+    return True
 
 def main():
     """主執行函數"""
-    print("--- 智慧啟動器 ---")
+    parser = argparse.ArgumentParser(description="核心 Web 伺服器啟動器")
+    parser.add_argument("--deps-path", required=True, help="預先烘烤的依賴壓縮檔 (dependencies.tar.gz) 的絕對路徑。")
+    args = parser.parse_args()
 
-    # 定義依賴壓縮檔的路徑
-    deps_archive_path = "dependencies.tar.gz"
-
-    # 步驟 1: 檢查依賴壓縮檔是否存在
-    print(f"1/4: 正在檢查依賴檔案 '{deps_archive_path}'...")
-    if not os.path.exists(deps_archive_path):
-        print(f"錯誤：依賴壓縮檔 '{deps_archive_path}' 不存在。", file=sys.stderr)
-        print("請先執行 'scripts/bake_dependencies.sh' 來產生依賴檔。", file=sys.stderr)
+    # 步驟 1: 準備依賴
+    if not prepare_dependencies(args.deps_path):
         sys.exit(1)
 
-    print("✅ 依賴檔案已找到。")
-
-    # --- 步驟 2 & 3: 解壓縮依賴與注入路徑 ---
-
-    # 建立一個不會自動刪除的暫存目錄
-    # 這樣可以確保在應用程式運行的整個生命週期中，依賴檔案都存在
-    # 我們依賴作業系統的 /tmp 清理機制來處理它
-    deps_path = tempfile.mkdtemp(prefix="baked_deps_")
-    print(f"2/4: 正在將依賴解壓縮至暫存目錄: {deps_path}")
-
+    # 步驟 2: 啟動主應用程式
     try:
-        # 使用 tarfile 模組解壓縮
-        with tarfile.open(deps_archive_path, "r:gz") as tar:
-            tar.extractall(path=deps_path)
-        print("✅ 解壓縮完成。")
-    except (tarfile.TarError, IOError) as e:
-        print(f"錯誤：解壓縮 '{deps_archive_path}' 時發生嚴重錯誤: {e}", file=sys.stderr)
-        # 如果解壓縮失敗，清理已建立的目錄
-        shutil.rmtree(deps_path)
-        sys.exit(1)
-
-    # 將解壓縮後的目錄添加到 sys.path 的最前端
-    # 這確保 Python 在尋找模組時會優先查看我們的依賴目錄
-    sys.path.insert(0, deps_path)
-    print(f"3/4: 成功將依賴路徑注入到 sys.path。")
-    print(f"   - 新的優先路徑: {sys.path[0]}")
-
-    # --- 步驟 4: 啟動主應用程式 ---
-    print("\n--- 啟動應用程式 ---")
-    print("正在從 src.core.mini_server 導入 'app'...")
-
-    try:
-        # 因為依賴路徑已經被注入，現在我們可以安全地導入 uvicorn
-        # 同時，因為 src 目錄在專案根目錄，我們可以直接導入 src 下的模組
         import uvicorn
         from src.core.mini_server import app
 
-        print("✅ 應用程式 'app' 導入成功。")
-        print("伺服器即將在 http://0.0.0.0:8000 啟動...")
+        port = find_available_port()
+        if not port:
+            print("核心啟動器錯誤：找不到可用的埠號。", file=sys.stderr)
+            sys.exit(1)
 
-        # 使用 uvicorn 啟動 Starlette/FastAPI 應用
-        # 這是一個阻塞操作，伺服器會一直運行直到手動停止
-        uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
+        # 關鍵一步：將埠號打印到 stdout，以便父程序捕獲
+        print(f"APP_PORT:{port}", flush=True)
+
+        uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
 
     except ImportError as e:
-        print(f"錯誤：無法導入應用程式或 uvicorn。請確認 'src/core/mini_server.py' 存在且 uvicorn 已被包含在依賴中。詳細資訊: {e}", file=sys.stderr)
-        # 清理已建立的目錄
-        shutil.rmtree(deps_path)
+        print(f"核心啟動器錯誤：無法導入應用程式或 uvicorn。詳細資訊: {e}", file=sys.stderr)
         sys.exit(1)
     except Exception as e:
-        print(f"錯誤：啟動應用程式時發生未預期的錯誤: {e}", file=sys.stderr)
-        # 清理已建立的目錄
-        shutil.rmtree(deps_path)
+        print(f"核心啟動器錯誤：啟動應用程式時發生未預期的錯誤: {e}", file=sys.stderr)
         sys.exit(1)
-
 
 if __name__ == "__main__":
     main()
