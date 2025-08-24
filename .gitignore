@@ -66,3 +66,9 @@ src/db/db_manager.ready
 
 # Pre-baked artifacts
 /artifacts/
+
+# POC: 「預先烘烤依賴」策略產生的檔案
+# 腳本產生的暫存建置目錄
+_build/
+# 腳本產生的最終依賴壓縮檔
+dependencies.tar.gz
