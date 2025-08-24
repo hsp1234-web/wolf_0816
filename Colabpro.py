@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-#@title 📥🐺 善狼一鍵啟動器 (v8) 🐺
+#@title 📥🐺 善狼一鍵啟動器 (v9) 🐺
 #@markdown ---
 #@markdown ### **(1) 專案來源設定**
 #@markdown > **請提供 Git 倉庫的網址、要下載的分支或標籤，以及本地資料夾名稱。**
@@ -7,7 +7,7 @@
 #@markdown **後端程式碼倉庫 (REPOSITORY_URL)**
 REPOSITORY_URL = "https://github.com/hsp1234-web/wolf_0816.git" #@param {type:"string"}
 #@markdown **後端版本分支或標籤 (TARGET_BRANCH_OR_TAG)**
-TARGET_BRANCH_OR_TAG = "645" #@param {type:"string"}
+TARGET_BRANCH_OR_TAG = "661" #@param {type:"string"}
 #@markdown **專案資料夾名稱 (PROJECT_FOLDER_NAME)**
 PROJECT_FOLDER_NAME = "wolf_project" #@param {type:"string"}
 #@markdown **強制刷新後端程式碼 (FORCE_REPO_REFRESH)**
@@ -36,8 +36,8 @@ ENABLE_CLEAR_OUTPUT = True #@param {type:"boolean"}
 # ==                                  開發者日誌                                  ==
 # ======================================================================================
 #
-# 版本: 8.0 (架構: 穩定啟動與診斷)
-# 日期: 2025-08-23T19:03:00+08:00
+# 版本: 9.0 (架構: 環境適應性與安全測試)
+# 日期: 2025-08-24T13:00:00+08:00
 #
 # 🔴 **禁止直接執行**: 本檔案 (Colabpro.py) 被設計為一個程式庫 (library)，
 #    由 Colab Notebook 環境導入並呼叫。請勿透過 `python Colabpro.py` 直接執行。
@@ -48,10 +48,10 @@ ENABLE_CLEAR_OUTPUT = True #@param {type:"boolean"}
 #      UI 顯示設計，以及最終 HTML 報告產生與複製按鈕相關的程式碼。
 #
 # 本次變更重點:
-# 1. **修復啟動流程**: 徹底解決了因 DB Manager 未啟動而導致 API Gateway
-#    超時崩潰的根本問題。現在 `run_app.py` 會確保服務按正確順序啟動。
-# 2. **整合診斷工具**: 加入了環境健康診斷功能，提前發現問題。
-# 3. **整合併發代理**: 引入了併發代理獲取機制，提升連線成功率。
+# 1. **增強環境適應性**: `download_repository` 現在會檢查專案是否已存在，
+#    避免在不必要的狀況下執行 clone，並修正了因此造成的路徑問題。
+# 2. **強化測試穩定性**: 為主執行迴圈加入了測試模式專用的「心跳日誌」，
+#    以防止被 `runner/run_colabpro_test.py` 的閒置監控逾時中斷。
 #
 # ======================================================================================
 
@@ -118,6 +118,13 @@ except ImportError:
 # PART 1: GIT 下載器功能 (保持不變)
 # ==============================================================================
 def download_repository(log_manager):
+    # --- 新增的環境適應性檢查 ---
+    # 檢查核心啟動腳本是否已存在於當前目錄，以適應非標準的執行環境（例如，檔案已預先存在於根目錄）。
+    # 這可以避免在不應該建立子目錄的情況下，仍然嘗試 clone 到子目錄中。
+    if Path("run_app.py").exists() and Path("src").exists():
+        log_manager.log("INFO", "✅ 偵測到專案檔案已存在於當前目錄，將直接使用此目錄。")
+        return "." # 回傳當前目錄
+
     project_path = Path(PROJECT_FOLDER_NAME)
     log_manager.log("INFO", f"準備下載專案至 '{PROJECT_FOLDER_NAME}'...")
     log_manager.log("INFO", f"  - 倉庫 (Repository): {REPOSITORY_URL}")
@@ -163,7 +170,7 @@ class DisplayManager:
         self._full_history.append(f"[{now.isoformat()}] [{level.upper():^8}] {message}")
 
     def _build_output_buffer(self) -> list[str]:
-        output_buffer = ["📥🐺 善狼一鍵啟動器 (v8) 🐺", ""]
+        output_buffer = ["📥🐺 善狼一鍵啟動器 (v9) 🐺", ""]
         for log in self._log_deque:
             ts, level, message = log['timestamp'].strftime('%H:%M:%S'), log['level'], log['message']
             output_buffer.append(f"[{ts}] {colorize(f'[{level:^8}]', level)} {message}")
@@ -550,6 +557,10 @@ def launch_application(project_path_str: str, log_manager: DisplayManager):
                 # 為了避免不斷重複打印日誌，我們只在狀態改變時打印一次
                 # 這裡可以加入更複雜的邏輯，但目前先讓它繼續 sleep
                 pass
+            else:
+                # 新增：在測試模式下定期發送心跳日誌以避免閒置超時
+                if os.environ.get('IN_TEST_MODE') == '1':
+                    display_manager.log("DEBUG", "測試模式心跳：主迴圈正常運行中...")
             time.sleep(5) # 每 5 秒檢查一次
 
     except KeyboardInterrupt:

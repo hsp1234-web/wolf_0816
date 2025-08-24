@@ -1,3 +1,18 @@
+## 2025-08-24T13:00:00+08:00
+
+### 🐛 修復與測試強化 (Fix & Test Harness Enhancement)
+
+- **核心修復：增強 `Colabpro.py` 的環境適應性 (Core Fix: Enhanced Environment Adaptability in `Colabpro.py`)**
+    - **問題**: `Colabpro.py` 腳本在檔案已預先存在的環境中執行時，會因錯誤的路徑假設（強制使用 `wolf_project` 子目錄）而導致後端服務啟動失敗。
+    - **解決方案**: 在 `download_repository` 函式中增加了環境檢查。現在腳本會先判斷核心檔案是否存在於當前目錄，如果存在，則直接使用該目錄，避免了不必要的下載和錯誤的路徑切換。
+
+- **測試框架改進與驗證 (Test Harness Improvement & Verification)**
+    - **問題**: 原有的整合測試 (`runner/run_colabpro_test.py`) 為了避免檔案系統風險，完全模擬了 `download_repository` 函式，使其無法驗證本次的路徑修復。
+    - **解決方案**:
+        1.  重寫了 `runner/run_colabpro_test.py`，使其在安全的檔案操作（暫時更名 `run_app.py`）前提下，能夠實際執行並驗證 `download_repository` 的新邏輯。
+        2.  為 `Colabpro.py` 的主執行迴圈增加了僅在測試模式下啟用的「心跳日誌」，以解決先前測試框架會因無日誌輸出而「閒置超時」的問題。
+    - **成果**: 新的測試框架成功驗證了本次修復的有效性，確保了啟動器在不同環境下的健壯性，並提升了未來進行類似整合測試的可靠性。
+
 ## 2025-08-23T20:28:00+08:00
 
 ### 🚀 架構重構：實現高頻率硬體監控 (Architectural Refactor: Enable High-Frequency Hardware Monitoring)
@@ -308,7 +323,7 @@ D. 進行事前檢查 (可選)：如果測試需要啟動一個已知的記憶�
     - **核心驗證**: 測試會捕獲前端提交任務時產生的 JSON 指令，並對其結構和內容進行精確的**斷言 (assertion)**，確保前端邏輯的正確性。
 
 - **修復 `LogViewer.vue` 渲染崩潰問題**:
-    - 在除錯過程中，發現並修復了 `LogViewer.vue` 元件在啟動時，因嘗試讀取一個尚未載入的 Pinia store 狀態 (`logs.length`) 而導致的渲染崩潰問題。
+    - 在除錯過程中，發現並修復了 `LogViewer.py` 元件在啟動時，因嘗試讀取一個尚未載入的 Pinia store 狀態 (`logs.length`) 而導致的渲染崩潰問題。
     - 透過為樣板中的變數存取增加防禦性判斷 (`v-if="logs && logs.length > 0"`)，徹底解決了此穩定性隱患。
 
 - **記錄：解決測試環境的連鎖問題 (Notes on Resolving Cascading Test Environment Issues)**:
