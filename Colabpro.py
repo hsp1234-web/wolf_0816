@@ -118,6 +118,13 @@ except ImportError:
 # PART 1: GIT 下載器功能 (保持不變)
 # ==============================================================================
 def download_repository(log_manager):
+    # --- 新增的環境適應性檢查 ---
+    # 檢查核心啟動腳本是否已存在於當前目錄，以適應非標準的執行環境（例如，檔案已預先存在於根目錄）。
+    # 這可以避免在不應該建立子目錄的情況下，仍然嘗試 clone 到子目錄中。
+    if Path("run_app.py").exists() and Path("src").exists():
+        log_manager.log("INFO", "✅ 偵測到專案檔案已存在於當前目錄，將直接使用此目錄。")
+        return "." # 回傳當前目錄
+
     project_path = Path(PROJECT_FOLDER_NAME)
     log_manager.log("INFO", f"準備下載專案至 '{PROJECT_FOLDER_NAME}'...")
     log_manager.log("INFO", f"  - 倉庫 (Repository): {REPOSITORY_URL}")
@@ -550,6 +557,10 @@ def launch_application(project_path_str: str, log_manager: DisplayManager):
                 # 為了避免不斷重複打印日誌，我們只在狀態改變時打印一次
                 # 這裡可以加入更複雜的邏輯，但目前先讓它繼續 sleep
                 pass
+            else:
+                # 新增：在測試模式下定期發送心跳日誌以避免閒置超時
+                if os.environ.get('IN_TEST_MODE') == '1':
+                    display_manager.log("DEBUG", "測試模式心跳：主迴圈正常運行中...")
             time.sleep(5) # 每 5 秒檢查一次
 
     except KeyboardInterrupt:
