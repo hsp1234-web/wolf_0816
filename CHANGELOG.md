@@ -1,3 +1,15 @@
+## 2025-08-24T14:35:00+08:00
+
+### 🐛 核心架構修復：解決因檔名衝突引發的 Huey 導入錯誤
+
+- **問題 (Problem)**: 後端服務在啟動時，固定因 `AttributeError: module 'huey_consumer' has no attribute 'huey'` 錯誤而崩潰。
+- **根本原因 (Root Cause)**: 經過多次失敗的嘗試後，最終定位到問題的根源是一個隱蔽的**檔名衝突**。專案中用於設定 Huey 入口的腳本 `huey_consumer.py` 與 `huey` 套件提供的可執行檔 `huey_consumer.py` 同名。這導致 Python 的導入機制在尋找和載入模組時發生混亂，從而引發了無法解釋的 `AttributeError`，即使導入邏輯本身是正確的。
+- **解決方案 (Solution)**:
+    1.  **解決命名衝突**: 將專案內的 `huey_consumer.py` 重新命名為 `huey_entrypoint.py`，徹底消除與 `huey` 套件可執行檔的名稱衝突。
+    2.  **更新啟動腳本**: 修改 `run_app.py`，將啟動 Huey consumer 的指令從 `huey_consumer.huey` 更新為 `huey_entrypoint.huey`。
+    3.  **(先前已完成的重構)**: 本次修復建立在先前將 `huey` 實例定義移至獨立檔案 `src/core/queue_config.py` 的重構之上，該重構清除了潛在的循環依賴，但未能解決最終的命名衝突問題。
+- **成果 (Outcome)**: 解決命名衝突後，後端服務能夠立即成功啟動，所有服務均正常運行，徹底解決了此次的崩潰問題。
+
 ## 2025-08-24T06:47:00+08:00
 
 ### 🐛 核心穩定性史詩級除錯與最終修復 (Epic Core Stability Debugging & Final Fix)

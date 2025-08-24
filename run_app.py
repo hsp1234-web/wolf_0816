@@ -159,7 +159,7 @@ def run_app_flow():
         log.info("✅ 所有任務已註冊。")
 
         huey_command = [
-            "huey_consumer.py", "huey_consumer.huey",
+            "huey_consumer.py", "huey_entrypoint.huey",
             "--workers", "4", "--worker-type", "thread"
         ]
         huey_proc = subprocess.Popen(huey_command, env=env, text=True, encoding='utf-8')
