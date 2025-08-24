@@ -8,3 +8,4 @@ websockets
 jsonpatch
 pytz
 ipython
+psutil

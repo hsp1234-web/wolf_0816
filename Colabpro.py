@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-#@title 📥🐺 善狼一鍵啟動器 (v8) 🐺
+#@title 📥🐺 善狼一鍵啟動器 (v9) 🐺
 #@markdown ---
 #@markdown ### **(1) 專案來源設定**
 #@markdown > **請提供 Git 倉庫的網址、要下載的分支或標籤，以及本地資料夾名稱。**
@@ -7,7 +7,7 @@
 #@markdown **後端程式碼倉庫 (REPOSITORY_URL)**
 REPOSITORY_URL = "https://github.com/hsp1234-web/wolf_0816.git" #@param {type:"string"}
 #@markdown **後端版本分支或標籤 (TARGET_BRANCH_OR_TAG)**
-TARGET_BRANCH_OR_TAG = "645" #@param {type:"string"}
+TARGET_BRANCH_OR_TAG = "661" #@param {type:"string"}
 #@markdown **專案資料夾名稱 (PROJECT_FOLDER_NAME)**
 PROJECT_FOLDER_NAME = "wolf_project" #@param {type:"string"}
 #@markdown **強制刷新後端程式碼 (FORCE_REPO_REFRESH)**
@@ -36,8 +36,8 @@ ENABLE_CLEAR_OUTPUT = True #@param {type:"boolean"}
 # ==                                  開發者日誌                                  ==
 # ======================================================================================
 #
-# 版本: 8.0 (架構: 穩定啟動與診斷)
-# 日期: 2025-08-23T19:03:00+08:00
+# 版本: 9.0 (架構: 依賴修復)
+# 日期: 2025-08-24T14:00:00+08:00
 #
 # 🔴 **禁止直接執行**: 本檔案 (Colabpro.py) 被設計為一個程式庫 (library)，
 #    由 Colab Notebook 環境導入並呼叫。請勿透過 `python Colabpro.py` 直接執行。
@@ -48,10 +48,9 @@ ENABLE_CLEAR_OUTPUT = True #@param {type:"boolean"}
 #      UI 顯示設計，以及最終 HTML 報告產生與複製按鈕相關的程式碼。
 #
 # 本次變更重點:
-# 1. **修復啟動流程**: 徹底解決了因 DB Manager 未啟動而導致 API Gateway
-#    超時崩潰的根本問題。現在 `run_app.py` 會確保服務按正確順序啟動。
-# 2. **整合診斷工具**: 加入了環境健康診斷功能，提前發現問題。
-# 3. **整合併發代理**: 引入了併發代理獲取機制，提升連線成功率。
+# 1. **修復依賴問題**: 將 `psutil` 加入 `requirements-server.txt`，
+#    解決了因缺少該依賴而導致 `run_app.py` 啟動時的 `ModuleNotFoundError`。
+# 2. **更新設定**: 根據使用者要求，將預設分支更新為 "661"。
 #
 # ======================================================================================
 
@@ -163,7 +162,7 @@ class DisplayManager:
         self._full_history.append(f"[{now.isoformat()}] [{level.upper():^8}] {message}")
 
     def _build_output_buffer(self) -> list[str]:
-        output_buffer = ["📥🐺 善狼一鍵啟動器 (v8) 🐺", ""]
+        output_buffer = ["📥🐺 善狼一鍵啟動器 (v9) 🐺", ""]
         for log in self._log_deque:
             ts, level, message = log['timestamp'].strftime('%H:%M:%S'), log['level'], log['message']
             output_buffer.append(f"[{ts}] {colorize(f'[{level:^8}]', level)} {message}")
