@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-#@title 📥🐺 善狼一鍵啟動器 (v13) 🐺
+#@title 📥🐺 善狼一鍵啟動器 (v13.1) 🐺
 #@markdown ---
 #@markdown ### **(1) 專案來源設定**
 #@markdown > **請提供 Git 倉庫的網址、要下載的分支或標籤，以及本地資料夾名稱。**
@@ -36,14 +36,13 @@ ENABLE_CLEAR_OUTPUT = True #@param {type:"boolean"}
 # ==                                  開發者日誌                                  ==
 # ======================================================================================
 #
-# 版本: 13.0 (架構: 功能整合)
-# 日期: 2025-08-25T05:15:00+08:00
+# 版本: 13.1 (架構: 錯誤修復與功能還原)
+# 日期: 2025-08-25T05:30:00+08:00
 #
 # 本次變更重點:
-# 1. **功能恢復**: 將 v10 版本中的即時日誌、效能監控、HTML報告等 UI 功能，
-#    與 v12 的穩定架構進行整合。
-# 2. **日誌系統**: 引入了更完善的日誌管理器，取代了原有的 print() 呼叫。
-# 3. **配置更新**: 將預設分支更新為 "689"。
+# 1. **功能還原**: 恢復了 Colab 代理的多次重試機制。
+# 2. **功能還原**: 恢復了 Localtunnel 的密碼自動獲取與顯示功能。
+# 3. **樣式修復**: 將 HTML 日誌報告的 CSS 樣式還原至 v10 版本。
 #
 # ======================================================================================
 
@@ -166,13 +165,17 @@ class DisplayManager:
              output.append("  - (正在產生...)")
         else:
             for name in TUNNEL_ORDER:
-                url = urls.get(name)
-                if url:
+                proxy_info = urls.get(name)
+                if proxy_info:
+                    url = proxy_info.get("url", "錯誤：無效資料")
+                    password = proxy_info.get("password")
                     if "錯誤" in str(url):
                         error_msg = f"\033[91m{url}\033[0m" if IN_COLAB else f"{url} (錯誤)"
                         output.append(f"  - {name+':':<15} {error_msg}")
                     else:
                         output.append(f"  - {name+':':<15} {url}")
+                        if password:
+                            output.append(f"    {'密碼:':<15} {password}")
                 elif self._state.get("all_tunnels_done"):
                     output.append(f"  - {name+':':<15} (啟動失敗)")
 
@@ -193,20 +196,44 @@ class TunnelManager:
         try:
             proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', cwd=cwd)
             self.processes.append(proc)
+
+            start_time = time.monotonic()
             for line in iter(proc.stdout.readline, ''):
+                if time.monotonic() - start_time > self._timeout:
+                    self._state["urls"][name] = {"url": "錯誤：超時"}
+                    self._log("ERROR", f"❌ {name} 超時")
+                    return
+
                 self._log("RUNNER", f"[{name}] {line.strip()}")
                 match = re.search(pattern, line)
                 if match:
                     url = match.group(1)
-                    self._state["urls"][name] = url
+                    result_data = {"url": url}
+
+                    # 恢復 v10 的密碼獲取邏輯
+                    if name == "Localtunnel":
+                        self._log("INFO", "-> 正在為 Localtunnel 獲取隧道密碼...")
+                        try:
+                            pass_proc = subprocess.run(['curl', '-s', 'https://loca.lt/mytunnelpassword'], capture_output=True, text=True, timeout=10)
+                            if pass_proc.returncode == 0 and pass_proc.stdout.strip():
+                                password = pass_proc.stdout.strip()
+                                result_data['password'] = password
+                                self._log("SUCCESS", f"✅ Localtunnel 密碼已獲取: {password}")
+                            else:
+                                self._log("WARN", "⚠️ 無法獲取 Localtunnel 密碼。")
+                        except Exception as e:
+                            self._log("ERROR", f"❌ 獲取 Localtunnel 密碼時出錯: {e}")
+
+                    self._state["urls"][name] = result_data
                     self._log("SUCCESS", f"✅ {name} 成功: {url}")
                     return
-            proc.wait(timeout=self._timeout)
+
+            proc.wait(timeout=1)
             if self._state["urls"].get(name) is None:
-                self._state["urls"][name] = f"錯誤：程序已結束 (Code: {proc.returncode})"
+                self._state["urls"][name] = {"url": f"錯誤：程序已結束 (Code: {proc.returncode})"}
         except Exception as e:
             self._log("ERROR", f"❌ {name} 執行時發生錯誤: {e}")
-            self._state["urls"][name] = f"錯誤：執行失敗"
+            self._state["urls"][name] = {"url": f"錯誤：執行失敗"}
 
     def _get_cloudflare_url(self):
         # ... (implementation is the same as v12, just uses self._log) ...
@@ -241,19 +268,30 @@ class TunnelManager:
     def _get_colab_url(self):
         name = "Colab"
         self._log("INFO", f"-> {name} 競速開始...")
-        try:
-            if IN_COLAB:
-                result = colab_output.eval_js(f"google.colab.kernel.proxyPort({self.port}, {{'cache': false}})", timeout_sec=self._timeout)
-                if isinstance(result, str) and result.startswith('http'):
-                    self._state["urls"][name] = result
-                    self._log("SUCCESS", f"✅ {name} 成功: {result}")
-                else:
-                    self._state["urls"][name] = "錯誤：未返回有效網址"
-            else:
-                time.sleep(1); self._state["urls"][name] = "http://mock-colab-url.dev"
-        except Exception as e:
-            self._log("ERROR", f"❌ {name} 執行時發生錯誤: {e}")
-            self._state["urls"][name] = f"錯誤：執行失敗"
+        max_retries = 10
+        retry_delay_seconds = 8
+        for attempt in range(max_retries):
+            try:
+                if attempt > 0: self._log("INFO", f"-> {name} 正在進行第 {attempt + 1}/{max_retries} 次嘗試...")
+                if IN_COLAB:
+                    result = colab_output.eval_js(f"google.colab.kernel.proxyPort({self.port}, {{'cache': false}})", timeout_sec=self._timeout)
+                    if isinstance(result, str) and result.startswith('http'):
+                        self._state["urls"][name] = {"url": result}
+                        self._log("SUCCESS", f"✅ {name} 在第 {attempt + 1} 次嘗試後成功: {result}")
+                        return
+                    else:
+                        self._log("WARN", f"⚠️ {name} 第 {attempt + 1}/{max_retries} 次嘗試未回傳有效網址 (收到: {result})")
+                else: # Mock behavior
+                    time.sleep(1); self._state["urls"][name] = {"url": "http://mock-colab-url.dev"}; return
+            except Exception as e:
+                self._log("WARN", f"⚠️ {name} 第 {attempt + 1}/{max_retries} 次嘗試時發生錯誤: {e}")
+
+            if attempt < max_retries - 1:
+                self._log("INFO", f"-> 將在 {retry_delay_seconds} 秒後重試...")
+                time.sleep(retry_delay_seconds)
+
+        self._log("CRITICAL", f"❌ {name} 在 {max_retries} 次嘗試後徹底失敗。")
+        self._state["urls"][name] = {"url": "錯誤：多次嘗試後失敗"}
 
     def start_tunnels(self):
         self._state["urls"] = {}
@@ -271,18 +309,22 @@ class TunnelManager:
         for t in self.threads: t.join(timeout=1)
 
 def create_log_viewer_html(log_manager):
-    log_history = log_manager.get_full_log_history()
-    log_to_copy = log_history[-LOG_COPY_MAX_LINES:]
-    num_logs = len(log_to_copy)
-    unique_id = f"log-area-{int(time.time() * 1000)}"
-    log_content_string = "\n".join(log_to_copy)
-    escaped_log = html.escape(log_content_string)
+    """ 產生最終的 HTML 日誌報告，樣式與 v10 版本完全一致。 """
+    try:
+        log_history = log_manager.get_full_log_history()
+        log_to_copy = log_history[-LOG_COPY_MAX_LINES:]
+        num_logs = len(log_to_copy)
+        unique_id = f"log-area-{int(time.time() * 1000)}"
+        log_content_string = "\n".join(log_to_copy)
+        escaped_log_for_display = html.escape(log_content_string)
 
-    textarea_html = f'<textarea id="{unique_id}" style="position:absolute; left: -9999px; top: -9999px;" readonly>{escaped_log}</textarea>'
-    onclick_js = f'''(async () => {{ const ta = document.getElementById('{unique_id}'); if (!ta) return; await navigator.clipboard.writeText(ta.value); this.innerText = "✅ 已複製!"; setTimeout(() => {{ this.innerText = "📋 複製這 {num_logs} 條日誌"; }}, 2000); }})()'''.replace("\n", " ").strip()
-    button_html = f'<button onclick="{html.escape(onclick_js)}" style="padding: 6px 12px; margin: 12px 0; cursor: pointer;">📋 複製這 {num_logs} 條日誌</button>'
+        textarea_html = f'<textarea id="{unique_id}" style="position:absolute; left: -9999px; top: -9999px;" readonly>{escaped_log_for_display}</textarea>'
+        onclick_js = f'''(async () => {{ const ta = document.getElementById('{unique_id}'); if (!ta) return; await navigator.clipboard.writeText(ta.value); this.innerText = "✅ 已複製!"; setTimeout(() => {{ this.innerText = "📋 複製這 {num_logs} 條日誌"; }}, 2000); }})()'''.replace("\n", " ").strip()
+        button_html = f'<button onclick="{html.escape(onclick_js)}" style="padding: 6px 12px; margin: 12px 0; cursor: pointer; border: 1px solid #ccc; border-radius: 5px; background-color: #f9f9f9;">📋 複製這 {num_logs} 條日誌</button>'
 
-    return f'''<details style="margin-top: 15px; border: 1px solid #e0e0e0; padding: 12px;"><summary style="cursor: pointer; font-weight: bold;">點此展開/收合最近 {num_logs} 條詳細日誌</summary><div>{textarea_html}{button_html}<pre style="background-color: #f5f5f5; padding: 10px; border: 1px solid #ddd;"><code>{escaped_log}</code></pre>{button_html}</div></details>'''
+        return f'''<details style="margin-top: 15px; margin-bottom: 15px; border: 1px solid #e0e0e0; padding: 12px; border-radius: 8px; background-color: #fafafa;"><summary style="cursor: pointer; font-weight: bold; color: #333;">點此展開/收合最近 {num_logs} 條詳細日誌</summary><div style="margin-top: 12px;">{textarea_html}{button_html}<pre style="background-color: #fff; padding: 12px; border: 1px solid #e0e0e0; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; font-family: monospace; font-size: 13px; color: #444;"><code>{escaped_log_for_display}</code></pre>{button_html}</div></details>'''
+    except Exception as e:
+        return f"<p>❌ 產生最終日誌報告時發生錯誤: {html.escape(str(e))}</p>"
 
 # ==============================================================================
 # PART 3: 主啟動器邏輯
