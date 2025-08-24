@@ -1,3 +1,28 @@
+## 2025-08-24T06:47:00+08:00
+
+### 🐛 核心穩定性史詩級除錯與最終修復 (Epic Core Stability Debugging & Final Fix)
+
+- **背景**: 初始問題為後端服務在啟動後立即崩潰。除錯過程揭示了一系列深藏的、相互關聯的環境、依賴、配置和程式碼邏輯問題。
+
+- **除錯歷程與已解決的問題**:
+    1.  **環境限制問題**:
+        - **發現**: `run_app.py` 中的前端建置步驟會刪除並重建 `dist` 目錄，違反了沙箱「禁止建立新目錄」的致命限制。
+        - **修復**: 移除了該建置步驟，改用版本庫中預先建置的檔案。
+    2.  **依賴與啟動時序問題**:
+        - **發現**: 啟動時因缺少 `psutil` 套件而引發 `ModuleNotFoundError`。進一步分析發現，即使將其加入 `requirements.txt`，`run_app.py` 的導入順序也會在安裝前就嘗試導入它。
+        - **修復**: 將 `psutil` 加入 `requirements-worker.txt`，並將 `hardware_monitor_worker` 的導入延後到依賴安裝之後。
+    3.  **套件管理器配置問題**:
+        - **發現**: `uv` 套件管理器預設拒絕在非虛擬環境中安裝。
+        - **修復**: 為 `run_app.py` 中的所有 `uv pip install` 指令增加了 `--system` 旗標。
+    4.  **Huey Consumer 靜默退出問題**:
+        - **發現**: `huey` 背景程序總是在啟動後立即「乾淨地」退出。經過多次實驗（注入任務、啟用詳細日誌），最終發現問題在於 `run_app.py` 使用了錯誤的指令來啟動 consumer。
+        - **修復**: 將啟動指令從 `python3 huey_consumer.py ...` 修正為官方的 `huey_consumer.py ...`。
+    5.  **Python 循環導入問題 (`AttributeError`)**:
+        - **發現**: 修正指令後，出現了 `AttributeError: module 'huey_consumer' has no attribute 'huey'`。根本原因被定位為 `huey_consumer.py` 與 `workers/*.py` 之間的循環導入，干擾了 `huey` 執行器的模組載入機制。
+        - **修復**: 進行了最終重構，建立 `src/huey_tasks.py` 專門負責註冊任務，徹底打破了循環導入鏈。
+
+- **最終成果**: 經過這一系列艱難的、層層深入的除錯，所有已知的啟動穩定性問題都已得到解決。應用程式現在能夠在目標環境中穩定、可靠地啟動和運行。
+
 ## 2025-08-23T22:05:00+08:00
 
 ### 🐛 環境穩定性綜合修復 (Comprehensive Environment Stability Fix)
