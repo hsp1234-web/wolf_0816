@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-#@title 📥🐺 善狼一鍵啟動器 (v9) 🐺
+#@title 📥🐺 善狼一鍵啟動器 (v10) 🐺
 #@markdown ---
 #@markdown ### **(1) 專案來源設定**
 #@markdown > **請提供 Git 倉庫的網址、要下載的分支或標籤，以及本地資料夾名稱。**
@@ -7,12 +7,12 @@
 #@markdown **後端程式碼倉庫 (REPOSITORY_URL)**
 REPOSITORY_URL = "https://github.com/hsp1234-web/wolf_0816.git" #@param {type:"string"}
 #@markdown **後端版本分支或標籤 (TARGET_BRANCH_OR_TAG)**
-TARGET_BRANCH_OR_TAG = "661" #@param {type:"string"}
+TARGET_BRANCH_OR_TAG = "665" #@param {type:"string"}
 #@markdown **專案資料夾名稱 (PROJECT_FOLDER_NAME)**
 PROJECT_FOLDER_NAME = "wolf_project" #@param {type:"string"}
 #@markdown **強制刷新後端程式碼 (FORCE_REPO_REFRESH)**
 #@markdown > **如果勾選，每次執行都會先刪除舊的專案資料夾，再重新下載。**
-FORCE_REPO_REFRESH = True #@param {type:"boolean"}
+FORCE_REPO_REFRESH = False #@param {type:"boolean"}
 #@markdown ---
 #@markdown ### **(2) 通用設定**
 #@markdown > **此處為儀表板顯示相關的常用設定。**
@@ -36,8 +36,8 @@ ENABLE_CLEAR_OUTPUT = True #@param {type:"boolean"}
 # ==                                  開發者日誌                                  ==
 # ======================================================================================
 #
-# 版本: 9.0 (架構: 依賴修復)
-# 日期: 2025-08-24T14:00:00+08:00
+# 版本: 10.0 (架構: 環境穩定性)
+# 日期: 2025-08-24T22:00:00+08:00
 #
 # 🔴 **禁止直接執行**: 本檔案 (Colabpro.py) 被設計為一個程式庫 (library)，
 #    由 Colab Notebook 環境導入並呼叫。請勿透過 `python Colabpro.py` 直接執行。
@@ -48,9 +48,9 @@ ENABLE_CLEAR_OUTPUT = True #@param {type:"boolean"}
 #      UI 顯示設計，以及最終 HTML 報告產生與複製按鈕相關的程式碼。
 #
 # 本次變更重點:
-# 1. **修復依賴問題**: 將 `psutil` 加入 `requirements-server.txt`，
-#    解決了因缺少該依賴而導致 `run_app.py` 啟動時的 `ModuleNotFoundError`。
-# 2. **更新設定**: 根據使用者要求，將預設分支更新為 "661"。
+# 1. **增強穩定性**: 停用 `run_app.py` 中危險的前端建置步驟，從根本上解決後端崩潰問題。
+# 2. **更新設定**: 根據使用者要求，將預設分支更新為 "665"。
+# 3. **安全加固**: 將 `FORCE_REPO_REFRESH` 的預設值改為 `False`，防止意外重新建立目錄導致崩潰。
 #
 # ======================================================================================
 

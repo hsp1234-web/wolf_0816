@@ -102,29 +102,9 @@ def run_app_flow():
                 (ROOT_DIR / db_file).unlink()
                 log.info(f"已刪除舊的資料庫檔案: {db_file}")
 
-        # --- 步驟 4: 建置前端應用程式 ---
-        log.info("[3/6] 準備建置前端 Vue 應用程式...")
-        vue_app_dir = ROOT_DIR / "vue-app"
-        dist_dir = vue_app_dir / "dist"
-        if dist_dir.exists():
-            try:
-                shutil.rmtree(dist_dir)
-                log.info(f"✅ 已成功刪除舊的 '{dist_dir}' 目錄。")
-            except OSError as e:
-                log.error(f"❌ 刪除舊的 dist 目錄失敗: {e}")
-                raise
-        try:
-            log.info("正在安裝前端依賴 (bun install)...")
-            subprocess.run(["bun", "install"], cwd=vue_app_dir, check=True, capture_output=True, text=True, encoding='utf-8')
-            log.info("✅ 前端依賴安裝成功。")
-            log.info("正在建置前端應用 (bun run build)...")
-            subprocess.run(["bun", "run", "build"], cwd=vue_app_dir, check=True, capture_output=True, text=True, encoding='utf-8')
-            log.info("✅ 前端應用建置成功。")
-        except Exception as e:
-            log.error(f"❌ 前端建置過程中發生錯誤: {e}")
-            if hasattr(e, 'stdout') and e.stdout: log.error(f"BUN STDOUT: {e.stdout}")
-            if hasattr(e, 'stderr') and e.stderr: log.error(f"BUN STDERR: {e.stderr}")
-            raise
+        # --- 步驟 4: 建置前端應用程式 (已因環境限制而停用) ---
+        log.info("[3/6] 跳過前端建置步驟。原因：此沙箱環境不允許建立新目錄。")
+        log.info("      將直接使用版本庫中預先建置好的靜態檔案。")
 
         # --- 步驟 5: 依序啟動後端服務 ---
         log.info("[4/6] 啟動核心後端服務...")
