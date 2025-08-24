@@ -9,3 +9,5 @@ jsonpatch
 pytz
 ipython
 psutil
+httpx
+pydantic-settings

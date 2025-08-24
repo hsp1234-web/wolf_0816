@@ -36,6 +36,14 @@ mkdir -p "${DEPS_DIR}"
 echo "2/4: 正在使用 uv 安裝依賴從 ${REQUIREMENTS_FILE}..."
 uv pip install -r "${REQUIREMENTS_FILE}" --target "${DEPS_DIR}"
 
+# --- 關鍵修正：將原始碼也複製到依賴目錄中 ---
+echo "將原始碼 (src, services, workers) 複製到烘烤目錄..."
+cp -r src "${DEPS_DIR}/"
+cp -r services "${DEPS_DIR}/"
+cp -r workers "${DEPS_DIR}/"
+cp huey_entrypoint.py "${DEPS_DIR}/"
+# --- 修正結束 ---
+
 # 使用 tar 打包依賴目錄
 # -C 參數會先切換到 ${DEPS_DIR} 目錄，然後才開始打包。
 # '.' 表示打包該目錄下的所有內容。

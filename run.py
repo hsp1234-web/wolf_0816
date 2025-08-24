@@ -9,6 +9,8 @@
 """
 import os
 import sys
+from pathlib import Path
+
 import tarfile
 import tempfile
 import shutil
@@ -58,7 +60,7 @@ def main():
     # 步驟 2: 啟動主應用程式
     try:
         import uvicorn
-        from src.core.mini_server import app
+        from services.api_gateway.main import app
 
         port = find_available_port()
         if not port:
