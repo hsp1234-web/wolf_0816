@@ -3,6 +3,7 @@ uvicorn
 pydantic-settings
 huey
 requests
+psutil
 python-multipart
 websockets
 jsonpatch
