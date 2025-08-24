@@ -1,3 +1,21 @@
+## 2025-08-23T20:14:00+08:00
+
+### 🔧 診斷能力增強：為背景工作程序加入日誌捕獲 (Diagnostics: Added Log Capture for Background Worker)
+
+- **問題**: `huey_consumer` 背景程序在啟動時崩潰，但其標準錯誤輸出 (stderr) 沒有被記錄，導致無法定位根本原因。
+- **解決方案**: 修改 `run_app.py`，將 `huey_consumer` 程序的 `stdout` 和 `stderr` 重新導向到根目錄下的 `huey_crash.log` 檔案。
+- **成果**: 此修改能確保任何來自 `huey_consumer` 的崩潰日誌都會被永久記錄下來，為後續的除錯提供了關鍵的「黑盒子」數據。
+
+## 2025-08-23T19:38:00+08:00
+
+### 🚀 核心穩定性增強：改善 Colab 啟動器健壯性 (Core Stability Enhancement: Improved Colab Launcher Robustness)
+
+- **問題**: `Colabpro.py` 啟動腳本的設計過於脆弱。當後端的 `run_app.py` 程序因任何原因（例如，內部服務崩潰）終止時，`Colabpro.py` 中的 `server_proc.wait()` 會立即返回，從而觸發 `finally` 區塊，導致所有穿隧服務被關閉，Colab 儲存格執行結束。這使得使用者無法保持連線來查看日誌並診斷問題。
+
+- **解決方案**:
+    - **修改 `Colabpro.py` 的主循環**: 將 `server_proc.wait()` 呼叫替換為一個無限迴圈 (`while True: time.sleep(5)`)。
+    - **增加後端健康狀態監控**: 在此無限迴圈中，會定期檢查後端 `server_proc` 的狀態。如果偵測到後端已終止，它會印出一條關鍵錯誤日誌，但**不會**終止自身或關閉穿隧服務。
+    - **成果**: 此變更徹底地將前端啟動器 (`Colabpro.py`) 的生命週期與後端服務的生命週期脫鉤。現在即使後端崩潰，使用者依然能保持 Colab 的連線與公開網址，極大地改善了除錯體驗並滿足了「讓儲存格持續運作」的核心需求。
 
 ## 2025-08-24T10:10  +08:00
 
@@ -172,7 +190,7 @@ D. 進行事前檢查 (可選)：如果測試需要啟動一個已知的記憶�
 
 - **新增 Colab 代理可用性健康檢查**:
     - **動機**: 為了在啟動早期階段就能偵測到 Colab 官方代理服務的潛在問題。
-    - **實作**: 新增了一個名為 `check_colab_proxy_availability` 的健康檢查項目。此檢查會啟動一個暫時的本地伺服器，並嘗試透過 `google.colab.kernel.proxyPort` 為其獲取一個公開網址。
+    - **實作**: 新增了一個名為 `check_colab_proxy_availability` の健康檢查項目。此檢查會啟動一個暫時的本地伺服器，並嘗試透過 `google.colab.kernel.proxyPort` 為其獲取一個公開網址。
 
 - **更新預設 Git 分支**:
     - 根據使用者要求，將預設下載的後端程式碼分支 `TARGET_BRANCH_OR_TAG` 從 `"365"` 更新為 `"645"`。

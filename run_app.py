@@ -203,9 +203,30 @@ def run_app_flow():
             "--workers", "4",          # 使用 4 個執行緒
             "--worker-type", "thread" # 使用執行緒模式
         ]
-        log.info("正在將 Huey Consumer 的 stderr 重新導向到 stdout 以便於除錯...")
-        huey_proc = subprocess.Popen(huey_command, env=env, text=True, encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        processes_to_manage.append(huey_proc)
+        log.info("正在將 Huey Consumer 的輸出重新導向到 'huey_crash.log' 以便於除錯...")
+        try:
+            # 為了捕獲 Huey consumer 崩潰時的確切錯誤，我們將其 stdout 和 stderr 寫入一個日誌檔案。
+            log_file_path = ROOT_DIR / "huey_crash.log"
+            log_file = open(log_file_path, 'w', encoding='utf-8')
+
+            huey_proc = subprocess.Popen(
+                huey_command,
+                env=env,
+                text=True,
+                encoding='utf-8',
+                stdout=log_file,
+                stderr=subprocess.STDOUT
+            )
+            processes_to_manage.append(huey_proc)
+            # 注意：此處我們故意不關閉 log_file，讓它在整個 run_app.py 生命週期內保持開啟，
+            # 以確保能捕獲到所有輸出。作業系統會在主程序結束時自動處理它。
+        except Exception as e:
+            log.error(f"❌ 啟動 Huey Consumer 時發生預期外的錯誤: {e}")
+            # 即使啟動失敗，也將錯誤寫入日誌檔案
+            if 'log_file' in locals() and not log_file.closed:
+                log_file.write(f"Failed to start Huey process: {e}\n{traceback.format_exc()}")
+                log_file.close()
+            raise # 重新拋出例外，讓主流程知道啟動失敗
 
 
         # For Colabpro to get the URL, we print it out.

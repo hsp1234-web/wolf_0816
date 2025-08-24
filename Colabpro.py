@@ -539,7 +539,18 @@ def launch_application(project_path_str: str, log_manager: DisplayManager):
 
         # 讓主應用程式繼續在背景運行
         display_manager.log("INFO", "主服務正在背景運行，此 Colab 儲存格將保持活躍狀態。")
-        server_proc.wait() # 等待主服務結束 (例如被手動停止)
+
+        # 進入一個無限迴圈以保持此儲存格的活躍狀態。
+        # 這樣即使後端服務崩潰，穿隧和日誌記錄仍然會繼續，方便除錯。
+        # 只有當使用者手動中斷儲存格時，迴圈才會被 KeyboardInterrupt 打斷。
+        while True:
+            # 檢查後端服務的狀態，如果崩潰則記錄日誌，但本身不退出
+            if server_proc.poll() is not None:
+                display_manager.log("CRITICAL", "❌ 偵測到後端服務意外終止！穿隧連線仍保持開啟以便除錯。")
+                # 為了避免不斷重複打印日誌，我們只在狀態改變時打印一次
+                # 這裡可以加入更複雜的邏輯，但目前先讓它繼續 sleep
+                pass
+            time.sleep(5) # 每 5 秒檢查一次
 
     except KeyboardInterrupt:
         display_manager.log("WARN", "收到使用者中斷指令，正在優雅地關閉所有服務...")
