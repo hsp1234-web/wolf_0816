@@ -8,10 +8,15 @@ import App from './App.vue'
 
 const app = createApp(App)
 
-app.use(createPinia())
+const pinia = createPinia();
+app.use(pinia);
 
-// 在測試環境中暴露 app 實例，以便 Playwright 可以存取
+// 在測試環境中暴露 app 和 store 實例，以便 Playwright 可以存取
 window.vue_app = app;
+
+import { useTasksStore } from './stores/tasks';
+// 讓測試可以直接存取 store
+window.tasksStore = useTasksStore(pinia);
 
 app.mount('#app')
 

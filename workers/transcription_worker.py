@@ -6,7 +6,7 @@ import subprocess
 import json
 import requests
 from pathlib import Path
-from src.core.queue_config import huey
+import argparse
 
 API_PORT = os.environ.get("API_PORT", 8000)
 API_URL = f"http://127.0.0.1:{API_PORT}/api/internal/task_update"
@@ -19,7 +19,6 @@ def post_status_update(task_id: str, status: str, result: dict = None, error: st
     except requests.exceptions.RequestException as e:
         print(f"ERROR: 工作者無法回報任務狀態 (ID: {task_id}): {e}", file=sys.stderr)
 
-@huey.task()
 def process_transcription(task_id: str, file_path: str, original_filename: str):
     print(f"--- [Task ID: {task_id}] 開始處理任務: {original_filename} ---")
     try:
@@ -38,7 +37,6 @@ def process_transcription(task_id: str, file_path: str, original_filename: str):
     finally:
         print(f"--- [Task ID: {task_id}] 任務處理流程結束 ---")
 
-@huey.task()
 def download_model_task(model_size: str):
     task_id = f"download_{model_size}_{int(time.time())}"
     print(f"--- [Task ID: {task_id}] 開始下載模型: {model_size} ---")
@@ -52,7 +50,6 @@ def download_model_task(model_size: str):
     except Exception as e:
         print(f"ERROR: [Task ID: {task_id}] 下載模型時發生錯誤: {e}\n{traceback.format_exc()}", file=sys.stderr)
 
-@huey.task()
 def youtube_download_task(url: str, custom_filename: str, download_type: str):
     task_id = f"yt_dl_{int(time.time())}"
     print(f"--- [Task ID: {task_id}] 開始下載 YouTube 影片: {url} ---")
@@ -77,11 +74,12 @@ def youtube_download_task(url: str, custom_filename: str, download_type: str):
         print(f"CRITICAL: [Task ID: {task_id}] 下載 YouTube 影片時發生未預期錯誤: {e}\n{traceback.format_exc()}", file=sys.stderr)
         raise
 
-@huey.task()
-def gemini_process_task(download_result: dict, model: str, api_key: str, tasks: str, output_format: str):
+def gemini_process_task(download_result_str: str, model: str, api_key: str, tasks: str, output_format: str):
     task_id = f"gemini_proc_{int(time.time())}"
     print(f"--- [Task ID: {task_id}] 開始處理 Gemini 分析任務 ---")
     try:
+        # The download_result is passed as a JSON string from the command line
+        download_result = json.loads(download_result_str)
         audio_file_path = download_result['output_path']
         video_title = download_result.get('video_title', '無標題影片')
         IS_MOCK_MODE = os.environ.get("API_MODE", "real") == "mock"
@@ -104,3 +102,27 @@ def gemini_process_task(download_result: dict, model: str, api_key: str, tasks: 
     except Exception as e:
         print(f"CRITICAL: [Task ID: {task_id}] 處理 Gemini 分析時發生未預期錯誤: {e}\n{traceback.format_exc()}", file=sys.stderr)
         raise
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="轉錄工作者執行腳本")
+    parser.add_argument("--task", required=True, help="要執行的任務函式名稱")
+
+    args, unknown = parser.parse_known_args()
+
+    kwargs = {}
+    for i in range(0, len(unknown), 2):
+        key = unknown[i].lstrip('-').replace('-', '_')
+        value = unknown[i+1]
+        kwargs[key] = value
+
+    if args.task == "process_transcription":
+        process_transcription(**kwargs)
+    elif args.task == "download_model_task":
+        download_model_task(**kwargs)
+    elif args.task == "youtube_download_task":
+        youtube_download_task(**kwargs)
+    elif args.task == "gemini_process_task":
+        gemini_process_task(**kwargs)
+    else:
+        print(f"錯誤：未知的任務 '{args.task}'")
+        sys.exit(1)

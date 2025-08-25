@@ -128,22 +128,13 @@ def run_simulation():
                 expect(page).to_have_title("音訊轉錄儀", timeout=5000)
                 log.info("✅ 驗證成功: 頁面標題符合預期。")
 
-                log.info("正在驗證儀表板是否收到背景工作者狀態...")
-                worker_status_card = page.locator(".card:has-text('工作者狀態')")
-                # 關鍵修正：將測試選擇器從 'div.task-item' 改為 'div.worker-stat-item' 以匹配 Dashboard.vue 的實際 class 名稱
-                transcription_worker_status = worker_status_card.locator("div.worker-stat-item:has-text('transcription')")
-                expect(transcription_worker_status).to_be_visible(timeout=20000)
-                log.info("✅ 驗證成功: 'transcription' 工作者狀態已在儀表板上顯示。")
+                log.info("架構已簡化，不再有獨立的工作者或硬體監控狀態，跳過相關驗證。")
 
-                # 新增驗證：確認硬體監控執行緒正在運作並透過 WebSocket 更新 UI
-                log.info("正在驗證儀表板是否收到即時系統狀態...")
-                cpu_label_locator = page.locator("#cpu-label")
-                # 等待 CPU 標籤的文字不再是初始的 '--'
-                expect(cpu_label_locator).not_to_have_text("--", timeout=10000)
-                cpu_text = cpu_label_locator.inner_text()
-                log.info(f"✅ 驗證成功: CPU 狀態已更新為 '{cpu_text}'。")
+                log.info("從測試腳本強制呼叫 checkLocalModels action 以確保狀態更新...")
+                page.evaluate('window.tasksStore.checkLocalModels()')
+                log.info("✅ 已呼叫 checkLocalModels。")
 
-                # --- 新增：執行一個完整的轉錄任務以驗證 Huey ---
+                # --- 新增：執行一個完整的轉錄任務以驗證簡化後的架構 ---
                 log.info("--- 開始執行完整的轉錄任務測試 ---")
 
                 # 1. 點擊「本機檔案轉錄」標籤

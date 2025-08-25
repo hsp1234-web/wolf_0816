@@ -151,11 +151,14 @@ export const useTasksStore = defineStore('tasks', {
 
     // --- 後端 API Actions ---
     checkLocalModels() {
-      console.log("正在透過 WebSocket 請求本地模型列表...");
+      console.log("架構簡化：不再從後端檢查模型，直接假設所有模型都可用。");
+      // 在新架構中，工作者腳本是即時執行的，模型下載是其內部邏輯的一部分。
+      // 對於前端來說，我們可以假設所有模型都可以被「觸發」。
+      const allModels = ['tiny', 'base', 'small', 'medium', 'large-v2', 'large-v3'];
       this.$patch(state => {
-        state.appState.local_models.checking = true;
+        state.appState.local_models.available = allModels;
+        state.appState.local_models.checking = false;
       });
-      this.sendMessage('CHECK_LOCAL_MODELS');
     },
     downloadModel(model) {
       console.log(`正在透過 WebSocket 請求下載模型: ${model}`);

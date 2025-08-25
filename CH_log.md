@@ -1,3 +1,40 @@
+## 2025-08-25T15:07:57+08:00
+
+### refactor(core): 核心架構重構與失敗歷程交接
+
+- **動機**: 本次更新旨在記錄一次大規模的後端架構重構嘗試。初始目標是為了解決 `SqliteHuey` 在多程序讀寫 `queue.db` 時造成的死鎖問題。然而，在解決過程中，遭遇了大量與環境相關的、極其複雜的穩定性問題，最終我們決定更換整個後端任務處理的策略。這份日誌將詳細記錄整個過程，以便下一位助理能完全理解目前的系統狀態。
+
+- **方案 A：遷移至 Redis + Huey 背景程序模式**
+    - **初步嘗試**: 按照交接文件，我們將 Huey 後端從 `SqliteHuey` 更換為 `RedisHuey`，並在 `main.py` 的 `lifespan` 中啟動 `redis-server`。
+    - **遭遇的失敗**:
+        1.  **`FileNotFoundError`**: 發現沙箱環境中並未預裝 `redis-server`，於是我透過 `apt-get` 成功安裝了它。
+        2.  **`Address already in use`**: 發現 `e2e_test.py` 在失敗後不會自動清理 `redis-server` 程序，導致埠號衝突。我透過在測試腳本開頭加入 `pkill -f redis-server` 來解決此問題。
+        3.  **執行緒信號錯誤 (`ValueError: signal only works in main thread`)**: 嘗試在 `main.py` 的背景執行緒中啟動 Huey Consumer，但因 Huey 試圖註冊系統信號而導致崩潰。這證明了此路徑不可行。
+    - **策略修正與最終結論**: 我們決定轉向 Huey 官方推薦的「多程序」模式，由 `run.py` 作為總啟動器，分別啟動 Uvicorn 和 Huey Consumer。然而，這又引入了新的問題：
+        - **`ModuleNotFoundError`**: `run.py` 啟動的子程序無法找到依賴。我透過為子程序設定 `PYTHONPATH` 來解決。
+        - **靜默崩潰**: 最終發現，即使所有路徑和環境都正確，`huey_consumer` 程序依然會靜默退出，導致 `run.py` 連鎖關閉所有服務。
+    - **方案 A 總結**: 在這個特殊的「預烘烤依賴」沙箱環境中，試圖協調多個獨立的 Python 背景程序是極度脆弱且不可靠的。因此，我們與使用者共同決定放棄此方案。
+
+- **方案 B：徹底移除 Huey，改用「純 Python + subprocess」**
+    - **動機**: 為了追求極致的穩定與簡潔，我們決定移除所有任務佇列的抽象，回歸到最基礎的 `subprocess`。
+    - **核心變更**:
+        1.  **移除依賴**: 從 `requirements-unified.txt` 中完全移除了 `huey` 和 `redis`。
+        2.  **刪除設定檔**: 刪除了所有與 Huey 相關的檔案 (`huey_entrypoint.py`, `queue_config.py`, `huey_tasks.py`)。
+        3.  **重構 Worker**: 將 `workers/transcription_worker.py` 從一個被動的任務模組，重構成一個可以透過 `argparse` 從命令列直接呼叫的主動執行腳本。
+        4.  **簡化 API Gateway**: 大幅簡化了 `services/api_gateway/main.py`。現在，當 `/api/batch-tasks` 收到請求時，它不再是將任務放入佇列，而是直接使用 `subprocess.Popen` 在背景啟動一個 `transcription_worker.py` 程序。
+        5.  **簡化啟動器**: `run.py` 被還原成一個只負責啟動 Uvicorn 的簡單腳本。
+
+- **當前的最終狀態與瓶頸**
+    - **進展**: 新的架構非常成功，`e2e_test.py` 現在可以穩定地啟動伺服器、上傳檔案、並在背景執行轉錄任務。
+    - **最後的 1% 問題**: 測試在最後一步「驗證任務出現在完成列表中」時超時失敗。
+    - **原因分析**: 背景的 `transcription_worker.py` 在完成工作後，會呼叫一個內部 API (`/api/internal/task_update`) 來回報狀態。我已經為此新增了對應的端點和 Pydantic 模型，並編寫了更新中央狀態 (`state_manager`) 的邏輯。然而，這個狀態更新似乎沒有被正確地透過 WebSocket 廣播給前端。
+    - **瓶頸**: 問題極有可能位於 `main.py` 中 `/api/internal/task_update` 端點的實作，或是 `state_manager` 在處理這類更新時的內部邏輯。這是目前系統中唯一剩下的、未經驗證的「斷點」。
+
+- **給下一位助理的建議**
+    - **專注焦點**: 請將所有注意力集中在 `services/api_gateway/main.py` 中的 `task_update` 函式。
+    - **除錯方向**: 驗證當該函式被呼叫時，`state_manager.update_state(updater)` 是否確實產生了 `jsonpatch`，以及 `broadcast_patch` 函式是否被成功觸發。可以嘗試在其中加入更多的 `print()` 語句來追蹤。
+    - **信心**: 我們已經非常接近成功。目前的架構是正確且穩定的，只剩下最後一個通訊環節的 Bug 需要修復。
+
 ## 2025-08-25T09:29:37+08:00
 
 ### fix(app): 徹底修復儀表板與核心業務邏輯

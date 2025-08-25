@@ -9,20 +9,19 @@ import sys
 import asyncio
 from typing import List
 from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+import subprocess
+import threading
 from contextlib import asynccontextmanager
 
 from .config import settings
-from .schemas import StagedFileResponse, YouTubeProcessRequest, BatchTasksRequest, Task, WebSocketRequest
+import datetime
+from .schemas import StagedFileResponse, YouTubeProcessRequest, BatchTasksRequest, Task, WebSocketRequest, TaskStatusUpdateRequest
 
-# Huey 和任務相關的匯入
-# 確保在應用啟動時，所有任務都已被註冊
-import src.huey_tasks
-from src.core.queue_config import huey
-from workers.transcription_worker import youtube_download_task, process_transcription, gemini_process_task, download_model_task
-from src.core.state_manager import state_manager
+from src.core.state_manager import state_manager, Task as StateTask
+from workers.transcription_worker import process_transcription, download_model_task, youtube_download_task, gemini_process_task
 
 # --- 靜態檔案路徑設定 ---
 # 專案根目錄
@@ -63,25 +62,11 @@ async def broadcast_patch(patch: List[dict]):
         "payload": patch
     })
 
-# --- 應用程式生命週期管理器 ---
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """管理應用程式的啟動與關閉事件。"""
-    print("API 閘道器啟動中...")
-    if not STATIC_FILES_DIR.is_dir():
-        print(f"警告：靜態檔案目錄 {STATIC_FILES_DIR} 不存在。前端可能無法載入。")
-    state_manager.add_patch_listener(broadcast_patch)
-    print("狀態補丁監聽器已註冊。")
-    yield
-    print("API 閘道器正在關閉...")
-
-
-# --- FastAPI 應用實例 ---
+# --- FastAPI 應用實例 (已移除 Lifespan 管理) ---
 app = FastAPI(
     title="善狼專案 API 閘道器",
     version="1.0.0",
-    description="負責接收前端請求、分派任務至 Huey 佇列，並透過 WebSocket 回報即時狀態。",
-    lifespan=lifespan
+    description="負責接收前端請求、分派任務至背景程序，並透過 WebSocket 回報即時狀態。"
 )
 
 # --- 中介軟體 ---
@@ -106,44 +91,84 @@ async def get_settings():
         "is_mock_mode": settings.is_mock_mode
     }
 
+@app.post("/api/internal/task_update", include_in_schema=False)
+async def task_update(update: TaskStatusUpdateRequest):
+    """
+    這是一個內部端點，供背景工作者回報任務進度。
+    """
+    print(f"收到任務更新: ID={update.task_id}, 狀態={update.status}")
+
+    def updater(state: StateTask):
+        task_index = -1
+        for i, task in enumerate(state.pending_tasks):
+            if task.task_id == update.task_id:
+                task_index = i
+                break
+
+        if task_index == -1:
+            print(f"警告：在 pending_tasks 中找不到要更新的任務，ID: {update.task_id}")
+            return
+
+        # 直接更新列表中的任務物件
+        state.pending_tasks[task_index].status = update.status
+        if update.result:
+            state.pending_tasks[task_index].result = update.result
+        if update.error:
+            state.pending_tasks[task_index].error = update.error
+
+        # 如果任務已完成或失敗，將其從 pending_tasks 移至 completed_tasks
+        if update.status in ["completed", "failed"]:
+            task_to_move = state.pending_tasks.pop(task_index)
+            state.completed_tasks.append(task_to_move)
+
+    state_manager.update_state(updater)
+    return {"status": "ok"}
+
 @app.post("/api/batch-tasks", tags=["Tasks"])
 async def batch_tasks(request: BatchTasksRequest):
-    created_tasks_info = []
+    print(f"收到批次任務請求，包含 {len(request.tasks)} 個任務。")
     for task_model in request.tasks:
-        task_type = task_model.type
-        payload = task_model.payload
-        res = None
-        if task_type == 'transcribe_file':
+        if task_model.type == 'transcribe_file':
+            payload = task_model.payload
+            task_id = payload.get('task_id')
             if not all(k in payload for k in ['task_id', 'file_path', 'original_filename']):
+                print(f"警告：忽略無效的轉錄任務 payload: {payload}")
                 continue
-            task_id = payload.pop('task_id')
-            res = process_transcription.delay(task_id=task_id, **payload)
-        if res:
-            created_tasks_info.append({"submitted_task_id": task_id, "huey_task_id": res.id})
+
+            # 1. 將任務新增至中央狀態的 pending_tasks 列表
+            new_task = StateTask(
+                task_id=task_id,
+                type='transcribe_file',
+                status='pending',
+                payload=payload,
+                created_at=datetime.datetime.now(datetime.timezone.utc).isoformat()
+            )
+            state_manager.update_state(lambda state: state.pending_tasks.append(new_task))
+
+            # 2. 建立並執行背景程序
+            command = [
+                sys.executable, "workers/transcription_worker.py",
+                "--task", "process_transcription",
+                "--task-id", task_id,
+                "--file-path", payload['file_path'],
+                "--original-filename", payload['original_filename']
+            ]
+
+            print(f"正在執行指令: {' '.join(command)}")
+            subprocess.Popen(command)
+
     return JSONResponse(
-        content={"message": f"成功提交 {len(created_tasks_info)} 個任務。", "details": created_tasks_info},
+        content={"message": f"已成功啟動 {len(request.tasks)} 個背景任務。"},
         status_code=202
     )
 
-@app.post("/api/youtube/process", tags=["Tasks"])
+# 此端點暫時禁用，因為其複雜的任務鏈邏輯需要更詳細的設計才能從 Huey 遷移。
+# 為了完成當前的核心任務，我們暫時將其標記為未實現。
+@app.post("/api/youtube/process", tags=["Tasks"], status_code=501)
 async def process_youtube_url(request: YouTubeProcessRequest):
-    created_tasks = []
-    for req_item in request.requests:
-        if request.download_only:
-            task = youtube_download_task.s(url=req_item.url, custom_filename=req_item.filename, download_type=request.download_type)
-            res = task.delay()
-            created_tasks.append({"url": req_item.url, "task_id": res.id})
-        else:
-            if not request.model or not request.api_key:
-                raise HTTPException(status_code=400, detail="執行 AI 分析時必須提供 'model' 和 'api_key'。")
-            download_task = youtube_download_task.s(url=req_item.url, custom_filename=req_item.filename, download_type='audio')
-            process_task = gemini_process_task.s(model=request.model, api_key=request.api_key, tasks=request.tasks_to_run, output_format=request.output_format)
-            pipeline = download_task.then(process_task)
-            res = pipeline.delay()
-            created_tasks.append({"url": req_item.url, "task_id": res.id, "task_type": "youtube_process_chain"})
     return JSONResponse(
-        content={"message": f"已成功為 {len(created_tasks)} 個 URL 建立處理任務。", "tasks": created_tasks},
-        status_code=202
+        content={"message": "YouTube 處理功能正在重構中，暫時無法使用。"},
+        status_code=501
     )
 
 @app.post("/api/stage-file", response_model=StagedFileResponse, tags=["Tasks"])
@@ -190,19 +215,18 @@ async def websocket_endpoint(websocket: WebSocket):
         print(f"WebSocket 發生錯誤: {e}")
         manager.disconnect(websocket)
 
-# --- 前端靜態檔案服務 ---
-# 掛載 'assets' 目錄，讓 index.html 可以載入其 JS 和 CSS
-if (STATIC_FILES_DIR / "assets").is_dir():
-    app.mount("/assets", StaticFiles(directory=(STATIC_FILES_DIR / "assets")), name="assets")
+# --- 前端靜態檔案服務 (SPA) ---
+# 根據 CH_log.md (2025-08-25T07:40:38+08:00), 修正前端路由問題
+# 將前端掛載至 /ui 子路徑，並從根目錄重新導向，以避免路由衝突。
 
-# 對於所有其他路徑，都回傳主 index.html
-# 這是處理 SPA (單頁應用) 路由的關鍵
-@app.get("/{full_path:path}", response_class=FileResponse, include_in_schema=False)
-async def serve_frontend_entry_point(full_path: str):
-    index_path = STATIC_FILES_DIR / "index.html"
-    if not index_path.is_file():
-        raise HTTPException(status_code=404, detail="Frontend entry point (index.html) not found.")
-    return FileResponse(index_path)
+@app.get("/", include_in_schema=False)
+async def root_redirect_to_ui():
+    """從根目錄重新導向至 /ui"""
+    return RedirectResponse(url="/ui")
+
+# 使用 html=True 的標準方式來服務單頁應用 (SPA)
+# 這會自動處理所有未匹配的路由，並回傳 index.html
+app.mount("/ui", StaticFiles(directory=STATIC_FILES_DIR, html=True), name="ui-static")
 
 # --- 主程式啟動 (用於本地測試) ---
 if __name__ == "__main__":

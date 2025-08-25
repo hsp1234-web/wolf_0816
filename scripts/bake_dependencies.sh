@@ -41,7 +41,6 @@ echo "將原始碼 (src, services, workers) 複製到烘烤目錄..."
 cp -r src "${DEPS_DIR}/"
 cp -r services "${DEPS_DIR}/"
 cp -r workers "${DEPS_DIR}/"
-cp huey_entrypoint.py "${DEPS_DIR}/"
 
 echo "將前端建置成品 (vue-app/dist) 複製到烘烤目錄..."
 # 建立 vue-app 目錄以維持路徑結構

@@ -6,8 +6,7 @@
 fastapi
 uvicorn
 
-# --- 背景任務佇列 ---
-huey
+# --- 背景任務佇列 (已移除 Huey) ---
 
 # --- 異步 HTTP 客戶端 (用於 TestClient) ---
 httpx
