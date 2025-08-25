@@ -1,0 +1,7 @@
+# This file is intentionally left blank.
+# It is used to ensure that the 'youtube_downloads' directory is tracked by Git,
+# as Git does not track empty directories. This directory is used for file uploads.
+#
+# 此檔案刻意留白。
+# 它的作用是確保 'youtube_downloads' 目錄能被 Git 追蹤，
+# 因為 Git 不會追蹤空目錄。此目錄用於檔案上傳。

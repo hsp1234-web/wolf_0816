@@ -28,6 +28,10 @@ class Task(BaseModel):
     result: Dict[str, Any] | None = None
     created_at: str
 
+class SystemStats(BaseModel):
+    cpu_usage: float | None = None
+    ram_usage: float | None = None
+
 class AppState(BaseModel):
     """
     單一應用程式狀態 (Single Application State)
@@ -38,7 +42,7 @@ class AppState(BaseModel):
     worker_statuses: Dict[str, WorkerStatus] = {}
     operation_status: OperationStatus = Field(default_factory=OperationStatus)
     local_models: LocalModelsStatus = Field(default_factory=LocalModelsStatus)
-    # 可以在此處新增更多狀態欄位
+    system_stats: SystemStats = Field(default_factory=SystemStats)
 
 # --- 中央狀態管理器 ---
 

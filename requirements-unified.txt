@@ -25,3 +25,4 @@ jsonpatch
 requests
 websockets
 pydantic-settings
+psutil # 硬體監控工作者需要
