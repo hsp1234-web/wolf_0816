@@ -1,5 +1,6 @@
 import threading
-from typing import List, Dict, Any, Callable
+import asyncio
+from typing import List, Dict, Any, Callable, Literal
 from pydantic import BaseModel, Field
 import jsonpatch
 from copy import deepcopy
@@ -20,10 +21,13 @@ class LocalModelsStatus(BaseModel):
     available: List[str] = []
     checking: bool = True
 
+# --- 新的任務狀態定義 ---
+TaskStatus = Literal['pending', 'dispatched', 'running', 'completed', 'failed']
+
 class Task(BaseModel):
     task_id: str
     type: str
-    status: str = "pending"
+    status: TaskStatus = "pending"
     payload: Dict[str, Any] = {}
     result: Dict[str, Any] | None = None
     created_at: str
@@ -84,7 +88,9 @@ class StateManager:
         if patch_list:
             print(f"狀態已更新，生成補丁: {patch_list}")
             for listener in self._patch_listeners:
-                listener(patch_list)
+                # 修正：從同步函數中呼叫異步監聽器時，必須使用 asyncio.create_task
+                # 來將其排程到事件循環中，而不是直接呼叫。
+                asyncio.create_task(listener(patch_list))
 
     def add_patch_listener(self, listener: Callable[[List[Dict]], None]):
         """

@@ -6,9 +6,11 @@ import shutil
 import uuid
 from pathlib import Path
 import sys
+import os
 import asyncio
+import logging
 from typing import List
-from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,6 +24,11 @@ from .schemas import StagedFileResponse, YouTubeProcessRequest, BatchTasksReques
 
 from src.core.state_manager import state_manager, Task as StateTask
 from workers.transcription_worker import process_transcription, download_model_task, youtube_download_task, gemini_process_task
+
+# --- 日誌設定 ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 
 # --- 靜態檔案路徑設定 ---
 # 專案根目錄
@@ -101,7 +108,7 @@ async def task_update(update: TaskStatusUpdateRequest):
     """
     這是一個內部端點，供背景工作者回報任務進度。
     """
-    print(f"收到任務更新: ID={update.task_id}, 狀態={update.status}")
+    logger.info(f"收到任務更新: ID={update.task_id}, 狀態={update.status}")
 
     def updater(state: StateTask):
         task_index = -1
@@ -111,7 +118,7 @@ async def task_update(update: TaskStatusUpdateRequest):
                 break
 
         if task_index == -1:
-            print(f"警告：在 pending_tasks 中找不到要更新的任務，ID: {update.task_id}")
+            logger.warning(f"在 pending_tasks 中找不到要更新的任務，ID: {update.task_id}")
             return
 
         # 直接更新列表中的任務物件
@@ -129,41 +136,100 @@ async def task_update(update: TaskStatusUpdateRequest):
     state_manager.update_state(updater)
     return {"status": "ok"}
 
+def log_worker_output(stream, task_id, logger_func):
+    """在一個執行緒中讀取並記錄 Worker 的輸出。"""
+    try:
+        for line in iter(stream.readline, b''):
+            if not line:
+                break
+            logger_func(f"[Worker-{task_id}] {line.decode('utf-8').strip()}")
+        stream.close()
+    except Exception as e:
+        logger_func(f"讀取 Worker-{task_id} 輸出時發生錯誤: {e}")
+
 @app.post("/api/batch-tasks", tags=["Tasks"])
-async def batch_tasks(request: BatchTasksRequest):
-    print(f"收到批次任務請求，包含 {len(request.tasks)} 個任務。")
-    for task_model in request.tasks:
-        if task_model.type == 'transcribe_file':
+async def batch_tasks(fastapi_req: Request, request: BatchTasksRequest):
+    logger.info(f"收到批次任務請求，包含 {len(request.tasks)} 個任務。")
+
+    # 這裡存在一個潛在的競爭條件，我們在迴圈外先複製一份任務列表
+    tasks_to_process = list(request.tasks)
+
+    # 從請求中獲取 API 伺服器正在監聽的埠號
+    api_port = fastapi_req.url.port
+
+    for task_model in tasks_to_process:
+        if task_model.type == 'transcription':
             payload = task_model.payload
+
+            # 修正：從 payload 中安全地獲取 file_path
+            # 在這裡，我們假設 task_id 和 file_path 是由前端在 /api/stage-file 步驟後加入的
             task_id = payload.get('task_id')
-            if not all(k in payload for k in ['task_id', 'file_path', 'original_filename']):
-                print(f"警告：忽略無效的轉錄任務 payload: {payload}")
+            file_path = payload.get('file_path')
+            original_filename = payload.get('original_filename')
+
+            if not all([task_id, file_path, original_filename]):
+                logger.error(f"錯誤：忽略無效的轉錄任務 payload，缺少 task_id 或 file_path: {payload}")
                 continue
 
-            # 1. 將任務新增至中央狀態的 pending_tasks 列表
+            # 1. 將任務新增至中央狀態
             new_task = StateTask(
                 task_id=task_id,
-                type='transcribe_file',
+                type='transcription',
                 status='pending',
                 payload=payload,
                 created_at=datetime.datetime.now(datetime.timezone.utc).isoformat()
             )
             state_manager.update_state(lambda state: state.pending_tasks.append(new_task))
 
-            # 2. 建立並執行背景程序
+            # 2. 建立 Worker 指令，並傳入 API 埠號
             command = [
                 sys.executable, "workers/transcription_worker.py",
                 "--task", "process_transcription",
-                "--task-id", task_id,
-                "--file-path", payload['file_path'],
-                "--original-filename", payload['original_filename']
+                "--task-id", str(task_id),
+                "--file-path", str(file_path),
+                "--original-filename", str(original_filename),
+                "--api-port", str(api_port)
             ]
+            logger.info(f"任務 {task_id}: 準備分派 Worker，指令: {' '.join(command)}")
 
-            print(f"正在執行指令: {' '.join(command)}")
-            subprocess.Popen(command)
+            # 3. 啟動 Worker 並監聽其輸出
+            # 獲取由 run.py 設定的依賴路徑
+            deps_path = os.environ.get("DEPS_PATH")
+            worker_env = os.environ.copy()
+            if deps_path:
+                # 這是關鍵修復：將依賴路徑設定為 Worker 的 PYTHONPATH
+                worker_env["PYTHONPATH"] = deps_path
+                logger.info(f"任務 {task_id}: 已為 Worker 設定 PYTHONPATH: {deps_path}")
+            else:
+                logger.warning(f"任務 {task_id}: 警告 - 未找到 DEPS_PATH 環境變數，Worker 可能會因缺少依賴而失敗。")
+
+            worker_proc = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=worker_env
+            )
+
+            # 建立並啟動監聽執行緒
+            stdout_thread = threading.Thread(target=log_worker_output, args=(worker_proc.stdout, task_id, logger.info))
+            stderr_thread = threading.Thread(target=log_worker_output, args=(worker_proc.stderr, task_id, logger.error))
+            stdout_thread.start()
+            stderr_thread.start()
+
+            logger.info(f"任務 {task_id}: Worker 程序已啟動，監聽執行緒已設定。")
+
+            # 4. 更新任務狀態為 'dispatched'
+            def set_dispatched(state: StateTask):
+                for task in state.pending_tasks:
+                    if task.task_id == task_id:
+                        task.status = 'dispatched'
+                        break
+
+            state_manager.update_state(set_dispatched)
+            logger.info(f"任務 {task_id}: 狀態已更新為 'dispatched'。")
 
     return JSONResponse(
-        content={"message": f"已成功啟動 {len(request.tasks)} 個背景任務。"},
+        content={"message": f"已成功分派 {len(tasks_to_process)} 個背景任務。"},
         status_code=202
     )
 
@@ -171,6 +237,7 @@ async def batch_tasks(request: BatchTasksRequest):
 # 為了完成當前的核心任務，我們暫時將其標記為未實現。
 @app.post("/api/youtube/process", tags=["Tasks"], status_code=501)
 async def process_youtube_url(request: YouTubeProcessRequest):
+    # logger.info(f"收到 YouTube 處理請求: {request.dict()}，但此功能尚未實現任務分派。")
     return JSONResponse(
         content={"message": "YouTube 處理功能正在重構中，暫時無法使用。"},
         status_code=501

@@ -177,16 +177,19 @@ const addFilesToPool = async () => {
 
   try {
     for (const file of uploadedFiles.value) {
-      // 1. 上傳檔案到暫存區並獲取 file_id
-      const response = await tasksStore.stageFile(file);
-      const file_id = response.file_id;
+      // 1. 上傳檔案到暫存區並獲取後端回傳的 file_path
+      const stageResponse = await tasksStore.stageFile(file);
+      const filePath = stageResponse.file_path; // 從回應中獲取 file_path
 
-      // 2. 將帶有 file_id 的任務加入佇列
+      // 2. 建立一個前端唯一的 task_id
+      const taskId = `task_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
+      // 3. 建立符合後端期望的任務物件
       const task = {
         type: 'transcription',
-        name: file.name,
         payload: {
-          file_id: file_id, // 使用檔案ID，而不是整個檔案
+          task_id: taskId, // 傳遞 task_id
+          file_path: filePath, // 傳遞 file_path
           original_filename: file.name,
           model: model.value,
           language: language.value,

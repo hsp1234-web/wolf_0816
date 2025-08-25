@@ -48,7 +48,9 @@ def prepare_dependencies(deps_archive_path_str):
     os.chdir(deps_path)
     # 將當前目錄（即解壓後的目錄）加入 sys.path
     sys.path.insert(0, ".")
-    print(f"核心啟動器：工作目錄已切換至 {deps_path} 並將其加入 sys.path。")
+    # 將依賴路徑儲存到環境變數中，以便子程序 (main.py) 可以存取
+    os.environ["DEPS_PATH"] = str(deps_path)
+    print(f"核心啟動器：工作目錄已切換至 {deps_path} 並將其加入 sys.path 和 DEPS_PATH 環境變數。")
     return deps_path
 
 def main():
@@ -78,7 +80,7 @@ def main():
         print(f"APP_PORT:{port}", flush=True)
 
         # 直接執行 uvicorn，因為這是此腳本現在的唯一職責
-        uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
+        uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
 
     except ImportError as e:
         print(f"啟動器錯誤：無法導入應用程式或 uvicorn。詳細資訊: {e}", file=sys.stderr)

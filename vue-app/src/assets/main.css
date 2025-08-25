@@ -317,3 +317,17 @@ select {
     background-color: var(--button-hover-bg-color);
     transform: translateY(-1px);
 }
+
+/* --- 新增的狀態樣式 --- */
+.task-status.status-pending { color: #6c757d; } /* Gray */
+.task-status.status-dispatched { color: #17a2b8; } /* Teal */
+.task-status.status-running { color: #007bff; } /* Blue */
+
+.task-error-message {
+    font-size: 0.85em;
+    color: #dc3545; /* Red */
+    margin-top: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}

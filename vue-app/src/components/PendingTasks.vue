@@ -45,6 +45,17 @@ const tasksStore = useTasksStore()
 // 建立一個計算屬性來響應式地獲取進行中的任務
 const pendingTasks = computed(() => tasksStore.pendingTasks)
 
+const getStatusText = (status) => {
+  const statusMap = {
+    pending: '待處理',
+    dispatched: '已分派',
+    running: '執行中',
+    completed: '已完成',
+    failed: '失敗'
+  };
+  return statusMap[status] || status;
+};
+
 // 格式化時間的輔助函數
 const formatTime = (seconds) => {
   if (isNaN(seconds) || seconds < 0) {

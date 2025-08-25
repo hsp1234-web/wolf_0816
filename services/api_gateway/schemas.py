@@ -64,9 +64,11 @@ class FetchGeminiModelsResponse(BaseModel):
     """獲取 Gemini 模型列表的回應模型。"""
     models: List[GeminiModel]
 
+TaskStatus = Literal['pending', 'dispatched', 'running', 'completed', 'failed']
+
 class TaskStatusUpdateRequest(BaseModel):
     """背景工作者用來回報任務狀態的請求模型。"""
     task_id: str
-    status: str
+    status: TaskStatus
     result: Optional[dict[str, Any]] = None
     error: Optional[str] = None
