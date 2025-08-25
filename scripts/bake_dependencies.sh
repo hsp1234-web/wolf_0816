@@ -36,12 +36,17 @@ mkdir -p "${DEPS_DIR}"
 echo "2/4: 正在使用 uv 安裝依賴從 ${REQUIREMENTS_FILE}..."
 uv pip install -r "${REQUIREMENTS_FILE}" --target "${DEPS_DIR}"
 
-# --- 關鍵修正：將原始碼也複製到依賴目錄中 ---
+# --- 關鍵修正：將原始碼與前端成品也複製到依賴目錄中 ---
 echo "將原始碼 (src, services, workers) 複製到烘烤目錄..."
 cp -r src "${DEPS_DIR}/"
 cp -r services "${DEPS_DIR}/"
 cp -r workers "${DEPS_DIR}/"
 cp huey_entrypoint.py "${DEPS_DIR}/"
+
+echo "將前端建置成品 (vue-app/dist) 複製到烘烤目錄..."
+# 建立 vue-app 目錄以維持路徑結構
+mkdir -p "${DEPS_DIR}/vue-app"
+cp -r vue-app/dist "${DEPS_DIR}/vue-app/"
 # --- 修正結束 ---
 
 # 使用 tar 打包依賴目錄

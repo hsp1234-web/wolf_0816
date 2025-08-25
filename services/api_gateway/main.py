@@ -7,9 +7,11 @@ import uuid
 from pathlib import Path
 import sys
 import asyncio
+import subprocess
+import threading
 from typing import List
 from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -64,16 +66,76 @@ async def broadcast_patch(patch: List[dict]):
     })
 
 # --- 應用程式生命週期管理器 ---
+huey_process = None
+
+def run_huey_consumer():
+    """在一個子程序中執行 Huey consumer。"""
+    global huey_process
+    try:
+        command = [
+            sys.executable, "-m", "huey_consumer",
+            "huey_entrypoint.huey", "--workers=4", "--worker-type=thread"
+        ]
+
+        # 使用 Popen 以非阻塞方式執行
+        # 將 PYTHONPATH 加入環境變數，確保 huey_consumer 能找到 huey_entrypoint
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(ROOT_DIR)
+
+        print("正在啟動 Huey 背景工作消費者...")
+        huey_process = subprocess.Popen(command, stdout=sys.stdout, stderr=sys.stderr, env=env)
+        huey_process.wait() # 等待子程序結束
+        print("Huey 背景工作消費者已停止。")
+
+    except Exception as e:
+        print(f"啟動 Huey consumer 時發生錯誤: {e}")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """管理應用程式的啟動與關閉事件。"""
     print("API 閘道器啟動中...")
+
+    # 關鍵修正：在主執行緒中匯入任務，並明確地初始化 worker 狀態
+    try:
+        import src.huey_tasks
+        print("Huey 任務已成功註冊。")
+
+        # 明確初始化 Worker 狀態，不再依賴導入時的副作用
+        from src.core.state_manager import WorkerStatus, AppState
+        def updater(state: AppState):
+            worker_names = ["transcription", "youtube_download", "gemini_process", "download_model"]
+            for name in worker_names:
+                if name not in state.worker_statuses:
+                    state.worker_statuses[name] = WorkerStatus(status="IDLE")
+        state_manager.update_state(updater)
+        print("工作者狀態已明確初始化。")
+
+    except Exception as e:
+        print(f"註冊 Huey 任務或初始化狀態時發生錯誤: {e}", file=sys.stderr)
+
+    # 啟動 Huey consumer 執行緒
+    huey_thread = threading.Thread(target=run_huey_consumer, daemon=True)
+    huey_thread.start()
+
     if not STATIC_FILES_DIR.is_dir():
         print(f"警告：靜態檔案目錄 {STATIC_FILES_DIR} 不存在。前端可能無法載入。")
+
     state_manager.add_patch_listener(broadcast_patch)
     print("狀態補丁監聽器已註冊。")
+
     yield
+
     print("API 閘道器正在關閉...")
+    global huey_process
+    if huey_process and huey_process.poll() is None:
+        print("正在終止 Huey 背景工作消費者...")
+        huey_process.terminate()
+        try:
+            huey_process.wait(timeout=5)
+            print("Huey consumer 已成功終止。")
+        except subprocess.TimeoutExpired:
+            print("Huey consumer 終止超時，強制終止。")
+            huey_process.kill()
 
 
 # --- FastAPI 應用實例 ---
@@ -191,18 +253,18 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
 
 # --- 前端靜態檔案服務 ---
-# 掛載 'assets' 目錄，讓 index.html 可以載入其 JS 和 CSS
-if (STATIC_FILES_DIR / "assets").is_dir():
-    app.mount("/assets", StaticFiles(directory=(STATIC_FILES_DIR / "assets")), name="assets")
+# 為了完全避免路由衝突，我們採取以下策略：
+# 1. 在根路徑 ("/") 提供一個重新導向，將使用者指向前端應用的主路徑。
+# 2. 將前端應用掛載到一個明確的子路徑 ("/ui") 上。
 
-# 對於所有其他路徑，都回傳主 index.html
-# 這是處理 SPA (單頁應用) 路由的關鍵
-@app.get("/{full_path:path}", response_class=FileResponse, include_in_schema=False)
-async def serve_frontend_entry_point(full_path: str):
-    index_path = STATIC_FILES_DIR / "index.html"
-    if not index_path.is_file():
-        raise HTTPException(status_code=404, detail="Frontend entry point (index.html) not found.")
-    return FileResponse(index_path)
+@app.get("/", include_in_schema=False)
+async def root_redirect():
+    """將根路徑重新導向至前端應用程式。"""
+    return RedirectResponse(url="/ui")
+
+# 關鍵修正：將 SPA 掛載到 "/ui" 子路徑下，並啟用 html=True 以支援前端路由。
+# 這必須是應用程式中最後一個掛載的路由。
+app.mount("/ui", StaticFiles(directory=STATIC_FILES_DIR, html=True), name="static-ui")
 
 # --- 主程式啟動 (用於本地測試) ---
 if __name__ == "__main__":

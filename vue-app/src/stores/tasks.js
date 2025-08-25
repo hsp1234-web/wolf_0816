@@ -55,7 +55,7 @@ export const useTasksStore = defineStore('tasks', {
     // --- WebSocket Actions ---
     initializeSystem() {
       if (!this.socket || this.socket.readyState === WebSocket.CLOSED) {
-        this.connectToWebSocket('/api/ws');
+        this.connectToWebSocket('/ws/status');
       }
     },
     sendMessage(type, payload = {}) {

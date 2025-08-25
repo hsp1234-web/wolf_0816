@@ -26,13 +26,13 @@ def find_available_port() -> int:
 
 def prepare_dependencies(deps_archive_path_str):
     """
-    檢查並解壓縮指定的 `dependencies.tar.gz`，將其路徑注入 `sys.path`。
+    檢查並解壓縮指定的 `dependencies.tar.gz`，然後切換工作目錄到解壓後的路徑。
     """
     print("核心啟動器：正在準備依賴環境...")
     deps_archive_path = Path(deps_archive_path_str)
     if not deps_archive_path.is_file():
         print(f"核心啟動器錯誤：依賴壓縮檔 '{deps_archive_path}' 不存在或不是一個檔案。", file=sys.stderr)
-        sys.exit(1)
+        return False
 
     deps_path = tempfile.mkdtemp(prefix="baked_deps_")
     try:
@@ -41,10 +41,14 @@ def prepare_dependencies(deps_archive_path_str):
     except (tarfile.TarError, IOError) as e:
         print(f"核心啟動器錯誤：解壓縮 '{deps_archive_path}' 時發生嚴重錯誤: {e}", file=sys.stderr)
         shutil.rmtree(deps_path)
-        sys.exit(1)
+        return False
 
-    sys.path.insert(0, deps_path)
-    print(f"核心啟動器：依賴已成功注入: {deps_path}")
+    # 關鍵修正：切換工作目錄到解壓後的依賴目錄
+    # 這可以確保 uvicorn 從正確的位置載入應用程式，而不是從原始專案目錄。
+    os.chdir(deps_path)
+    # 將當前目錄（即解壓後的目錄）加入 sys.path
+    sys.path.insert(0, ".")
+    print(f"核心啟動器：工作目錄已切換至 {deps_path} 並將其加入 sys.path。")
     return True
 
 def main():
