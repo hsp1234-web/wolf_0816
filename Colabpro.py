@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-#@title 📥🐺 善狼一鍵啟動器 (v13.1) 🐺
+#@title 📥🐺 善狼一鍵啟動器 (v14.0) 🐺
 #@markdown ---
 #@markdown ### **(1) 專案來源設定**
 #@markdown > **請提供 Git 倉庫的網址、要下載的分支或標籤，以及本地資料夾名稱。**
@@ -39,13 +39,14 @@ ENABLE_CLEAR_OUTPUT = True #@param {type:"boolean"}
 # ==                                  開發者日誌                                  ==
 # ======================================================================================
 #
-# 版本: 13.1 (架構: 錯誤修復與功能還原)
-# 日期: 2025-08-25T05:30:00+08:00
+# 版本: 14.0 (架構: 核心穩定性修復)
+# 日期: 2025-08-26T02:26:55+08:00
 #
 # 本次變更重點:
-# 1. **功能還原**: 恢復了 Colab 代理的多次重試機制。
-# 2. **功能還原**: 恢復了 Localtunnel 的密碼自動獲取與顯示功能。
-# 3. **樣式修復**: 將 HTML 日誌報告的 CSS 樣式還原至 v10 版本。
+# 1. **修復競速條件**: 徹底修復了啟動器與後端服務 (run.py) 之間的競速條件。
+#    - 先前版本在獲取到埠號後會立即停止監聽後端日誌，可能導致後端啟動失敗而無人知曉。
+#    - 新版邏輯將後端日誌監聽移至獨立的背景執行緒，確保在整個生命週期內都能捕捉到後端的狀態，
+#      大幅提高了啟動的成功率與可除錯性。
 #
 # ======================================================================================
 
@@ -332,27 +333,51 @@ def create_log_viewer_html(log_manager):
 # ==============================================================================
 # PART 3: 主啟動器邏輯
 # ==============================================================================
+def _log_subprocess_output(server_proc, log_manager, shared_state):
+    """在一個獨立的執行緒中持續讀取和記錄子程序的輸出。"""
+    if not server_proc or not server_proc.stdout:
+        return
+    for line in iter(server_proc.stdout.readline, ''):
+        line = line.strip()
+        if not line:
+            continue
+        log_manager.log("RUNNER", line)
+        # 同時檢查埠號，並更新共享狀態
+        if line.startswith("APP_PORT:"):
+            try:
+                port = int(line.split(":")[1].strip())
+                shared_state['app_port'] = port
+            except (ValueError, IndexError):
+                log_manager.log("ERROR", f"無法從行 '{line}' 中解析埠號。")
+
 def launch_application(project_path_str: str, deps_path_str: str, log_manager: DisplayManager):
     project_path = Path(project_path_str)
     shared_state = log_manager._state
     server_proc, tunnel_manager = None, None
     try:
         shared_state["status"] = "啟動後端服務中..."
+        shared_state['app_port'] = None # 初始化埠號
         log_manager.print_ui()
 
         server_command = [sys.executable, "run.py", "--deps-path", deps_path_str]
         server_proc = subprocess.Popen(server_command, cwd=project_path, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
 
-        app_port = None
-        for line in iter(server_proc.stdout.readline, ''):
-            line = line.strip()
-            log_manager.log("RUNNER", line)
-            if line.startswith("APP_PORT:"):
-                app_port = int(line.split(":")[1].strip())
-                shared_state["status"] = f"服務運行中 (埠號: {app_port})"
-                break
+        # 啟動一個日誌執行緒來持續監控後端輸出
+        log_thread = threading.Thread(target=_log_subprocess_output, args=(server_proc, log_manager, shared_state))
+        log_thread.daemon = True
+        log_thread.start()
 
-        if app_port is None: raise RuntimeError("無法從 run.py 獲取應用程式埠號。")
+        # 等待日誌執行緒從輸出中找到埠號
+        start_time = time.monotonic()
+        while shared_state.get('app_port') is None:
+            if server_proc.poll() is not None:
+                raise RuntimeError(f"伺服器程序在回報埠號前就已意外終止，返回碼: {server_proc.poll()}")
+            if time.monotonic() - start_time > 60: # 60秒超時
+                raise RuntimeError("等待後端服務回報埠號超時。")
+            time.sleep(0.5)
+
+        app_port = shared_state.get('app_port')
+        shared_state["status"] = f"服務運行中 (埠號: {app_port})"
 
         tunnel_manager = TunnelManager(app_port, shared_state, project_path, log_manager)
         tunnel_manager.start_tunnels()
