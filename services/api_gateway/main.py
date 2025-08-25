@@ -69,6 +69,11 @@ app = FastAPI(
     description="負責接收前端請求、分派任務至背景程序，並透過 WebSocket 回報即時狀態。"
 )
 
+# --- 將狀態更新與 WebSocket 廣播連接起來 ---
+# 這是修復的核心：每當 state_manager 狀態有變時，
+# 就會自動呼叫 broadcast_patch 將變更廣播出去。
+state_manager.add_patch_listener(broadcast_patch)
+
 # --- 中介軟體 ---
 app.add_middleware(
     CORSMiddleware,
