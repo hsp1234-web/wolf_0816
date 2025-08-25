@@ -128,6 +128,30 @@ def run_simulation():
                 expect(page).to_have_title("音訊轉錄儀", timeout=5000)
                 log.info("✅ 驗證成功: 頁面標題符合預期。")
 
+                # --- 新增：驗證功能啟用狀態 API ---
+                log.info("--- 正在驗證 /api/v1/status 端點與 UI 的連動 ---")
+                status_response = page.request.get(f"{api_url}/api/v1/status")
+                expect(status_response).to_be_ok()
+                status_json = status_response.json()
+                log.info(f"成功獲取功能狀態: {status_json}")
+
+                # 驗證 YouTube 處理功能是否如預期被禁用
+                youtube_feature_enabled = status_json['features']['youtube_processing']['enabled']
+                assert youtube_feature_enabled is False, "API 狀態應回報 YouTube 功能為禁用"
+
+                youtube_button_locator = page.locator("button", has_text="YouTube 轉報告")
+                expect(youtube_button_locator).to_be_disabled()
+                log.info("✅ 驗證成功: YouTube 處理按鈕已根據 API 狀態被禁用。")
+
+                # 驗證本地轉錄功能是否如預期被啟用
+                transcription_feature_enabled = status_json['features']['transcription']['enabled']
+                assert transcription_feature_enabled is True, "API 狀態應回報轉錄功能為啟用"
+
+                local_files_button_locator = page.locator("button", has_text="本機檔案轉錄")
+                expect(local_files_button_locator).to_be_enabled()
+                log.info("✅ 驗證成功: 本機檔案轉錄按鈕已根據 API 狀態被啟用。")
+                # --- 功能狀態驗證結束 ---
+
                 log.info("架構已簡化，不再有獨立的工作者或硬體監控狀態，跳過相關驗證。")
 
                 log.info("從測試腳本強制呼叫 checkLocalModels action 以確保狀態更新...")

@@ -9,10 +9,11 @@ import sys
 import os
 import asyncio
 import logging
-from typing import List
+from typing import List, Optional
 from fastapi import FastAPI, Request, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 import subprocess
 import threading
@@ -90,7 +91,44 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- 狀態回報 API 模型 ---
+class FeatureStatus(BaseModel):
+    enabled: bool
+    version: Optional[str] = None
+    message: Optional[str] = None
+    details: Optional[str] = None
+
+class Features(BaseModel):
+    transcription: FeatureStatus
+    youtube_processing: FeatureStatus
+
+class AppStatus(BaseModel):
+    features: Features
+    app_version: str
+
 # --- API 端點 ---
+
+@app.get("/api/v1/status", response_model=AppStatus, tags=["System"])
+async def get_app_status():
+    """
+    提供後端核心功能的目前狀態，讓前端能夠動態適應。
+    """
+    return AppStatus(
+        features=Features(
+            transcription=FeatureStatus(
+                enabled=True,
+                version="2.1.0",
+                details="支援 faster-whisper 模型"
+            ),
+            youtube_processing=FeatureStatus(
+                enabled=False,
+                version=None,
+                message="功能正在重構中，預計下個版本恢復"
+            )
+        ),
+        app_version="1.3.0"
+    )
+
 @app.get("/api/health", tags=["System"])
 async def health_check():
     return {"status": "ok", "message": "API Gateway is running."}

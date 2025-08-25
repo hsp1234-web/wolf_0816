@@ -64,6 +64,7 @@ import traceback
 from datetime import datetime
 from collections import deque
 import html
+import requests
 
 # --- 模擬 Colab 環境 ---
 try:
@@ -277,13 +278,22 @@ class TunnelManager:
             try:
                 if attempt > 0: self._log("INFO", f"-> {name} 正在進行第 {attempt + 1}/{max_retries} 次嘗試...")
                 if IN_COLAB:
-                    result = colab_output.eval_js(f"google.colab.kernel.proxyPort({self.port}, {{'cache': false}})", timeout_sec=self._timeout)
-                    if isinstance(result, str) and result.startswith('http'):
-                        self._state["urls"][name] = {"url": result}
-                        self._log("SUCCESS", f"✅ {name} 在第 {attempt + 1} 次嘗試後成功: {result}")
-                        return
+                    raw_url = colab_output.eval_js(f"google.colab.kernel.proxyPort({self.port}, {{'cache': false}})", timeout_sec=self._timeout)
+                    if isinstance(raw_url, str) and raw_url.startswith('http'):
+                        self._log("INFO", f"-> 取得 Colab 網址 '{raw_url}'，正在進行公開可達性驗證...")
+                        try:
+                            response = requests.head(raw_url, timeout=5)
+                            # 任何 2xx 或 3xx 回應都表示網路是通的
+                            if 200 <= response.status_code < 400:
+                                self._state["urls"][name] = {"url": raw_url}
+                                self._log("SUCCESS", f"✅ {name} 網址驗證成功 (狀態碼: {response.status_code})，在第 {attempt + 1} 次嘗試後成功: {raw_url}")
+                                return
+                            else:
+                                self._log("WARN", f"⚠️ {name} 網址 '{raw_url}' 驗證失敗，收到不成功的狀態碼: {response.status_code}")
+                        except requests.exceptions.RequestException as e:
+                            self._log("WARN", f"⚠️ {name} 網址 '{raw_url}' 驗證時發生網路錯誤: {e}")
                     else:
-                        self._log("WARN", f"⚠️ {name} 第 {attempt + 1}/{max_retries} 次嘗試未回傳有效網址 (收到: {result})")
+                        self._log("WARN", f"⚠️ {name} 第 {attempt + 1}/{max_retries} 次嘗試未回傳有效網址 (收到: {raw_url})")
                 else: # Mock behavior
                     time.sleep(1); self._state["urls"][name] = {"url": "http://mock-colab-url.dev"}; return
             except Exception as e:
