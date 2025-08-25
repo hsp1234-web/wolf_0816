@@ -13,6 +13,9 @@ PROJECT_FOLDER_NAME = "wolf_project" #@param {type:"string"}
 #@markdown **強制刷新後端程式碼 (FORCE_REPO_REFRESH)**
 #@markdown > **如果勾選，每次執行都會先刪除舊的專案資料夾，再重新下載。**
 FORCE_REPO_REFRESH = True #@param {type:"boolean"}
+#@markdown **強制刷新依賴包 (FORCE_DEPS_REFRESH)**
+#@markdown > **如果勾選，每次執行都會先刪除舊的 `dependencies.tar.gz`，強制重新產生。**
+FORCE_DEPS_REFRESH = False #@param {type:"boolean"}
 #@markdown ---
 #@markdown ### **(2) 通用設定**
 #@markdown > **此處為儀表板顯示相關的常用設定。**
@@ -398,6 +401,13 @@ if __name__ == '__main__':
     log_manager_main = DisplayManager(shared_state_main)
 
     try:
+        # --- 新增：依賴包清理邏輯 ---
+        deps_archive_path = Path(os.getcwd()) / "dependencies.tar.gz"
+        if FORCE_DEPS_REFRESH and deps_archive_path.exists():
+            log_manager_main.log("WARN", f"偵測到強制刷新依賴包選項，正在刪除舊的 {deps_archive_path.name}...")
+            deps_archive_path.unlink()
+            log_manager_main.log("SUCCESS", "✅ 舊依賴包已刪除。")
+
         project_path = download_repository(log_manager_main)
         if not project_path: raise RuntimeError("專案下載失敗")
 
