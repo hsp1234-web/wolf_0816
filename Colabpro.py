@@ -39,14 +39,15 @@ ENABLE_CLEAR_OUTPUT = True #@param {type:"boolean"}
 # ==                                  開發者日誌                                  ==
 # ======================================================================================
 #
-# 版本: 14.0 (架構: 核心穩定性修復)
-# 日期: 2025-08-26T02:26:55+08:00
+# 版本: 14.1 (架構: 通道穩健性增強)
+# 日期: 2025-08-25T11:49:00+08:00
 #
 # 本次變更重點:
-# 1. **修復競速條件**: 徹底修復了啟動器與後端服務 (run.py) 之間的競速條件。
-#    - 先前版本在獲取到埠號後會立即停止監聽後端日誌，可能導致後端啟動失敗而無人知曉。
-#    - 新版邏輯將後端日誌監聽移至獨立的背景執行緒，確保在整個生命週期內都能捕捉到後端的狀態，
-#      大幅提高了啟動的成功率與可除錯性。
+# 1. **增強 Colab URL 驗證**: 新增域名白名單驗證機制。現在會自動過濾並丟棄由 Colab
+#    API 回傳的、無法從公開網路存取的內部 URL，從根本上解決 `DNS_PROBE_FINISHED_NXDOMAIN` 錯誤。
+# 2. **修復 Localtunnel 啟動**: 將啟動指令從 `lt` 改為 `npx localtunnel`，
+#    解決了在某些環境下因 `npm` 路徑問題導致的啟動失敗，恢復了此備援通道的可用性。
+# 3. **綜合提升**: 整體提高了在不同網路環境下成功獲取可用公開網址的機率。
 #
 # ======================================================================================
 
@@ -256,37 +257,56 @@ class TunnelManager:
 
 
     def _get_localtunnel_url(self):
-        # ... (implementation is the same as v12, just uses self._log) ...
         name = "Localtunnel"
         try:
-            if shutil.which('lt') is None:
-                self._log("INFO", "安裝 localtunnel...")
-                subprocess.run(['npm', 'install', '-g', 'localtunnel'], check=True, capture_output=True)
-            command = ['lt', '--port', str(self.port), '--bypass-tunnel-reminder']
+            # 修正：避免全域安裝，改用 npx 直接執行套件，更穩健。
+            self._log("INFO", "正在使用 'npx localtunnel' 啟動通道...")
+            command = ['npx', 'localtunnel', '--port', str(self.port), '--bypass-tunnel-reminder']
             self._run_tunnel_service(name, command, r'(https?://\S+\.loca\.lt)', self._project_path)
         except Exception as e:
             self._log("ERROR", f"❌ Localtunnel 前置作業失敗: {e}")
-            self._state["urls"][name] = f"錯誤：前置作業失敗"
+            self._state["urls"][name] = {"url": "錯誤：前置作業失敗"}
 
 
     def _get_colab_url(self):
         name = "Colab"
         self._log("INFO", f"-> {name} 競速開始...")
+
+        # 修正：新增對回傳 URL 的域名驗證，過濾掉非公開的內部網址。
+        VALID_COLAB_DOMAINS = re.compile(r"\.(google\.com|googleusercontent\.com)$")
+
         max_retries = 10
         retry_delay_seconds = 8
         for attempt in range(max_retries):
             try:
                 if attempt > 0: self._log("INFO", f"-> {name} 正在進行第 {attempt + 1}/{max_retries} 次嘗試...")
+
+                result_url = ""
                 if IN_COLAB:
-                    result = colab_output.eval_js(f"google.colab.kernel.proxyPort({self.port}, {{'cache': false}})", timeout_sec=self._timeout)
-                    if isinstance(result, str) and result.startswith('http'):
-                        self._state["urls"][name] = {"url": result}
-                        self._log("SUCCESS", f"✅ {name} 在第 {attempt + 1} 次嘗試後成功: {result}")
+                    # 執行 JS 以獲取 URL
+                    raw_result = colab_output.eval_js(f"google.colab.kernel.proxyPort({self.port}, {{'cache': false}})", timeout_sec=self._timeout)
+                    if isinstance(raw_result, str) and raw_result.startswith('http'):
+                        result_url = raw_result
+                else: # Mock behavior
+                    time.sleep(1)
+                    # 在本地測試時，可以切換這個值來測試驗證邏輯
+                    # result_url = "http://mock-colab-url.dev" # 測試失敗案例
+                    result_url = "https://1234-abcd-123.colab.googleusercontent.com" # 測試成功案例
+
+                if result_url:
+                    # 驗證 URL
+                    from urllib.parse import urlparse
+                    parsed_url = urlparse(result_url)
+                    hostname = parsed_url.hostname
+                    if hostname and VALID_COLAB_DOMAINS.search(hostname):
+                        self._state["urls"][name] = {"url": result_url}
+                        self._log("SUCCESS", f"✅ {name} 在第 {attempt + 1} 次嘗試後成功 (網址已驗證): {result_url}")
                         return
                     else:
-                        self._log("WARN", f"⚠️ {name} 第 {attempt + 1}/{max_retries} 次嘗試未回傳有效網址 (收到: {result})")
-                else: # Mock behavior
-                    time.sleep(1); self._state["urls"][name] = {"url": "http://mock-colab-url.dev"}; return
+                        self._log("WARN", f"⚠️ {name} 第 {attempt + 1}/{max_retries} 次嘗試回傳了無效或非公開的網址，已丟棄: {result_url}")
+                else:
+                    self._log("WARN", f"⚠️ {name} 第 {attempt + 1}/{max_retries} 次嘗試未回傳有效網址 (收到: {raw_result})")
+
             except Exception as e:
                 self._log("WARN", f"⚠️ {name} 第 {attempt + 1}/{max_retries} 次嘗試時發生錯誤: {e}")
 
