@@ -1,116 +1,132 @@
 <template>
   <div id="app" class="container">
-    <!-- 全域操作狀態覆蓋層 -->
-    <div v-if="operationStatus.inProgress" class="installation-overlay">
+    <!-- v16 新增：初始安裝狀態覆蓋層 -->
+    <div v-if="installationStatus.inProgress || installationStatus.failed" class="installation-overlay">
       <div class="overlay-content">
-        <div class="spinner"></div>
-        <p>{{ operationStatus.message }}</p>
-        <div v-if="operationStatus.progress > 0" class="progress-bar-container">
-          <div class="progress-bar" :style="{ width: operationStatus.progress + '%' }"></div>
+        <div v-if="installationStatus.inProgress" class="spinner"></div>
+        <div v-if="installationStatus.failed" class="status-icon-failed">❌</div>
+        <p>{{ installationStatus.message }}</p>
+        <div class="log-container" v-if="installationStatus.log.length > 0">
+          <pre><code>{{ installationStatus.log.slice(-10).join('\n') }}</code></pre>
+        </div>
+        <button v-if="installationStatus.failed" @click="() => window.location.reload()">重新載入</button>
+      </div>
+    </div>
+
+    <!-- 只有在安裝完成後才顯示主應用程式 -->
+    <template v-if="installationStatus.completed">
+      <!-- 全域操作狀態覆蓋層 (用於轉錄等操作) -->
+      <div v-if="operationStatus.inProgress" class="installation-overlay">
+        <div class="overlay-content">
+          <div class="spinner"></div>
+          <p>{{ operationStatus.message }}</p>
+          <div v-if="operationStatus.progress > 0" class="progress-bar-container">
+            <div class="progress-bar" :style="{ width: operationStatus.progress + '%' }"></div>
+          </div>
         </div>
       </div>
-    </div>
 
-    <!-- 全域通知組件 -->
-    <NotificationHost />
+      <!-- 全域通知組件 -->
+      <NotificationHost />
 
-    <!-- 初始自動下載提示 -->
-    <div v-if="!initialSetup.completed" class="initial-setup-banner card">
-      <p>
-        為了優化您的初次使用體驗，系統將在 <strong>{{ initialSetup.countdown }}</strong> 秒後自動下載基礎模型 (tiny)。
-      </p>
-      <button @click="tasksStore.cancelInitialCountdown()">取消自動下載</button>
-    </div>
-
-    <!-- 標題 -->
-    <header class="card" style="display: flex; justify-content: space-between; align-items: center;">
-      <h1>音訊轉錄儀 (Vue)</h1>
-    </header>
-
-    <!-- 全域儀表板 -->
-    <Dashboard />
-
-    <!-- 功能分頁導覽 -->
-    <div class="card" :class="{ 'disabled-content': operationStatus.inProgress }">
-      <div class="tab-container">
-        <button
-          class="tab-button"
-          :class="{ active: activeTab === 'transcribe' }"
-          @click="setActiveTab('transcribe')"
-          :disabled="operationStatus.inProgress"
-        >
-          📁 本機檔案轉錄
-          <span :class="getWorkerStatusInfo('transcription').class" class="status-indicator">
-            {{ getWorkerStatusInfo('transcription').text }}
-          </span>
-        </button>
-        <button
-          class="tab-button"
-          :class="{ active: activeTab === 'downloader' }"
-          @click="setActiveTab('downloader')"
-          :disabled="operationStatus.inProgress"
-        >
-          📥 媒體下載器
-          <span :class="getWorkerStatusInfo('youtube').class" class="status-indicator">
-            {{ getWorkerStatusInfo('youtube').text }}
-          </span>
-        </button>
-        <button
-          class="tab-button"
-          :class="{ active: activeTab === 'youtube' }"
-          @click="setActiveTab('youtube')"
-          :disabled="operationStatus.inProgress"
-        >
-          ▶️ YouTube 轉報告
-          <span :class="getWorkerStatusInfo('youtube').class" class="status-indicator">
-            {{ getWorkerStatusInfo('youtube').text }}
-          </span>
-        </button>
-        <button
-          class="tab-button"
-          :class="{ active: activeTab === 'logs' }"
-          @click="setActiveTab('logs')"
-          :disabled="operationStatus.inProgress"
-        >
-          📜 系統日誌
-        </button>
-      </div>
-    </div>
-
-    <!-- 分頁內容 -->
-    <main :class="{ 'disabled-content': operationStatus.inProgress }">
-      <!-- 本機檔案轉錄分頁 -->
-      <div v-show="activeTab === 'transcribe'">
-        <TaskUploader />
+      <!-- 初始自動下載提示 -->
+      <div v-if="!initialSetup.completed" class="initial-setup-banner card">
+        <p>
+          為了優化您的初次使用體驗，系統將在 <strong>{{ initialSetup.countdown }}</strong> 秒後自動下載基礎模型 (tiny)。
+        </p>
+        <button @click="tasksStore.cancelInitialCountdown()">取消自動下載</button>
       </div>
 
-      <!-- 媒體下載器分頁 -->
-      <div v-show="activeTab === 'downloader'">
-        <Downloader />
+      <!-- 標題 -->
+      <header class="card" style="display: flex; justify-content: space-between; align-items: center;">
+        <h1>音訊轉錄儀 (Vue)</h1>
+      </header>
+
+      <!-- 全域儀表板 -->
+      <Dashboard />
+
+      <!-- 功能分頁導覽 -->
+      <div class="card" :class="{ 'disabled-content': operationStatus.inProgress }">
+        <div class="tab-container">
+          <button
+            class="tab-button"
+            :class="{ active: activeTab === 'transcribe' }"
+            @click="setActiveTab('transcribe')"
+            :disabled="operationStatus.inProgress"
+          >
+            📁 本機檔案轉錄
+            <span :class="getWorkerStatusInfo('transcription').class" class="status-indicator">
+              {{ getWorkerStatusInfo('transcription').text }}
+            </span>
+          </button>
+          <button
+            class="tab-button"
+            :class="{ active: activeTab === 'downloader' }"
+            @click="setActiveTab('downloader')"
+            :disabled="operationStatus.inProgress"
+          >
+            📥 媒體下載器
+            <span :class="getWorkerStatusInfo('youtube').class" class="status-indicator">
+              {{ getWorkerStatusInfo('youtube').text }}
+            </span>
+          </button>
+          <button
+            class="tab-button"
+            :class="{ active: activeTab === 'youtube' }"
+            @click="setActiveTab('youtube')"
+            :disabled="operationStatus.inProgress"
+          >
+            ▶️ YouTube 轉報告
+            <span :class="getWorkerStatusInfo('youtube').class" class="status-indicator">
+              {{ getWorkerStatusInfo('youtube').text }}
+            </span>
+          </button>
+          <button
+            class="tab-button"
+            :class="{ active: activeTab === 'logs' }"
+            @click="setActiveTab('logs')"
+            :disabled="operationStatus.inProgress"
+          >
+            📜 系統日誌
+          </button>
+        </div>
       </div>
 
-      <!-- YouTube 轉報告分頁 -->
-      <div v-show="activeTab === 'youtube'">
-        <YouTubeReporter />
-      </div>
+      <!-- 分頁內容 -->
+      <main :class="{ 'disabled-content': operationStatus.inProgress }">
+        <!-- 本機檔案轉錄分頁 -->
+        <div v-show="activeTab === 'transcribe'">
+          <TaskUploader />
+        </div>
 
-      <!-- 系統日誌分頁 -->
-      <div v-show="activeTab === 'logs'">
-        <LogViewer />
-      </div>
+        <!-- 媒體下載器分頁 -->
+        <div v-show="activeTab === 'downloader'">
+          <Downloader />
+        </div>
 
-      <!-- 任務佇列 -->
-      <TaskPool />
+        <!-- YouTube 轉報告分頁 -->
+        <div v-show="activeTab === 'youtube'">
+          <YouTubeReporter />
+        </div>
 
-      <!-- 任務列表 (所有分頁共用) -->
-      <div class="grid-2-col" style="margin-top: 24px;">
-        <PendingTasks />
-        <CompletedTasks />
-      </div>
+        <!-- 系統日誌分頁 -->
+        <div v-show="activeTab === 'logs'">
+          <LogViewer />
+        </div>
 
-      <!-- 即時轉錄輸出 -->
-      <TranscriptOutput v-if="activeTab === 'transcribe'" />
-    </main>
+        <!-- 任務佇列 -->
+        <TaskPool />
+
+        <!-- 任務列表 (所有分頁共用) -->
+        <div class="grid-2-col" style="margin-top: 24px;">
+          <PendingTasks />
+          <CompletedTasks />
+        </div>
+
+        <!-- 即時轉錄輸出 -->
+        <TranscriptOutput v-if="activeTab === 'transcribe'" />
+      </main>
+    </template>
   </div>
 </template>
 
@@ -138,6 +154,10 @@ const notificationStore = useNotificationStore()
 
 // --- 狀態管理 ---
 const activeTab = ref('transcribe')
+
+// v16 新增：從 store 獲取安裝狀態
+const installationStatus = computed(() => tasksStore.installationStatus)
+
 const workerStatuses = computed(() => tasksStore.workerStatuses)
 const operationStatus = computed(() => tasksStore.operationStatus)
 const initialSetup = computed(() => tasksStore.initialSetup || { completed: true })
@@ -213,15 +233,18 @@ const runStartupHealthCheckWithRetries = async () => {
 // --- 生命週期與監聽 ---
 watch(socketConnected, async (newValue, oldValue) => {
   if (newValue === true && oldValue === false) {
-    logAction('websocket-connected');
-    // 序列化初始請求：先檢查模型，再執行健康檢查
+    logAction('main-websocket-connected');
+    // 主服務 WebSocket 連接成功後，執行健康檢查
     await tasksStore.checkLocalModels();
     await runStartupHealthCheckWithRetries();
   }
 });
 
 onMounted(() => {
-  tasksStore.initializeSystem();
+  // v16 修改：程式啟動的入口點改為連接到門面伺服器
+  tasksStore.connectToFacadeServer();
+
+  // 這個可以保留，因为它獲取的是相對靜態的功能開關狀態
   systemStore.fetchFeatureStatus();
 })
 </script>
@@ -232,6 +255,36 @@ onMounted(() => {
 
 .overlay-content {
   text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.overlay-content p {
+  font-size: 1.1rem;
+  font-weight: 500;
+  margin: 0;
+}
+
+.log-container {
+  background-color: #1a1a1a;
+  color: #f0f0f0;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.8rem;
+  padding: 12px;
+  border-radius: 6px;
+  width: 80%;
+  max-width: 600px;
+  height: 200px;
+  overflow-y: auto;
+  text-align: left;
+  white-space: pre-wrap;
+  border: 1px solid #444;
+}
+
+.status-icon-failed {
+  font-size: 2rem;
 }
 
 .progress-bar-container {

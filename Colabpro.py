@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-#@title 📥🐺 善狼一鍵啟動器 (v15.0) 🐺
+#@title 📥🐺 善狼一鍵啟動器 (v16.0) 🐺
 #@markdown ---
 #@markdown ### **(1) 專案來源設定**
 #@markdown > **請提供 Git 倉庫的網址、要下載的分支或標籤，以及本地資料夾名稱。**
@@ -13,9 +13,11 @@ PROJECT_FOLDER_NAME = "wolf_project" #@param {type:"string"}
 #@markdown **強制刷新後端程式碼 (FORCE_REPO_REFRESH)**
 #@markdown > **如果勾選，每次執行都會先刪除舊的專案資料夾，再重新下載。**
 FORCE_REPO_REFRESH = True #@param {type:"boolean"}
-#@markdown **強制刷新依賴包 (FORCE_DEPS_REFRESH)**
-#@markdown > **如果勾選，每次執行都會先刪除舊的 `dependencies.tar.gz`，強制重新產生。**
+#@markdown > **v16 架構更新：舊的依賴包 (`dependencies.tar.gz`) 已被廢棄，此選項不再有效。**
 FORCE_DEPS_REFRESH = False #@param {type:"boolean"}
+#@markdown **輕量測試模式 (LIGHT_MODE)**
+#@markdown > **勾選後，將以輕量模式啟動，使用 `tiny.en` 模型並安裝較少的依賴，適合快速測試。**
+LIGHT_MODE = True #@param {type:"boolean"}
 #@markdown ---
 #@markdown ### **(2) 通用設定**
 #@markdown > **此處為儀表板顯示相關的常用設定。**
@@ -39,19 +41,18 @@ ENABLE_CLEAR_OUTPUT = True #@param {type:"boolean"}
 # ==                                  開發者日誌                                  ==
 # ======================================================================================
 #
-# 版本: 15.0 (架構: 狀態一致性與健康檢查)
-# 日期: 2025-08-25T23:54:00+08:00
+# 版本: 16.0 (架構: 分段漸進式啟動)
+# 日期: 2025-08-26T12:48:00+08:00
 #
 # 本次變更重點:
-# 1. **核心問題修復**: 統一了前端功能啟用的狀態管理邏輯。現在所有主要功能（如本機轉錄）
-#    的按鈕都直接由後端 API /api/v1/status 控制，解決了儀表板顯示「就緒」但按鈕
-#    卻被禁用的核心問題。
-# 2. **新增健康檢查**: 建立了一套完整的雙向通訊健康檢查系統。
-#    - 前端儀表板新增「執行通訊測試」按鈕。
-#    - 應用程式啟動時會自動執行帶有重試機制的健康檢查。
-# 3. **新增前端日誌**: 為所有主要的使用者操作（如提交任務、清空佇列）添加了詳細的
-#    主控台日誌記錄，並為被記錄的動作分配了穩定 ID。
-# 4. **提升可測試性**: 為主要互動元件添加了 data-testid，為未來的自動化測試奠定基礎。
+# 1. **核心架構重構**: 徹底廢除舊有的 "依賴烘烤" (`bake_dependencies.sh`) 和 `dependencies.tar.gz` 流程。
+#    引入了全新的 "分段漸進式" 啟動模型。
+# 2. **引入門面伺服器**: 新增 `src/facade_server.py`，它會秒級啟動，並立即提供前端介面，
+#    極大改善了使用者初次載入的體驗。
+# 3. **背景依賴安裝**: 新增 `src/background_installer.py`，在門面伺服器啟動後，
+#    於背景"原地"安裝所有真實依賴。安裝進度會透過 WebSocket 即時回傳前端。
+# 4. **CPU 版本優先**: 安裝流程會強制優先安裝 PyTorch 的 CPU 版本，大幅縮減依賴體積和下載時間。
+# 5. **啟動器簡化**: `Colabpro.py` 本身被大幅簡化，現在只負責下載最新程式碼和啟動門面伺服器。
 #
 # ======================================================================================
 
@@ -374,51 +375,67 @@ def _log_subprocess_output(server_proc, log_manager, shared_state):
             except (ValueError, IndexError):
                 log_manager.log("ERROR", f"無法從行 '{line}' 中解析埠號。")
 
-def launch_application(project_path_str: str, deps_path_str: str, log_manager: DisplayManager):
+def launch_application(project_path_str: str, log_manager: DisplayManager):
+    """
+    v16 架構下的新版啟動器。
+    它只負責啟動門面伺服器，並為其建立網路通道。
+    所有複雜的依賴安裝和主服務啟動都由門面伺服器自己處理。
+    """
     project_path = Path(project_path_str)
     shared_state = log_manager._state
     server_proc, tunnel_manager = None, None
+
+    # 門面伺服器固定使用 8000 埠
+    FACADE_SERVER_PORT = 8000
+
     try:
-        shared_state["status"] = "啟動後端服務中..."
-        shared_state['app_port'] = None # 初始化埠號
+        shared_state["status"] = "正在啟動門面伺服器..."
         log_manager.print_ui()
 
-        server_command = [sys.executable, "run.py", "--deps-path", deps_path_str]
-        server_proc = subprocess.Popen(server_command, cwd=project_path, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
+        # 準備啟動門面伺服器的命令
+        server_command = [
+            sys.executable, "-m", "uvicorn",
+            "src.facade_server:app",
+            "--host", "0.0.0.0",
+            "--port", str(FACADE_SERVER_PORT)
+        ]
 
-        # 啟動一個日誌執行緒來持續監控後端輸出
-        log_thread = threading.Thread(target=_log_subprocess_output, args=(server_proc, log_manager, shared_state))
-        log_thread.daemon = True
-        log_thread.start()
+        # 準備子程序的環境變數
+        server_env = os.environ.copy()
+        if LIGHT_MODE:
+            server_env["LIGHT_MODE"] = "1"
+            log_manager.log("INFO", "輕量測試模式已啟用 (設定環境變數 LIGHT_MODE=1)。")
 
-        # 等待日誌執行緒從輸出中找到埠號
-        start_time = time.monotonic()
-        while shared_state.get('app_port') is None:
-            if server_proc.poll() is not None:
-                raise RuntimeError(f"伺服器程序在回報埠號前就已意外終止，返回碼: {server_proc.poll()}")
-            if time.monotonic() - start_time > 60: # 60秒超時
-                raise RuntimeError("等待後端服務回報埠號超時。")
-            time.sleep(0.5)
+        # 直接啟動伺服器，日誌會直接輸出到 Colab Cell
+        server_proc = subprocess.Popen(server_command, cwd=project_path, text=True, encoding='utf-8', env=server_env)
 
-        app_port = shared_state.get('app_port')
-        shared_state["status"] = f"服務運行中 (埠號: {app_port})"
+        # 給伺服器一點時間啟動
+        time.sleep(5)
+        if server_proc.poll() is not None:
+             raise RuntimeError(f"門面伺服器啟動失敗，返回碼: {server_proc.poll()}")
 
-        tunnel_manager = TunnelManager(app_port, shared_state, project_path, log_manager)
+        shared_state["status"] = f"門面伺服器運行中 (埠號: {FACADE_SERVER_PORT})"
+        log_manager.log("SUCCESS", f"✅ 門面伺服器已在 http://127.0.0.1:{FACADE_SERVER_PORT} 啟動")
+
+        # 為門面伺服器啟動網路通道
+        tunnel_manager = TunnelManager(FACADE_SERVER_PORT, shared_state, project_path, log_manager)
         tunnel_manager.start_tunnels()
         shared_state["status"] = "正在建立網路通道..."
 
+        # 等待通道建立
         while len(shared_state["urls"]) < len(TUNNEL_ORDER):
             if server_proc.poll() is not None:
-                shared_state["status"] = f"❌ 服務已停止 (返回碼: {server_proc.poll()})"
+                shared_state["status"] = f"❌ 門面伺服器已停止 (返回碼: {server_proc.poll()})"
                 break
             log_manager.print_ui()
             time.sleep(UI_REFRESH_SECONDS)
 
         shared_state["all_tunnels_done"] = True
-        shared_state["status"] = "✅ 應用程式已就緒"
+        shared_state["status"] = "✅ 通道已就緒，請透過上方網址訪問介面"
+        log_manager.log("INFO", "前端介面已可訪問，後端依賴正在背景安裝中...")
         log_manager.print_ui()
 
-        log_manager.log("INFO", "主服務正在背景運行，可關閉此儲存格以終止所有服務。")
+        # 持續監控，直到使用者中斷
         server_proc.wait()
 
     except KeyboardInterrupt:
@@ -428,12 +445,16 @@ def launch_application(project_path_str: str, deps_path_str: str, log_manager: D
         traceback.print_exc()
     finally:
         shared_state["status"] = "關閉中..."
+        log_manager.print_ui()
         if tunnel_manager: tunnel_manager.stop_tunnels()
         if server_proc and server_proc.poll() is None:
-            log_manager.log("INFO", "正在終止後端伺服器...")
+            log_manager.log("INFO", "正在終止門面伺服器...")
             server_proc.terminate()
-            server_proc.wait(timeout=5)
-        log_manager.print_ui()
+            try:
+                server_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                server_proc.kill()
+
         display(HTML(create_log_viewer_html(log_manager)))
         log_manager.log("INFO", "所有服務已關閉。")
 
@@ -441,6 +462,7 @@ def launch_application(project_path_str: str, deps_path_str: str, log_manager: D
 # FINAL EXECUTION BLOCK
 # ==============================================================================
 if __name__ == '__main__':
+    # 初始化狀態管理器和日誌
     shared_state_main = {
         "start_time_monotonic": time.monotonic(),
         "status": "初始化...",
@@ -450,37 +472,34 @@ if __name__ == '__main__':
     log_manager_main = DisplayManager(shared_state_main)
 
     try:
-        # --- 新增：依賴包清理邏輯 ---
-        deps_archive_path = Path(os.getcwd()) / "dependencies.tar.gz"
-        if FORCE_DEPS_REFRESH and deps_archive_path.exists():
-            log_manager_main.log("WARN", f"偵測到強制刷新依賴包選項，正在刪除舊的 {deps_archive_path.name}...")
-            deps_archive_path.unlink()
-            log_manager_main.log("SUCCESS", "✅ 舊依賴包已刪除。")
-
+        # 步驟 1: 下載或更新專案程式碼
         project_path = download_repository(log_manager_main)
-        if not project_path: raise RuntimeError("專案下載失敗")
+        if not project_path:
+            raise RuntimeError("專案下載失敗，請檢查日誌。")
 
-        root_dir = Path(os.getcwd())
-        deps_archive_path = root_dir / "dependencies.tar.gz"
+        # 步驟 2: 安裝門面伺服器所需的最基本依賴
+        log_manager_main.log("INFO", "正在安裝門面伺服器所需的基本依賴...")
+        requirements_path = Path(project_path) / "src" / "requirements_light.txt"
+        if not requirements_path.exists():
+            raise FileNotFoundError(f"找不到輕量級依賴檔案: {requirements_path}")
 
-        if not deps_archive_path.exists():
-            log_manager_main.log("WARN", f"依賴壓縮檔不存在，正在嘗試自動建立...")
-            bake_script_path = Path(project_path) / "scripts" / "bake_dependencies.sh"
-            if not bake_script_path.exists(): raise FileNotFoundError(f"找不到烘烤腳本 {bake_script_path}")
+        pip_install_command = [sys.executable, "-m", "pip", "install", "-r", str(requirements_path)]
+        subprocess.run(pip_install_command, check=True, capture_output=True, text=True)
+        log_manager_main.log("SUCCESS", "✅ 基本依賴安裝完成。")
 
-            subprocess.run(["bash", str(bake_script_path)], cwd=project_path, check=True)
-            generated_deps = Path(project_path) / "dependencies.tar.gz"
-            if not generated_deps.exists(): raise FileNotFoundError("烘烤腳本未成功產生依賴包")
-
-            shutil.move(str(generated_deps), str(root_dir))
-            log_manager_main.log("SUCCESS", f"✅ 成功建立並移動依賴包至 '{deps_archive_path}'")
-
-        launch_application(project_path, str(deps_archive_path), log_manager_main)
+        # 步驟 3: 啟動新的應用程式架構
+        # 注意：新的 launch_application 不再需要 deps_path_str
+        launch_application(project_path, log_manager_main)
 
     except Exception as e:
         log_manager_main.log("CRITICAL", f"發生無法處理的致命錯誤: {e}")
-        traceback.print_exc()
+        # 打印詳細的 traceback 以便除錯
+        import traceback
+        log_manager_main.log("CRITICAL", traceback.format_exc())
     finally:
-        log_manager_main.log("INFO", "--- 執行結束 ---")
+        log_manager_main.log("INFO", "--- 啟動器執行結束 ---")
+        # 確保最終的 UI 狀態被打印
         log_manager_main.print_ui()
-        display(HTML(create_log_viewer_html(log_manager_main)))
+        # 確保最終的日誌報告被顯示
+        if 'project_path' in locals() and locals()['project_path']:
+             display(HTML(create_log_viewer_html(log_manager_main)))

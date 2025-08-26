@@ -6,6 +6,14 @@ import { logAction } from '@/utils/logging'
 
 // 輔助函式：提供一個結構完整的、乾淨的初始狀態物件。
 const getInitialState = () => ({
+  // v16 新增：追蹤初始依賴安裝的狀態
+  installationStatus: {
+    inProgress: true, // 預設為正在安裝
+    message: '正在連接到啟動伺服器...',
+    log: [],
+    completed: false,
+    failed: false,
+  },
   taskPool: [], // 用於存放待處理任務的佇列
   appState: {
     pending_tasks: [],
@@ -55,9 +63,65 @@ export const useTasksStore = defineStore('tasks', {
     },
 
     // --- WebSocket Actions ---
+
+    // v16 新增：連接到門面伺服器以監聽安裝進度
+    connectToFacadeServer() {
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${wsProtocol}//${window.location.host}/ws/status`;
+
+      const facadeSocket = new WebSocket(wsUrl);
+
+      facadeSocket.onopen = () => {
+        this.installationStatus.message = '連接成功！正在等待安裝日誌...';
+        this.installationStatus.log.push('伺服器連接成功，開始接收安裝進度...');
+      };
+
+      facadeSocket.onmessage = (event) => {
+        const message = event.data;
+        this.installationStatus.log.push(message);
+
+        if (message.includes("INSTALLATION_COMPLETE")) {
+          this.installationStatus.message = '核心依賴安裝完成！準備連接主服務...';
+          this.installationStatus.inProgress = false;
+          this.installationStatus.completed = true;
+          facadeSocket.close();
+          // 安裝完成，現在可以初始化主應用程式的連線
+          this.initializeSystem();
+        } else if (message.includes("INSTALLATION_FAILED")) {
+          this.installationStatus.message = '依賴安裝失敗！請檢查日誌。';
+          this.installationStatus.inProgress = false;
+          this.installationStatus.failed = true;
+        } else {
+            // 更新訊息以顯示最新進度
+            this.installationStatus.message = message;
+        }
+      };
+
+      facadeSocket.onclose = () => {
+        if (!this.installationStatus.completed && !this.installationStatus.failed) {
+          this.installationStatus.message = '與啟動伺服器的連接已斷開。請刷新頁面重試。';
+          this.installationStatus.failed = true;
+          this.installationStatus.inProgress = false;
+        }
+      };
+
+      facadeSocket.onerror = (error) => {
+        console.error('Facade WebSocket 發生錯誤:', error);
+        this.installationStatus.message = '與啟動伺服器的連接發生錯誤。';
+        this.installationStatus.failed = true;
+        this.installationStatus.inProgress = false;
+      };
+    },
+
+    // v16 修改：此函式現在只負責連接到主應用程式的 WebSocket
     initializeSystem() {
       if (!this.socket || this.socket.readyState === WebSocket.CLOSED) {
-        this.connectToWebSocket('/ws/status');
+        // 連接到主服務的 WebSocket (假設它在同一個主機，但不同路徑或埠號)
+        // 根據 background_installer.py，主服務在 8008 port，但通常會被反向代理到同一個 host
+        // 我們假設主服務的 ws 也是 /ws/status，後端需要有能力區分
+        // 為簡單起見，我們假設主服務的 ws 路徑是 /ws/main
+        // TODO: 確認主服務的 WebSocket 路徑
+        this.connectToWebSocket('/ws/main_status'); // 假設主服務的 ws 端點
       }
     },
     sendMessage(type, payload = {}) {

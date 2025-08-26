@@ -341,7 +341,7 @@ def download_model_task(model_size: str, websocket: WebSocket, manager: Connecti
 
 
 # --- WebSocket 端點 ---
-@app.websocket("/ws/status")
+@app.websocket("/ws/main_status")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     await manager.send_personal_json({"type": "full_state", "payload": state_manager.get_full_state()}, websocket)
