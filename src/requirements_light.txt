@@ -3,3 +3,9 @@
 fastapi==0.110.0
 uvicorn==0.29.0
 websockets==12.0
+
+# --- POC 修復 (Jules, 2025-08-27) ---
+# 為了解決 `facade_server` 啟動時，因間接載入 `transcriber` 模組而導致的依賴缺失問題。
+numpy<2.0
+opencc-python-reimplemented
+torch
