@@ -177,6 +177,10 @@ def run_simulation():
                 log.info(f"導航至: {target_url}")
                 page.goto(target_url, wait_until='domcontentloaded', timeout=20000)
 
+                log.info("正在擷取 UI 螢幕截圖以供分析...")
+                page.screenshot(path=str(SCREENSHOT_PATH))
+                log.info(f"螢幕截圖已儲存至: {SCREENSHOT_PATH}")
+
                 log.info("等待 Vue app 初始化 (等待 window.vue_app)...")
                 page.wait_for_function('() => window.vue_app', timeout=15000)
                 log.info("✅ Vue app 已找到！")
@@ -203,8 +207,8 @@ def run_simulation():
                 page.set_input_files('input[type="file"]', file_path)
                 log.info(f"已選擇測試檔案: {file_path}")
 
-                # 3. 新增至佇列
-                page.click("button:has-text('新增 1 個檔案至佇列')")
+                # 3. 新增至佇列 (使用 ID 選擇器以提高穩定性)
+                page.click("#add-to-queue-btn")
                 log.info("已點擊 '新增至佇列' 按鈕。")
 
                 # 4. 提交任務
@@ -225,7 +229,64 @@ def run_simulation():
                 # 就足以證明流程是成功的。
                 # status_badge = completed_task_item.locator(".task-status-badge.status-completed")
                 # expect(status_badge).to_have_text("completed", timeout=5000)
-                log.info("✅ 驗證成功: 轉錄任務已出現在「已完成任務」列表中！")
+                log.info("✅ 驗證成功: 預設轉錄任務已出現在「已完成任務」列表中！")
+
+
+                # --- 第二部分：驗證帶有特定選項的轉錄任務 ---
+                log.info("--- 開始執行帶有特定選項 (tiny, beam_size=1) 的轉錄任務測試 ---")
+
+                # 1. 確保我們在正確的分頁
+                page.click("button:has-text('本機檔案轉錄')")
+
+                # 2. 選擇模型和設定光束大小
+                log.info("選擇 'tiny' 模型...")
+                page.select_option('#model-select', 'tiny')
+                log.info("設定光束大小為 1...")
+                page.fill('#beam-size-input', '1')
+
+                # 3. 上傳同一個檔案 (先清空再選擇，確保 change 事件觸發)
+                log.info("正在清空檔案選擇...")
+                page.set_input_files('input[type="file"]', [])
+                log.info("正在重新選擇檔案...")
+                page.set_input_files('input[type="file"]', file_path)
+                log.info(f"已再次選擇測試檔案: {file_path}")
+
+                # 4. 新增至佇列 (使用 ID 選擇器以提高穩定性)
+                page.click("#add-to-queue-btn")
+
+                # 5. 提交任務
+                page.click("button:has-text('提交佇列中的 1 個任務')")
+                log.info("已提交帶有特定選項的轉錄任務。")
+
+                # 6. 等待第二個任務完成
+                # 我們預期現在「已完成」列表中有兩個項目
+                log.info("正在等待第二個任務出現在 '已完成任務' 列表中...")
+                expect(completed_tasks_card.locator(".task-item")).to_have_count(2, timeout=25000)
+                log.info("✅ 驗證成功: 第二個轉錄任務已完成！")
+
+                # --- 核心驗證：直接從 store 讀取結果 ---
+                log.info("正在從 Pinia store 獲取已完成的任務列表...")
+                completed_tasks = page.evaluate('() => window.tasksStore.completedTasks')
+                log.info(f"從 store 中獲取了 {len(completed_tasks)} 個已完成的任務。")
+
+                # 假設最後一個任務是我們剛剛提交的
+                assert len(completed_tasks) >= 1, "已完成任務列表為空"
+                last_task = completed_tasks[-1]
+
+                log.info(f"正在驗證最後一個任務的內容: {last_task}")
+                expected_text = "這是 'test-audio.txt' 的模擬轉錄結果。"
+                actual_text = last_task.get('result', {}).get('transcription')
+
+                assert actual_text == expected_text, \
+                    f"轉錄內容不符！\n預期: '{expected_text}'\n實際: '{actual_text}'"
+                log.info("✅ 驗證成功: 轉錄內容與預期完全相符！")
+
+                # 驗證 payload 中是否也正確傳遞了模型和光束大小選項
+                task_payload = last_task.get('payload', {})
+                assert task_payload.get('model') == 'tiny', f"模型選項不符！預期 'tiny'，實際 '{task_payload.get('model')}'"
+                assert task_payload.get('beamSize') == 1, f"光束大小選項不符！預期 1，實際 '{task_payload.get('beamSize')}'"
+                log.info("✅ 驗證成功: 任務 payload 中的模型和光束大小選項正確！")
+
 
                 log.info("✅ 完整的 E2E 測試成功！")
                 exit_code = 0
