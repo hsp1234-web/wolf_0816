@@ -77,16 +77,27 @@ const filename = computed(() => {
 })
 
 const fileType = computed(() => {
-  if (!previewUrl.value) return 'unknown'
-  const path = previewUrl.value
-  if (path.endsWith('.html')) return 'html'
-  if (path.endsWith('.txt')) return 'text'
-  if (['.mp3', '.wav', '.m4a', '.flac'].some(ext => path.endsWith(ext))) return 'audio'
-  if (['.mp4', '.mov', '.webm'].some(ext => path.endsWith(ext))) return 'video'
-  return 'unknown'
+  if (!props.task) return 'unknown';
+  // 新增：優先根據任務類型判斷
+  if (props.task.type === 'transcription' && props.task.result?.transcription) {
+    return 'text';
+  }
+  if (!previewUrl.value) return 'unknown';
+  const path = previewUrl.value;
+  if (path.endsWith('.html')) return 'html';
+  if (path.endsWith('.txt')) return 'text';
+  if (['.mp3', '.wav', '.m4a', '.flac'].some(ext => path.endsWith(ext))) return 'audio';
+  if (['.mp4', '.mov', '.webm'].some(ext => path.endsWith(ext))) return 'video';
+  return 'unknown';
 })
 
 const fetchTextContent = async () => {
+  // 新增：如果是轉錄任務，直接從 task prop 獲取結果，而不是發送 HTTP 請求
+  if (props.task && props.task.type === 'transcription') {
+    textContent.value = props.task.result?.transcription || '沒有可用的轉錄文字。';
+    return;
+  }
+
   if (fileType.value === 'text' && previewUrl.value) {
     try {
       textContent.value = '正在載入預覽...'

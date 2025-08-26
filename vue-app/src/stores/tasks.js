@@ -110,8 +110,19 @@ export const useTasksStore = defineStore('tasks', {
     handleSocketMessage(message) {
       const { type, payload, request_id } = message;
 
+      // 新增日誌：記錄所有收到的 WebSocket 訊息
+      console.log('[WebSocket Recv]', {
+        type: type,
+        has_payload: !!payload,
+        payload_keys: payload ? Object.keys(payload) : [],
+        has_request_id: !!request_id,
+        timestamp: new Date().toISOString()
+      });
+
+
       // JULES'S FIX: 優先處理帶有 request_id 的、點對點的回應
       if (request_id && this.pendingRequests.has(request_id)) {
+          console.log(`[WebSocket] 正在處理 request_id: ${request_id}`);
           const { resolve, reject } = this.pendingRequests.get(request_id);
           if (payload && (payload.success === false || payload.valid === false)) {
               reject(payload);
@@ -125,15 +136,22 @@ export const useTasksStore = defineStore('tasks', {
       // 處理廣播或無特定目標的訊息
       switch (type) {
         case 'full_state':
+          console.log('[WebSocket] 正在處理 full_state...');
+          // 新增日誌：將收到的完整狀態物件轉為字串印出，以便在 E2E 測試中驗證
+          console.log('收到的 full_state payload:', JSON.stringify(payload, null, 2));
           this.$patch({ appState: payload });
+          console.log('[WebSocket] full_state 已應用。');
           break;
         case 'patch':
+          console.log('[WebSocket] 正在處理 patch...');
           try {
             const newDoc = applyPatch(this.appState, payload, true).newDocument;
             this.$patch({ appState: newDoc });
+            console.log('[WebSocket] patch 已應用。');
           } catch (e) { console.error("應用補丁失敗:", e); }
           break;
         case 'LOCAL_MODELS_STATUS':
+           console.log('[WebSocket] 正在處理 LOCAL_MODELS_STATUS...');
           this.$patch(state => {
             state.appState.local_models.available = payload.models || [];
             state.appState.local_models.checking = false;
@@ -141,10 +159,12 @@ export const useTasksStore = defineStore('tasks', {
           break;
         // JULES'S FIX: 新增一個 case 來處理來自後端的系統狀態更新
         case 'SYSTEM_STATS':
+           console.log('[WebSocket] 正在處理 SYSTEM_STATS...');
           this.appState.system_stats.cpu_usage = payload.cpu_usage;
           this.appState.system_stats.ram_usage = payload.ram_usage;
           break;
         default:
+          console.warn(`[WebSocket] 未知的訊息類型: ${type}`);
           break;
       }
     },

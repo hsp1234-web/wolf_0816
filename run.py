@@ -80,7 +80,15 @@ def main():
         print(f"APP_PORT:{port}", flush=True)
 
         # 直接執行 uvicorn，因為這是此腳本現在的唯一職責
-        uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+        # 新增：加入 proxy_headers 和 forwarded_allow_ips 設定，以支援反向代理 (如 Cloudflare)
+        uvicorn.run(
+            app,
+            host="0.0.0.0",
+            port=port,
+            log_level="info",
+            proxy_headers=True,
+            forwarded_allow_ips='*'
+        )
 
     except ImportError as e:
         print(f"啟動器錯誤：無法導入應用程式或 uvicorn。詳細資訊: {e}", file=sys.stderr)
