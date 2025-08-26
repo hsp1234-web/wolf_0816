@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import axios from 'axios'
 import { applyPatch } from 'fast-json-patch'
+import { logAction } from '@/utils/logging'
 
 // 輔助函式：提供一個結構完整的、乾淨的初始狀態物件。
 const getInitialState = () => ({
@@ -27,7 +28,10 @@ const getInitialState = () => ({
 });
 
 export const useTasksStore = defineStore('tasks', {
-  state: () => getInitialState(),
+  state: () => ({
+    ...getInitialState(),
+    taskStartTimes: {}, // 新增：用於追蹤任務執行時間
+  }),
 
   getters: {
     pendingTasks: (state) => state.appState.pending_tasks,
@@ -143,11 +147,37 @@ export const useTasksStore = defineStore('tasks', {
           console.log('[WebSocket] full_state 已應用。');
           break;
         case 'patch':
-          console.log('[WebSocket] 正在處理 patch...');
+          // console.log('[WebSocket] 正在處理 patch...');
           try {
+            // --- 新增：在應用補丁前，檢查是否有任務狀態變更，以便計時 ---
+            payload.forEach(patch => {
+              const pathSegments = patch.path.split('/');
+              if (pathSegments.includes('pending_tasks') && pathSegments.includes('status')) {
+                const taskIndex = parseInt(pathSegments[pathSegments.indexOf('pending_tasks') + 1], 10);
+                const task = this.appState.pending_tasks[taskIndex];
+                if (task) {
+                  const newStatus = patch.value;
+                  if (newStatus === 'running') {
+                    this.taskStartTimes[task.task_id] = performance.now();
+                    logAction('task-status-change', `${task.payload.original_filename || task.task_id} -> running`);
+                  } else if (newStatus === 'completed' || newStatus === 'failed') {
+                    const startTime = this.taskStartTimes[task.task_id];
+                    if (startTime) {
+                      const endTime = performance.now();
+                      const duration = ((endTime - startTime) / 1000).toFixed(2);
+                      logAction('task-status-change', `${task.payload.original_filename || task.task_id} -> ${newStatus} (耗時: ${duration}s)`);
+                      delete this.taskStartTimes[task.task_id];
+                    } else {
+                       logAction('task-status-change', `${task.payload.original_filename || task.task_id} -> ${newStatus}`);
+                    }
+                  }
+                }
+              }
+            });
+
             const newDoc = applyPatch(this.appState, payload, true).newDocument;
             this.$patch({ appState: newDoc });
-            console.log('[WebSocket] patch 已應用。');
+            // console.log('[WebSocket] patch 已應用。');
           } catch (e) { console.error("應用補丁失敗:", e); }
           break;
         case 'LOCAL_MODELS_STATUS':
@@ -171,7 +201,7 @@ export const useTasksStore = defineStore('tasks', {
 
     // --- 後端 API Actions ---
     checkLocalModels() {
-      console.log("架構簡化：不再從後端檢查模型，直接假設所有模型都可用。");
+      // console.log("架構簡化：不再從後端檢查模型，直接假設所有模型都可用。");
       // 在新架構中，工作者腳本是即時執行的，模型下載是其內部邏輯的一部分。
       // 對於前端來說，我們可以假設所有模型都可以被「觸發」。
       const allModels = ['tiny', 'base', 'small', 'medium', 'large-v2', 'large-v3'];
@@ -205,13 +235,18 @@ export const useTasksStore = defineStore('tasks', {
       if (!tasks || tasks.length === 0) return;
       try {
         const tasksToSubmit = tasks.map(({ poolId, ...rest }) => rest);
+        logAction('submit-task-pool', `Submitting ${tasksToSubmit.length} tasks.`);
+        const startTime = performance.now();
         const response = await axios.post('/api/batch-tasks', {
           tasks: tasksToSubmit,
         });
+        const endTime = performance.now();
+        logAction('submit-task-pool-success', `Server responded in ${((endTime - startTime) / 1000).toFixed(2)}s.`);
         this.clearTaskPool();
         return response.data;
       } catch (error) {
         console.error('提交任務池時發生錯誤:', error);
+        logAction('submit-task-pool-failed', error.message);
         throw error;
       }
     },

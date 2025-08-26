@@ -21,6 +21,7 @@
 import { computed } from 'vue';
 import { useTasksStore } from '@/stores/tasks';
 import { useNotificationStore } from '@/stores/notifications';
+import { logAction } from '@/utils/logging';
 
 console.log('[TaskPool.vue] setting up...');
 
@@ -40,6 +41,8 @@ const clearPool = () => {
 
 const submitPool = async () => {
   if (taskPool.value.length === 0) return;
+
+  logAction('click-submit-pool', `Submitting ${taskPool.value.length} tasks from pool.`);
 
   try {
     notificationStore.addNotification('正在提交任務佇列...', 'info');

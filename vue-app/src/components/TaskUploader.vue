@@ -76,7 +76,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useTasksStore } from '@/stores/tasks'
 import { useNotificationStore } from '@/stores/notifications'
 import { logAction } from '@/utils/logging'
@@ -98,6 +98,19 @@ const language = ref('zh')
 const beamSize = ref(1)
 const uploadedFiles = ref([])
 const fileInput = ref(null)
+
+// --- 新增：監聽模型選擇變化並記錄 ---
+watch(model, (newModel, oldModel) => {
+  if (newModel !== oldModel) {
+    logAction('select-model', newModel);
+  }
+});
+
+watch(beamSize, (newSize, oldSize) => {
+  if (newSize !== oldSize) {
+    logAction('set-beam-size', newSize);
+  }
+});
 
 // --- 計算屬性 (Computed Properties) ---
 const isModelAvailable = computed(() => {
@@ -127,11 +140,17 @@ const handleFileSelect = (event) => {
 }
 
 const addFiles = (files) => {
+  const newFiles = [];
   files.forEach(file => {
     if (!uploadedFiles.value.some(f => f.name === file.name)) {
-      uploadedFiles.value.push(file)
+      newFiles.push(file);
     }
-  })
+  });
+
+  if (newFiles.length > 0) {
+    uploadedFiles.value.push(...newFiles);
+    logAction('select-files', `count: ${newFiles.length}, names: ${newFiles.map(f => f.name).join(', ')}`);
+  }
 }
 
 const removeFile = (index) => {
