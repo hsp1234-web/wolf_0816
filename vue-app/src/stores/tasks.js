@@ -270,5 +270,17 @@ export const useTasksStore = defineStore('tasks', {
         throw new Error(error.detail || '無法獲取 Gemini 模型列表');
       }
     },
+
+    async runHealthCheck() {
+      try {
+        console.log('[Health Check] Sending HEALTH_CHECK_REQUEST...');
+        const response = await this.sendRequest('HEALTH_CHECK_REQUEST', {}, 5000); // 5-second timeout
+        console.log('[Health Check] Received response:', response);
+        return { success: true, response };
+      } catch (error) {
+        console.error('[Health Check] Health check failed:', error);
+        return { success: false, error };
+      }
+    },
   }
 })

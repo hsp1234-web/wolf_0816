@@ -321,6 +321,29 @@ async def websocket_endpoint(websocket: WebSocket):
                     "payload": req.payload,
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }, websocket)
+            elif req.type == "HEALTH_CHECK_REQUEST":
+                backend_status = "ok"
+                backend_message = "後端服務運作正常"
+                try:
+                    current_state = state_manager.get_full_state()
+                    if not isinstance(current_state, dict) or not current_state.get('worker_statuses'):
+                        backend_status = "error"
+                        backend_message = "後端狀態管理器未正確初始化"
+                except Exception as e:
+                    backend_status = "error"
+                    backend_message = f"後端檢查時發生錯誤: {e}"
+
+                await manager.send_personal_json({
+                    "type": "HEALTH_CHECK_RESPONSE",
+                    "payload": {
+                        "status": "ok",
+                        "message": "通訊正常",
+                        "backend_status": backend_status,
+                        "backend_message": backend_message,
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    },
+                    "request_id": req.payload.get("request_id")
+                }, websocket)
             elif req.type == "DOWNLOAD_MODEL":
                 model_size = req.payload.get("model")
                 if model_size:

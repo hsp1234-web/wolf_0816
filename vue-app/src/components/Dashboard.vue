@@ -1,6 +1,9 @@
 <template>
   <div class="card">
-    <h2>📊 全域儀表板</h2>
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+      <h2>📊 全域儀表板</h2>
+      <button @click="performHealthCheck" :disabled="!socketConnected" title="測試與後端的雙向通訊" data-testid="health-check-button">執行通訊測試</button>
+    </div>
     <div class="dashboard-grid">
       <div class="stat-item">
         <span class="status-light" :class="statusClass"></span>
@@ -40,14 +43,16 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed } from 'vue'
 import { useTasksStore } from '@/stores/tasks'
+import { useNotificationStore } from '@/stores/notifications'
+import { logAction } from '@/utils/logging'
+
 
 const tasksStore = useTasksStore()
+const notificationStore = useNotificationStore()
 
 // 從 store 中獲取系統狀態
-// 修正：增加一個後備空物件 {}，以防止在 systemStats getter 不存在時，
-// 模板存取 undefined 的屬性而導致渲染崩潰。
 const systemStats = computed(() => tasksStore.systemStats || {})
 const socketConnected = computed(() => tasksStore.socketConnected)
 const workerStatuses = computed(() => tasksStore.workerStatuses)
@@ -60,6 +65,24 @@ const statusText = computed(() => {
     return '已離線'
   }
 })
+
+const performHealthCheck = async () => {
+  logAction('click-run-health-check');
+  notificationStore.addNotification('正在執行健康檢查...', 'info');
+  const result = await tasksStore.runHealthCheck();
+
+  if (result.success) {
+    const { backend_status, backend_message } = result.response;
+    const message = `健康檢查成功！後端狀態: ${backend_status} (${backend_message})`;
+    notificationStore.addNotification(message, 'success', 5000);
+    logAction('health-check-success', { ...result.response });
+  } else {
+    const error_message = result.error?.message || '未知錯誤';
+    const message = `健康檢查失敗: ${error_message}`;
+    notificationStore.addNotification(message, 'error', 7000);
+    logAction('health-check-failed', { error: error_message });
+  }
+};
 
 const statusClass = computed(() => {
   return {
