@@ -3,6 +3,7 @@
 # 使用 Pydantic 模型可以確保 API 的型別安全、提供資料驗證，並自動生成文件。
 
 from pydantic import BaseModel, Field
+from datetime import datetime
 from typing import List, Optional, Any, Literal
 
 # --- 通用 Schemas ---
@@ -72,3 +73,22 @@ class TaskStatusUpdateRequest(BaseModel):
     status: TaskStatus
     result: Optional[dict[str, Any]] = None
     error: Optional[str] = None
+
+# --- App 狀態回報 Schemas ---
+
+class FeatureStatus(BaseModel):
+    """單一功能的狀態。"""
+    enabled: bool
+    message: Optional[str] = None
+
+class Features(BaseModel):
+    """所有核心功能的狀態集合。"""
+    transcription: FeatureStatus
+    youtube_processing: FeatureStatus
+    model_management: FeatureStatus
+
+class AppStatusResponse(BaseModel):
+    """`/api/v1/status` 端點的回應模型。"""
+    features: Features
+    app_version: str
+    timestamp: datetime

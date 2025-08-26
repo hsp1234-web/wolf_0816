@@ -1,3 +1,29 @@
+## 2025-08-26T08:56:23+08:00
+
+### feat(fullstack): 實作功能狀態API並修復代理問題
+
+- **動機**: 解決前端 UI 與後端功能實際狀態不同步的問題，並修復在反向代理後 WebSocket 連線失敗的問題。
+- **後端變更**:
+    - 在 `services/api_gateway/main.py` 中新增了 `GET /api/v1/status` 端點，作為回報功能啟用狀態的單一事實來源。
+    - 在 `run.py` 中為 Uvicorn 加入 `proxy_headers=True` 和 `forwarded_allow_ips='*'` 參數，使其能正確處理 `X-Forwarded-Proto` 等標頭。
+- **前端變更**:
+    - 建立了新的 Pinia store `stores/system.js` 來統一管理功能狀態。
+    - 修改了 `App.vue`，使其在應用啟動時呼叫新的 API 端點以獲取狀態。
+    - 修改了 `YouTubeReporter.vue`，使其 UI 元件根據從後端獲取的狀態動態禁用。
+- **測試**:
+    - 增強了 `e2e_test.py`，加入新的測試案例以驗證 `/api/v1/status` 端點，並在健康檢查中模擬代理標頭以驗證修復。
+
+## 2025-08-26T07:49:00+08:00
+
+### fix(colab): 增強通道穩定性並過濾無效網址 (v14.1)
+
+- **動機**: 解決使用者回報的 `DNS_PROBE_FINISHED_NXDOMAIN` 錯誤，並全面提升 `Colabpro.py` 啟動器獲取公開存取網址的穩健性。
+- **核心變更**:
+    - **增強 Colab URL 驗證**: 在 `_get_colab_url` 函式中新增了域名白名單 (`.google.com`, `.googleusercontent.com`) 驗證機制，以過濾掉非公開的內部 URL。
+    - **修復 Localtunnel 啟動**: 將啟動指令修正為更穩健的 `npx localtunnel`，解決了因 `npm` 路徑問題導致的啟動失敗。
+- **設定更新**:
+    - 根據使用者要求，將 `Colabpro.py` 中的預設後端版本 (`TARGET_BRANCH_OR_TAG`) 更新為 `"703"`。
+
 ## 2025-08-26T02:29:01+08:00
 
 ### fix(launcher): 修復啟動器競速條件以確保後端穩定啟動

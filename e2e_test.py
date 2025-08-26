@@ -6,6 +6,7 @@ import logging
 import os
 import socket
 import threading
+import requests
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 # --- 繁體中文註解：基本設定 ---
@@ -55,6 +56,116 @@ def wait_for_server_and_get_port(server_proc, timeout=30):
             return None
     return None
 
+def test_status_endpoint(api_url):
+    """直接呼叫 /api/v1/status 端點並驗證其回應。"""
+    log.info(f"--- 正在測試 API 狀態端點: {api_url}/api/v1/status ---")
+    try:
+        response = requests.get(f"{api_url}/api/v1/status", timeout=10)
+        response.raise_for_status()  # 如果狀態碼不是 2xx，則引發例外
+
+        data = response.json()
+        log.info(f"成功獲取狀態回應: {data}")
+
+        # 驗證結構和內容
+        assert 'app_version' in data and data['app_version'] == "1.3.0", "app_version 不正確"
+        assert 'timestamp' in data, "缺少 timestamp"
+        assert 'features' in data, "缺少 features"
+
+        features = data['features']
+        assert 'transcription' in features and features['transcription']['enabled'] is True, "transcription 狀態不正確"
+        assert 'youtube_processing' in features and features['youtube_processing']['enabled'] is False, "youtube_processing 狀態不正確"
+        assert 'model_management' in features and features['model_management']['enabled'] is True, "model_management 狀態不正確"
+
+        log.info("✅ API 狀態端點驗證成功！")
+        return True
+    except requests.exceptions.RequestException as e:
+        log.error(f"❌ 呼叫 API 狀態端點時發生錯誤: {e}")
+        return False
+    except (AssertionError, KeyError) as e:
+        log.error(f"❌ API 狀態端點回應內容驗證失敗: {e}")
+        return False
+
+def test_websocket_echo(page, expect, api_url):
+    """測試 WebSocket echo 功能。"""
+    log.info("--- 開始執行 WebSocket Echo 驗證測試 ---")
+    debug_url = f"{api_url}/debug/ws"
+    page.goto(debug_url, wait_until='domcontentloaded', timeout=10000)
+    log.info(f"已導航至診斷頁面: {debug_url}")
+
+    # 驗證連線成功
+    status_div = page.locator("#status")
+    expect(status_div).to_have_text("連線成功 (OPEN)", timeout=15000)
+    log.info("✅ WebSocket 連線成功。")
+
+    # 發送 Ping
+    test_message = f"Hello from Playwright at {time.time()}"
+    page.fill("#ping-message", test_message)
+    page.click("#send-ping")
+    log.info(f"已發送 Ping: '{test_message}'")
+
+    # 驗證 Pong 回應
+    log_container = page.locator("#log-container")
+    # 等待包含 ECHO_RESPONSE 和我們的測試訊息的日誌條目
+    response_entry = log_container.locator(f".log-entry:has-text('onmessage')").filter(
+        has=page.locator(f".log-data:has-text('{test_message}')")
+    )
+    expect(response_entry).to_be_visible(timeout=10000)
+    log.info("✅ 成功收到並驗證 Echo 回應！")
+    return True
+
+def test_transcription_output(page, expect):
+    """執行一個完整的轉錄任務，並驗證其輸出內容。"""
+    log.info("--- 開始執行轉錄輸出驗證測試 ---")
+
+    # 1. 導航到轉錄分頁
+    page.click("button:has-text('本機檔案轉錄')")
+    log.info("已點擊 '本機檔案轉錄' 標籤。")
+
+    # 2. 設定參數
+    page.select_option("#model-select", "tiny")
+    log.info("已選擇模型: tiny")
+    page.fill("#beam-size-input", "1")
+    log.info("已設定光束大小: 1")
+
+    # 3. 上傳檔案
+    file_path = ROOT_DIR / 'vue-app' / 'tests' / 'fixtures' / 'test-audio.txt'
+    page.set_input_files('input#file-input-trigger', file_path)
+    log.info(f"已選擇測試檔案: {file_path}")
+
+    # 4. 新增至佇列並提交
+    page.click("#add-to-queue-btn")
+    log.info("已點擊 '新增至佇列' 按鈕。")
+    page.click("button.submit-btn:has-text('提交佇列中的 1 個任務')")
+    log.info("已點擊 '提交佇列' 按鈕。")
+
+    # 5. 等待任務完成並點擊預覽
+    log.info("正在等待任務出現在 '已完成任務' 列表中...")
+    completed_task_item = page.locator(".task-item:has-text('test-audio.txt')")
+    expect(completed_task_item).to_be_visible(timeout=30000)
+    log.info("任務已出現在「已完成」列表中。")
+
+    preview_button = completed_task_item.locator("a.btn-preview:has-text('預覽')")
+    preview_button.click()
+    log.info("已點擊 '預覽' 按鈕。")
+
+    # 6. 驗證預覽 Modal 中的內容
+    log.info("正在驗證預覽 Modal 的內容...")
+    modal = page.locator(".modal-content")
+    expect(modal).to_be_visible(timeout=5000)
+
+    expected_text = "這是 'test-audio.txt' 的模擬轉錄結果。"
+    # 定位到 <pre> 標籤並驗證其文字內容
+    transcription_output = modal.locator("pre")
+    expect(transcription_output).to_have_text(expected_text, timeout=5000)
+
+    log.info("✅ 驗證成功: 預覽 Modal 中的轉錄文字符合預期！")
+
+    # 關閉 Modal
+    modal.locator("button.modal-close-button").click()
+    expect(modal).not_to_be_visible(timeout=5000)
+    log.info("已關閉預覽 Modal。")
+    return True
+
 def run_simulation():
     # 使用 threading.Timer 實現總超時
     kill_flag = threading.Event()
@@ -103,6 +214,33 @@ def run_simulation():
         if not port: raise RuntimeError("無法從伺服器獲取埠號。")
         api_url = f"http://127.0.0.1:{port}"
 
+        # --- 新增：可靠的健康檢查迴圈 ---
+        log.info(f"伺服器回報埠號 {port}，現在開始健康檢查...")
+        health_check_url = f"{api_url}/api/health"
+        server_ready = False
+        start_wait = time.monotonic()
+        while time.monotonic() - start_wait < 20: # 20秒超時
+            try:
+                # 新增：在健康檢查中加入 X-Forwarded-Proto 標頭，以模擬來自反向代理的 HTTPS 請求
+                headers = {"X-Forwarded-Proto": "https"}
+                response = requests.get(health_check_url, headers=headers, timeout=2)
+                if response.status_code == 200:
+                    log.info("✅ 健康檢查成功 (已模擬代理)！伺服器已準備就緒。")
+                    server_ready = True
+                    break
+            except requests.ConnectionError:
+                time.sleep(0.5) # 伺服器尚未就緒，稍後重試
+            except requests.RequestException as e:
+                log.warning(f"健康檢查期間發生非預期錯誤: {e}")
+                time.sleep(0.5)
+
+        if not server_ready:
+            raise RuntimeError("伺服器健康檢查超時。")
+
+        # 在伺服器確認就緒後，才執行 API 測試
+        if not test_status_endpoint(api_url):
+            raise RuntimeError("API 狀態端點驗證失敗，中止測試。")
+
         # 步驟 5: Playwright 驗證
         log.info(f"--- 使用 Playwright 驗證 {api_url} ---")
         from playwright.sync_api import expect
@@ -116,6 +254,10 @@ def run_simulation():
             page.on("pageerror", lambda err: log.error(f"[Browser Page Error] {err.message}"))
 
             try:
+                # 首先執行 WebSocket echo 測試
+                if not test_websocket_echo(page, expect, api_url):
+                    raise RuntimeError("WebSocket Echo 驗證測試失敗。")
+
                 target_url = f"{api_url}/ui"
                 log.info(f"導航至: {target_url}")
                 page.goto(target_url, wait_until='domcontentloaded', timeout=20000)
@@ -134,41 +276,9 @@ def run_simulation():
                 page.evaluate('window.tasksStore.checkLocalModels()')
                 log.info("✅ 已呼叫 checkLocalModels。")
 
-                # --- 新增：執行一個完整的轉錄任務以驗證簡化後的架構 ---
-                log.info("--- 開始執行完整的轉錄任務測試 ---")
-
-                # 1. 點擊「本機檔案轉錄」標籤
-                page.click("button:has-text('本機檔案轉錄')")
-                log.info("已點擊 '本機檔案轉錄' 標籤。")
-
-                # 2. 上傳檔案
-                file_path = ROOT_DIR / 'vue-app' / 'tests' / 'fixtures' / 'test-audio.txt'
-                page.set_input_files('input[type="file"]', file_path)
-                log.info(f"已選擇測試檔案: {file_path}")
-
-                # 3. 新增至佇列
-                page.click("button:has-text('新增 1 個檔案至佇列')")
-                log.info("已點擊 '新增至佇列' 按鈕。")
-
-                # 4. 提交任務
-                page.click("button:has-text('提交佇列中的 1 個任務')")
-                log.info("已點擊 '提交佇列' 按鈕。")
-
-                # 5. 在「已完成任務」列表中驗證結果
-                log.info("正在等待任務出現在 '已完成任務' 列表中...")
-                completed_tasks_card = page.locator(".card:has-text('已完成任務')")
-                completed_task_item = completed_tasks_card.locator(".task-item:has-text('test-audio.txt')")
-
-                # 等待項目出現
-                expect(completed_task_item).to_be_visible(timeout=25000)
-
-                # 驗證狀態是否為 'completed' - 已移除
-                # 根據目前的 UI 設計 (`CompletedTasks.vue`)，成功完成的任務只會顯示操作按鈕，
-                # 不會顯示 'completed' 狀態標籤。因此，只要任務項目出現在「已完成」列表中，
-                # 就足以證明流程是成功的。
-                # status_badge = completed_task_item.locator(".task-status-badge.status-completed")
-                # expect(status_badge).to_have_text("completed", timeout=5000)
-                log.info("✅ 驗證成功: 轉錄任務已出現在「已完成任務」列表中！")
+                # --- 執行新的、更詳細的轉錄輸出驗證 ---
+                if not test_transcription_output(page, expect):
+                    raise RuntimeError("轉錄輸出驗證測試失敗。")
 
                 log.info("✅ 完整的 E2E 測試成功！")
                 exit_code = 0

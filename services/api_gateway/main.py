@@ -19,10 +19,13 @@ import threading
 from contextlib import asynccontextmanager
 
 from .config import settings
-import datetime
-from .schemas import StagedFileResponse, YouTubeProcessRequest, BatchTasksRequest, Task, WebSocketRequest, TaskStatusUpdateRequest
+from datetime import datetime, timezone
+from .schemas import (
+    StagedFileResponse, YouTubeProcessRequest, BatchTasksRequest, Task,
+    WebSocketRequest, TaskStatusUpdateRequest, AppStatusResponse, Features, FeatureStatus
+)
 
-from src.core.state_manager import state_manager, Task as StateTask
+from src.core.state_manager import state_manager, Task as StateTask, AppState, WorkerStatus
 from workers.transcription_worker import process_transcription, download_model_task, youtube_download_task, gemini_process_task
 
 # --- 日誌設定 ---
@@ -69,11 +72,30 @@ async def broadcast_patch(patch: List[dict]):
         "payload": patch
     })
 
-# --- FastAPI 應用實例 (已移除 Lifespan 管理) ---
+# --- Lifespan 管理器 ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 應用程式啟動時執行的程式碼
+    logger.info("應用程式啟動：正在初始化工作者狀態...")
+    def initialize_workers(state: AppState):
+        # 根據 CH_LOG.md 和前端的期望，我們將初始狀態設為 'READY'
+        # 這樣前端就能正確顯示「就緒」狀態
+        state.worker_statuses["transcription"] = WorkerStatus(status="READY")
+        state.worker_statuses["youtube"] = WorkerStatus(status="READY")
+
+    state_manager.update_state(initialize_workers)
+    logger.info("工作者狀態初始化完畢。")
+    yield
+    # 應用程式關閉時執行的程式碼
+    logger.info("應用程式正在關閉...")
+
+
+# --- FastAPI 應用實例 ---
 app = FastAPI(
     title="善狼專案 API 閘道器",
     version="1.0.0",
-    description="負責接收前端請求、分派任務至背景程序，並透過 WebSocket 回報即時狀態。"
+    description="負責接收前端請求、分派任務至背景程序，並透過 WebSocket 回報即時狀態。",
+    lifespan=lifespan
 )
 
 # --- 將狀態更新與 WebSocket 廣播連接起來 ---
@@ -102,6 +124,25 @@ async def get_settings():
         "api_mode": settings.API_MODE,
         "is_mock_mode": settings.is_mock_mode
     }
+
+
+@app.get("/api/v1/status", response_model=AppStatusResponse, tags=["System"])
+async def get_application_status():
+    """
+    提供前端關於後端功能可用性的單一事實來源。
+    """
+    # 根據使用者文件硬式編碼功能狀態
+    feature_statuses = Features(
+        transcription=FeatureStatus(enabled=True, message="服務正常運作中"),
+        youtube_processing=FeatureStatus(enabled=False, message="功能正在重構中，暫時無法使用。"),
+        model_management=FeatureStatus(enabled=True, message="支援本地模型管理")
+    )
+
+    return AppStatusResponse(
+        features=feature_statuses,
+        app_version=settings.APP_VERSION,
+        timestamp=datetime.now(timezone.utc)
+    )
 
 @app.post("/api/internal/task_update", include_in_schema=False)
 async def task_update(update: TaskStatusUpdateRequest):
@@ -177,7 +218,7 @@ async def batch_tasks(fastapi_req: Request, request: BatchTasksRequest):
                 type='transcription',
                 status='pending',
                 payload=payload,
-                created_at=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                created_at=datetime.now(timezone.utc).isoformat()
             )
             state_manager.update_state(lambda state: state.pending_tasks.append(new_task))
 
@@ -273,7 +314,14 @@ async def websocket_endpoint(websocket: WebSocket):
             except Exception:
                 print(f"收到無效的 WebSocket 訊息: {data}")
                 continue
-            if req.type == "DOWNLOAD_MODEL":
+            # --- 新增：處理互動式 Ping/Pong 測試 ---
+            if req.type == "ECHO_REQUEST":
+                await manager.send_personal_json({
+                    "type": "ECHO_RESPONSE",
+                    "payload": req.payload,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }, websocket)
+            elif req.type == "DOWNLOAD_MODEL":
                 model_size = req.payload.get("model")
                 if model_size:
                     print(f"收到下載 '{model_size}' 模型的請求，正在分派任務...")
@@ -290,6 +338,15 @@ async def websocket_endpoint(websocket: WebSocket):
 # --- 前端靜態檔案服務 (SPA) ---
 # 根據 CH_log.md (2025-08-25T07:40:38+08:00), 修正前端路由問題
 # 將前端掛載至 /ui 子路徑，並從根目錄重新導向，以避免路由衝突。
+
+@app.get("/debug/ws", include_in_schema=False)
+async def get_websocket_debug_page():
+    """提供一個獨立的 WebSocket 診斷頁面。"""
+    debug_page_path = ROOT_DIR / "src" / "static" / "websocket_debug.html"
+    if not debug_page_path.is_file():
+        raise HTTPException(status_code=404, detail="診斷頁面不存在。")
+    return FileResponse(debug_page_path)
+
 
 @app.get("/", include_in_schema=False)
 async def root_redirect_to_ui():
