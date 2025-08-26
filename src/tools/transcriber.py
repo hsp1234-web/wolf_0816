@@ -138,41 +138,37 @@ class Transcriber:
             log.error(f"❌ 轉錄過程中發生錯誤: {e}", exc_info=True)
             raise e
 
-def check_model(model_size: str):
+def check_model(model_size: str) -> bool:
     """
-    使用 huggingface_hub 的 API，以更可靠的方式檢查模型是否已在本地快取中。
-    這避免了依賴 faster-whisper 內部可能變動的路徑結構。
+    使用 huggingface_hub 的 API 檢查模型是否已在本地快取中。
+    返回 True 如果模型存在，否則返回 False。
     """
     log.info(f"正在使用 huggingface_hub API 檢查模型 '{model_size}'...")
     try:
-        # JULES'S FIX: 匯入 huggingface_hub 的必要工具
-        # huggingface_hub 是 faster-whisper 的一個依賴，所以它應該總是可用的。
         from huggingface_hub import snapshot_download, HfFolder
         from huggingface_hub.utils import EntryNotFoundError
 
-        # faster-whisper 模型在 Hugging Face Hub 上的 repo ID 格式
         repo_id = f"guillaumekln/faster-whisper-{model_size}"
-
-        # 嘗試僅從本地檔案下載模型。
-        # 如果模型已完整快取，此操作會成功並回傳路徑。
-        # 如果缺少任何檔案，它會引發一個錯誤。
         snapshot_download(
             repo_id=repo_id,
             local_files_only=True,
-            token=HfFolder.get_token(), # 確保使用已登入的 token（如果有的話）
-            user_agent=f"phoenix-transcriber/1.0; command/check; model/{model_size}" # JULES: 增加 User-Agent
+            token=HfFolder.get_token(),
+            user_agent=f"phoenix-transcriber/1.0; command/check; model/{model_size}"
         )
-        print("exists")
         log.info(f"✅ huggingface_hub 確認模型 '{model_size}' 已完整存在於快取中。")
-
+        if __name__ == "__main__":
+             print("exists")
+        return True
     except (FileNotFoundError, EntryNotFoundError):
-        # 這是預期中的錯誤，當模型不在快取中時會發生
-        print("not_exists")
         log.warning(f"❓ 模型 '{model_size}' 不在 huggingface_hub 的本地快取中。")
+        if __name__ == "__main__":
+            print("not_exists")
+        return False
     except Exception as e:
-        # 處理其他可能的錯誤，例如網路問題或權限問題
-        print("not_exists")
         log.error(f"檢查模型 '{model_size}' 時發生未預期的錯誤: {e}", exc_info=True)
+        if __name__ == "__main__":
+            print("not_exists")
+        return False
 
 def download_model(model_size: str):
     """下載模型並回報進度"""

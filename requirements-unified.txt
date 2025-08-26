@@ -26,3 +26,8 @@ websockets
 pydantic-settings
 psutil # 硬體監控工作者需要
 requests
+
+# --- AI/ML 轉錄模型相關 ---
+torch
+faster-whisper
+opencc-python-reimplemented

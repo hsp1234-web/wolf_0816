@@ -7,8 +7,8 @@
         <a href="/static/prompts.html" target="_blank" style="font-weight: 500;">管理提示詞 &rarr;</a>
       </div>
       <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px;">
-        <input type="password" v-model="apiKey" placeholder="在此貼上您的 Google API 金鑰" style="flex-grow: 1; padding: 10px; border-radius: 6px; border: 1px solid #ccc;">
-        <button @click="saveAndValidateApiKey">儲存金鑰</button>
+        <input type="password" v-model="apiKey" placeholder="在此貼上您的 Google API 金鑰" style="flex-grow: 1; padding: 10px; border-radius: 6px; border: 1px solid #ccc;" data-testid="api-key-input">
+        <button @click="saveAndValidateApiKey" data-testid="save-api-key-button">儲存金鑰</button>
         <button @click="clearApiKey" style="background-color: #6c757d;">清除金鑰</button>
       </div>
       <p id="api-key-status" style="margin-top: 0; font-weight: 500;">
@@ -67,7 +67,7 @@
 
     <!-- 操作按鈕 -->
     <div style="text-align: center; margin-top: 24px;">
-      <button @click="addYouTubeLinksToPool" :disabled="!isApiKeyValid || !youtubeLinks[0].url || !youtubeFeature.enabled" :title="addButtonTooltip">
+      <button @click="addYouTubeLinksToPool" :disabled="!isApiKeyValid || !youtubeLinks[0].url || !youtubeFeature.enabled" :title="addButtonTooltip" data-testid="add-youtube-to-pool-button">
         ➕ 新增 {{ youtubeLinks.filter(l => l.url).length }} 個影片至佇列
       </button>
     </div>
