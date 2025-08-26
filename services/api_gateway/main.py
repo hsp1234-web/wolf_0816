@@ -26,11 +26,12 @@ from .schemas import (
 )
 
 from src.core.state_manager import state_manager, Task as StateTask, AppState, WorkerStatus
-from workers.transcription_worker import process_transcription, download_model_task, youtube_download_task, gemini_process_task
+from src.tools.transcriber import check_model as check_model_tool, download_model as download_model_tool
 
 # --- 日誌設定 ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+log = logger # Alias for consistency
 
 
 # --- 靜態檔案路徑設定 ---
@@ -301,6 +302,44 @@ async def stage_file(file: UploadFile = File(...)):
     finally:
         await file.close()
 
+# --- 模型下載輔助函式 ---
+def download_model_task(model_size: str, websocket: WebSocket, manager: ConnectionManager):
+    """在背景執行緒中下載模型，並在完成後通知所有客戶端。"""
+    log.info(f"背景任務：開始下載模型 '{model_size}'...")
+    try:
+        # 直接呼叫工具函式，不再使用 subprocess
+        download_model_tool(model_size)
+        log.info(f"模型 '{model_size}' 下載成功。")
+
+        # 下載後，重新檢查所有模型並廣播最新狀態
+        log.info("重新檢查所有本地模型以進行廣播...")
+        available_models = []
+        all_models = ['tiny', 'base', 'small', 'medium', 'large-v2', 'large-v3']
+        for model in all_models:
+            # 直接呼叫工具函式
+            if check_model_tool(model):
+                available_models.append(model)
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(manager.broadcast_json({
+            "type": "LOCAL_MODELS_STATUS",
+            "payload": {"models": available_models, "checking": False}
+        }))
+        loop.close()
+        log.info(f"已廣播最新的可用模型列表: {available_models}")
+
+    except Exception as e:
+        log.error(f"下載模型 '{model_size}' 時發生錯誤: {e}", exc_info=True)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(manager.send_personal_json({
+            "type": "task_error",
+            "payload": {"message": f"下載模型 {model_size} 失敗: {str(e)}"}
+        }, websocket))
+        loop.close()
+
+
 # --- WebSocket 端點 ---
 @app.websocket("/ws/status")
 async def websocket_endpoint(websocket: WebSocket):
@@ -311,29 +350,71 @@ async def websocket_endpoint(websocket: WebSocket):
             data = await websocket.receive_json()
             try:
                 req = WebSocketRequest(**data)
+                request_id = req.payload.get("request_id") if req.payload else None
             except Exception:
-                print(f"收到無效的 WebSocket 訊息: {data}")
+                log.warning(f"收到無效的 WebSocket 訊息: {data}")
                 continue
-            # --- 新增：處理互動式 Ping/Pong 測試 ---
+
             if req.type == "ECHO_REQUEST":
                 await manager.send_personal_json({
                     "type": "ECHO_RESPONSE",
                     "payload": req.payload,
-                    "timestamp": datetime.now(timezone.utc).isoformat()
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "request_id": request_id
                 }, websocket)
+            elif req.type == "HEALTH_CHECK_REQUEST":
+                backend_status = "ok"
+                backend_message = "後端服務運作正常"
+                try:
+                    current_state = state_manager.get_full_state()
+                    if not isinstance(current_state, dict) or 'worker_statuses' not in current_state:
+                        backend_status = "error"
+                        backend_message = "後端狀態管理器未正確初始化"
+                except Exception as e:
+                    backend_status = "error"
+                    backend_message = f"後端檢查時發生錯誤: {e}"
+
+                await manager.send_personal_json({
+                    "type": "HEALTH_CHECK_RESPONSE",
+                    "payload": { "status": "ok", "message": "通訊正常", "backend_status": backend_status, "backend_message": backend_message },
+                    "request_id": request_id
+                }, websocket)
+
+            elif req.type == "CHECK_LOCAL_MODELS":
+                log.info("收到 CHECK_LOCAL_MODELS 請求，開始檢查本地模型...")
+                available_models = []
+                all_models = ['tiny', 'base', 'small', 'medium', 'large-v2', 'large-v3']
+                for model_size in all_models:
+                    if check_model_tool(model_size):
+                        available_models.append(model_size)
+
+                await manager.send_personal_json({
+                    "type": "LOCAL_MODELS_STATUS",
+                    "payload": {"models": available_models, "checking": False},
+                    "request_id": request_id
+                }, websocket)
+                log.info(f"已發送 LOCAL_MODELS_STATUS，可用模型: {available_models}")
+
             elif req.type == "DOWNLOAD_MODEL":
                 model_size = req.payload.get("model")
                 if model_size:
-                    print(f"收到下載 '{model_size}' 模型的請求，正在分派任務...")
-                    download_model_task.delay(model_size)
-            else:
-                await manager.send_personal_json({"type": "ECHO", "request_id": req.request_id, "payload": req.dict()}, websocket)
+                    log.info(f"收到下載 '{model_size}' 模型的請求，分派背景任務...")
+                    threading.Thread(target=download_model_task, args=(model_size, websocket, manager)).start()
+                    await manager.send_personal_json({
+                        "type": "task_started",
+                        "payload": {"task": "download_model", "model": model_size},
+                        "request_id": request_id
+                    }, websocket)
+
+            # 可以在此處添加其他 WebSocket 請求的處理邏輯...
+
     except WebSocketDisconnect:
         manager.disconnect(websocket)
-        print("一個客戶端已離線")
+        log.info("一個客戶端已離線")
     except Exception as e:
-        print(f"WebSocket 發生錯誤: {e}")
-        manager.disconnect(websocket)
+        log.error(f"WebSocket 發生錯誤: {e}", exc_info=True)
+        if websocket in manager.active_connections:
+            manager.disconnect(websocket)
 
 # --- 前端靜態檔案服務 (SPA) ---
 # 根據 CH_log.md (2025-08-25T07:40:38+08:00), 修正前端路由問題

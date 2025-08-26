@@ -17,7 +17,7 @@ VUE_APP_DIR = ROOT_DIR / "vue-app"
 BAKE_SCRIPT_PATH = ROOT_DIR / "scripts" / "bake_dependencies.sh"
 DEPS_ARCHIVE_PATH = ROOT_DIR / "dependencies.tar.gz"
 SCREENSHOT_PATH = ROOT_DIR / "colab_sim_screenshot.png"
-SIMULATION_TIMEOUT = 100 # 依照使用者要求設定100秒超時
+SIMULATION_TIMEOUT = 200 # 增加超時以容納模型下載
 
 def execute_command(command, cwd, step_name):
     """執行一個 shell 指令並記錄日誌"""
@@ -25,7 +25,7 @@ def execute_command(command, cwd, step_name):
     try:
         result = subprocess.run(
             command, cwd=cwd, check=True, capture_output=True,
-            text=True, encoding='utf-8', timeout=180
+            text=True, encoding='utf-8', timeout=600
         )
         log.info(f"✅ {step_name} 成功")
         log.debug(result.stdout)
@@ -122,20 +122,20 @@ def test_transcription_output(page, expect):
     log.info("已點擊 '本機檔案轉錄' 標籤。")
 
     # 2. 設定參數
-    page.select_option("#model-select", "tiny")
+    page.select_option('[data-testid="model-selector"]', "tiny")
     log.info("已選擇模型: tiny")
     page.fill("#beam-size-input", "1")
     log.info("已設定光束大小: 1")
 
     # 3. 上傳檔案
     file_path = ROOT_DIR / 'vue-app' / 'tests' / 'fixtures' / 'test-audio.txt'
-    page.set_input_files('input#file-input-trigger', file_path)
+    page.set_input_files('[data-testid="file-input"]', file_path)
     log.info(f"已選擇測試檔案: {file_path}")
 
     # 4. 新增至佇列並提交
-    page.click("#add-to-queue-btn")
+    page.click('[data-testid="add-to-queue-button"]')
     log.info("已點擊 '新增至佇列' 按鈕。")
-    page.click("button.submit-btn:has-text('提交佇列中的 1 個任務')")
+    page.click('[data-testid="submit-queue-button"]')
     log.info("已點擊 '提交佇列' 按鈕。")
 
     # 5. 等待任務完成並點擊預覽
@@ -164,6 +164,64 @@ def test_transcription_output(page, expect):
     modal.locator("button.modal-close-button").click()
     expect(modal).not_to_be_visible(timeout=5000)
     log.info("已關閉預覽 Modal。")
+    return True
+
+def test_model_download(page, expect):
+    """測試模型下載功能。"""
+    log.info("--- 開始執行模型下載驗證測試 ---")
+
+    # 1. 導航到轉錄分頁
+    page.click("button:has-text('本機檔案轉錄')")
+
+    # 2. 選擇一個預期不存在的模型
+    model_to_download = "base"
+    page.select_option('[data-testid="model-selector"]', model_to_download)
+    log.info(f"已選擇模型: {model_to_download}")
+
+    # 3. 驗證下載按鈕的初始狀態
+    download_button = page.locator('[data-testid="download-model-button"]')
+    # 在執行 checkLocalModels 之後，按鈕文字會是 "下載模型"
+    expect(download_button).to_have_text("📥 下載模型", timeout=10000)
+    expect(download_button).to_be_enabled()
+    log.info("✅ 驗證成功: 下載按鈕處於正確的初始狀態。")
+
+    # 4. 點擊下載
+    download_button.click()
+
+    # 5. 等待按鈕狀態變為「已就緒」
+    # 這隱含地測試了後端的下載和 WebSocket 廣播功能
+    expect(download_button).to_have_text("✅ 模型已就緒", timeout=120000) # 給予足夠的下載時間 (2分鐘)
+    log.info("✅ 驗證成功: 模型下載完成，按鈕狀態已更新。")
+
+    # 6. 驗證 store 中的狀態
+    available_models = page.evaluate("() => window.tasksStore.localModels.available")
+    assert model_to_download in available_models
+    log.info(f"✅ 驗證成功: '{model_to_download}' 模型已存在於前端 store 的可用列表中。")
+
+    return True
+
+def test_health_check_button(page, expect):
+    """測試手動觸發的健康檢查按鈕。"""
+    log.info("--- 開始執行手動健康檢查按鈕驗證測試 ---")
+
+    # 1. 定位並點擊按鈕
+    health_check_button = page.locator('[data-testid="health-check-button"]')
+    expect(health_check_button).to_be_enabled(timeout=10000)
+    health_check_button.click()
+    log.info("已點擊 '執行通訊測試' 按鈕。")
+
+    # 2. 驗證成功通知
+    # 等待一個 class 為 'notification-success' 且包含特定文字的元素出現
+    success_notification = page.locator(
+        ".notification.notification-success:has-text('健康檢查成功！')"
+    )
+    expect(success_notification).to_be_visible(timeout=10000)
+    log.info("✅ 驗證成功: 健康檢查成功的通知已顯示。")
+
+    # 點擊關閉按鈕以清理UI，避免影響後續測試
+    success_notification.locator("button.close-button").click()
+    expect(success_notification).not_to_be_visible(timeout=5000)
+    log.info("已關閉健康檢查通知。")
     return True
 
 def run_simulation():
@@ -266,9 +324,24 @@ def run_simulation():
                 page.wait_for_function('() => window.vue_app', timeout=15000)
                 log.info("✅ Vue app 已找到！")
 
+                # --- 驗證啟動時自動健康檢查 ---
+                log.info("--- 正在驗證啟動時自動健康檢查 ---")
+                startup_success_notification = page.locator(
+                    ".notification.notification-success:has-text('啟動健康檢查成功！')"
+                )
+                expect(startup_success_notification).to_be_visible(timeout=15000) # Give it some time for retries
+                log.info("✅ 驗證成功: 啟動時健康檢查成功的通知已顯示。")
+                # Clean up the notification to not interfere with other tests
+                startup_success_notification.locator("button.close-button").click()
+                expect(startup_success_notification).not_to_be_visible(timeout=5000)
+
                 log.info("正在驗證頁面標題...")
                 expect(page).to_have_title("音訊轉錄儀", timeout=5000)
                 log.info("✅ 驗證成功: 頁面標題符合預期。")
+
+                # --- 執行新的手動健康檢查測試 ---
+                if not test_health_check_button(page, expect):
+                    raise RuntimeError("手動健康檢查按鈕驗證測試失敗。")
 
                 log.info("架構已簡化，不再有獨立的工作者或硬體監控狀態，跳過相關驗證。")
 
@@ -279,6 +352,10 @@ def run_simulation():
                 # --- 執行新的、更詳細的轉錄輸出驗證 ---
                 if not test_transcription_output(page, expect):
                     raise RuntimeError("轉錄輸出驗證測試失敗。")
+
+                # --- 執行模型下載測試 ---
+                if not test_model_download(page, expect):
+                    raise RuntimeError("模型下載驗證測試失敗。")
 
                 log.info("✅ 完整的 E2E 測試成功！")
                 exit_code = 0

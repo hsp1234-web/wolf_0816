@@ -11,8 +11,8 @@
       </div>
     </div>
     <div class="pool-actions">
-      <button @click="submitPool" class="submit-btn">🚀 提交佇列中的 {{ taskPool.length }} 個任務</button>
-      <button @click="clearPool" class="clear-btn">清空佇列</button>
+      <button @click="submitPool" class="submit-btn" data-testid="submit-queue-button">🚀 提交佇列中的 {{ taskPool.length }} 個任務</button>
+      <button @click="clearPool" class="clear-btn" data-testid="clear-queue-button">清空佇列</button>
     </div>
   </div>
 </template>
@@ -21,6 +21,7 @@
 import { computed } from 'vue';
 import { useTasksStore } from '@/stores/tasks';
 import { useNotificationStore } from '@/stores/notifications';
+import { logAction } from '@/utils/logging';
 
 console.log('[TaskPool.vue] setting up...');
 
@@ -30,16 +31,19 @@ const notificationStore = useNotificationStore();
 const taskPool = computed(() => tasksStore.taskPool);
 
 const removeTask = (poolId) => {
+  logAction('click-remove-task-from-pool', poolId);
   tasksStore.removeTaskFromPool(poolId);
 };
 
 const clearPool = () => {
+  logAction('click-clear-task-pool');
   tasksStore.clearTaskPool();
   notificationStore.addNotification('任務佇列已清空', 'info');
 };
 
 const submitPool = async () => {
   if (taskPool.value.length === 0) return;
+  logAction('click-submit-task-pool', `task_count: ${taskPool.value.length}`);
 
   try {
     notificationStore.addNotification('正在提交任務佇列...', 'info');
