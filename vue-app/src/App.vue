@@ -115,9 +115,10 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import { useTasksStore } from './stores/tasks'
-import { useSystemStore } from './stores/system' // 新增：導入 system store
+import { useSystemStore } from './stores/system'
+import { useNotificationStore } from './stores/notifications'
 import { logAction } from './utils/logging'
 import Dashboard from './components/Dashboard.vue'
 import TaskUploader from './components/TaskUploader.vue'
@@ -132,15 +133,16 @@ import TaskPool from './components/TaskPool.vue'
 
 // 獲取 Pinia store 的實例
 const tasksStore = useTasksStore()
-const systemStore = useSystemStore() // 新增
+const systemStore = useSystemStore()
+const notificationStore = useNotificationStore()
 
 // --- 狀態管理 ---
 const activeTab = ref('transcribe')
 const workerStatuses = computed(() => tasksStore.workerStatuses)
 const operationStatus = computed(() => tasksStore.operationStatus)
-// 修正：增加一個後備物件，以防止在 initialSetup getter 不存在時，
-// 模板存取 undefined 的屬性而導致渲染崩潰。
 const initialSetup = computed(() => tasksStore.initialSetup || { completed: true })
+const socketConnected = computed(() => tasksStore.socketConnected);
+
 
 // --- 方法 ---
 
@@ -184,11 +186,40 @@ const setActiveTab = (tabName) => {
   }
 }
 
-// --- 生命週期鉤子 ---
+// --- 啟動時健康檢查 ---
+const runStartupHealthCheckWithRetries = async () => {
+  const maxRetries = 2; // 總共嘗試 1+2=3 次
+  for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+    notificationStore.addNotification(`(第 ${attempt} 次) 正在執行啟動健康檢查...`, 'info', 3000);
+    const result = await tasksStore.runHealthCheck();
+
+    if (result.success && result.response.backend_status === 'ok') {
+      notificationStore.addNotification('✅ 啟動健康檢查成功！系統已就緒。', 'success', 5000);
+      logAction('startup-health-check-success', { attempt });
+      return; // 成功，退出循環
+    } else {
+      const errorMessage = result.error?.message || result.response?.backend_message || '後端回報狀態不佳';
+      logAction('startup-health-check-failed', { attempt, error: errorMessage });
+      if (attempt <= maxRetries) {
+        notificationStore.addNotification(`⚠️ 健康檢查失敗 (${errorMessage})，3 秒後重試...`, 'warning', 3000);
+        await new Promise(resolve => setTimeout(resolve, 3000));
+      } else {
+        notificationStore.addNotification(`❌ 啟動健康檢查在多次嘗試後依然失敗，請檢查主控台。`, 'error', 10000);
+      }
+    }
+  }
+};
+
+// --- 生命週期與監聽 ---
+watch(socketConnected, (newValue, oldValue) => {
+  if (newValue === true && oldValue === false) {
+    logAction('websocket-connected');
+    runStartupHealthCheckWithRetries();
+  }
+});
+
 onMounted(() => {
-  // 使用新的兩階段啟動方法
   tasksStore.initializeSystem();
-  // 新增：在應用啟動時獲取後端功能狀態
   systemStore.fetchFeatureStatus();
 })
 </script>

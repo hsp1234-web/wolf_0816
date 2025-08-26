@@ -122,20 +122,20 @@ def test_transcription_output(page, expect):
     log.info("已點擊 '本機檔案轉錄' 標籤。")
 
     # 2. 設定參數
-    page.select_option("#model-select", "tiny")
+    page.select_option('[data-testid="model-selector"]', "tiny")
     log.info("已選擇模型: tiny")
     page.fill("#beam-size-input", "1")
     log.info("已設定光束大小: 1")
 
     # 3. 上傳檔案
     file_path = ROOT_DIR / 'vue-app' / 'tests' / 'fixtures' / 'test-audio.txt'
-    page.set_input_files('input#file-input-trigger', file_path)
+    page.set_input_files('[data-testid="file-input"]', file_path)
     log.info(f"已選擇測試檔案: {file_path}")
 
     # 4. 新增至佇列並提交
-    page.click("#add-to-queue-btn")
+    page.click('[data-testid="add-to-queue-button"]')
     log.info("已點擊 '新增至佇列' 按鈕。")
-    page.click("button.submit-btn:has-text('提交佇列中的 1 個任務')")
+    page.click('[data-testid="submit-queue-button"]')
     log.info("已點擊 '提交佇列' 按鈕。")
 
     # 5. 等待任務完成並點擊預覽
@@ -164,6 +164,30 @@ def test_transcription_output(page, expect):
     modal.locator("button.modal-close-button").click()
     expect(modal).not_to_be_visible(timeout=5000)
     log.info("已關閉預覽 Modal。")
+    return True
+
+def test_health_check_button(page, expect):
+    """測試手動觸發的健康檢查按鈕。"""
+    log.info("--- 開始執行手動健康檢查按鈕驗證測試 ---")
+
+    # 1. 定位並點擊按鈕
+    health_check_button = page.locator('[data-testid="health-check-button"]')
+    expect(health_check_button).to_be_enabled(timeout=10000)
+    health_check_button.click()
+    log.info("已點擊 '執行通訊測試' 按鈕。")
+
+    # 2. 驗證成功通知
+    # 等待一個 class 為 'notification-success' 且包含特定文字的元素出現
+    success_notification = page.locator(
+        ".notification.notification-success:has-text('健康檢查成功！')"
+    )
+    expect(success_notification).to_be_visible(timeout=10000)
+    log.info("✅ 驗證成功: 健康檢查成功的通知已顯示。")
+
+    # 點擊關閉按鈕以清理UI，避免影響後續測試
+    success_notification.locator("button.close-button").click()
+    expect(success_notification).not_to_be_visible(timeout=5000)
+    log.info("已關閉健康檢查通知。")
     return True
 
 def run_simulation():
@@ -266,9 +290,24 @@ def run_simulation():
                 page.wait_for_function('() => window.vue_app', timeout=15000)
                 log.info("✅ Vue app 已找到！")
 
+                # --- 驗證啟動時自動健康檢查 ---
+                log.info("--- 正在驗證啟動時自動健康檢查 ---")
+                startup_success_notification = page.locator(
+                    ".notification.notification-success:has-text('啟動健康檢查成功！')"
+                )
+                expect(startup_success_notification).to_be_visible(timeout=15000) # Give it some time for retries
+                log.info("✅ 驗證成功: 啟動時健康檢查成功的通知已顯示。")
+                # Clean up the notification to not interfere with other tests
+                startup_success_notification.locator("button.close-button").click()
+                expect(startup_success_notification).not_to_be_visible(timeout=5000)
+
                 log.info("正在驗證頁面標題...")
                 expect(page).to_have_title("音訊轉錄儀", timeout=5000)
                 log.info("✅ 驗證成功: 頁面標題符合預期。")
+
+                # --- 執行新的手動健康檢查測試 ---
+                if not test_health_check_button(page, expect):
+                    raise RuntimeError("手動健康檢查按鈕驗證測試失敗。")
 
                 log.info("架構已簡化，不再有獨立的工作者或硬體監控狀態，跳過相關驗證。")
 
