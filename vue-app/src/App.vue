@@ -117,6 +117,7 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
 import { useTasksStore } from './stores/tasks'
+import { useSystemStore } from './stores/system' // 新增：導入 system store
 import { logAction } from './utils/logging'
 import Dashboard from './components/Dashboard.vue'
 import TaskUploader from './components/TaskUploader.vue'
@@ -131,6 +132,7 @@ import TaskPool from './components/TaskPool.vue'
 
 // 獲取 Pinia store 的實例
 const tasksStore = useTasksStore()
+const systemStore = useSystemStore() // 新增
 
 // --- 狀態管理 ---
 const activeTab = ref('transcribe')
@@ -186,6 +188,8 @@ const setActiveTab = (tabName) => {
 onMounted(() => {
   // 使用新的兩階段啟動方法
   tasksStore.initializeSystem();
+  // 新增：在應用啟動時獲取後端功能狀態
+  systemStore.fetchFeatureStatus();
 })
 </script>
 
