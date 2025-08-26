@@ -1,6 +1,8 @@
 import { defineStore } from 'pinia'
 import axios from 'axios'
 import { applyPatch } from 'fast-json-patch'
+import { useNotificationStore } from './notifications'
+import { logAction } from '@/utils/logging'
 
 // 輔助函式：提供一個結構完整的、乾淨的初始狀態物件。
 const getInitialState = () => ({
@@ -92,7 +94,8 @@ export const useTasksStore = defineStore('tasks', {
       this.socket = new WebSocket(wsUrl);
       this.socket.onopen = () => {
         this.socketConnected = true;
-        this.checkLocalModels();
+        // The checkLocalModels call is now handled by a watcher in App.vue
+        // to ensure a proper sequence of initialization.
       };
       this.socket.onmessage = (event) => {
         try {
@@ -170,15 +173,28 @@ export const useTasksStore = defineStore('tasks', {
     },
 
     // --- 後端 API Actions ---
-    checkLocalModels() {
-      console.log("架構簡化：不再從後端檢查模型，直接假設所有模型都可用。");
-      // 在新架構中，工作者腳本是即時執行的，模型下載是其內部邏輯的一部分。
-      // 對於前端來說，我們可以假設所有模型都可以被「觸發」。
-      const allModels = ['tiny', 'base', 'small', 'medium', 'large-v2', 'large-v3'];
+    async checkLocalModels() {
+      const notificationStore = useNotificationStore();
       this.$patch(state => {
-        state.appState.local_models.available = allModels;
-        state.appState.local_models.checking = false;
+        state.appState.local_models.checking = true;
       });
+      logAction('check-local-models-start');
+
+      try {
+        const response = await this.sendRequest('CHECK_LOCAL_MODELS', {}, 15000);
+        this.$patch(state => {
+          state.appState.local_models.available = response.models || [];
+          state.appState.local_models.checking = false;
+        });
+        logAction('check-local-models-success', `found: ${(response.models || []).length}`);
+      } catch (error) {
+        console.error('檢查本地模型時發生錯誤:', error);
+        notificationStore.addNotification('無法檢查本地模型狀態', 'error');
+        this.$patch(state => {
+          state.appState.local_models.checking = false;
+        });
+        logAction('check-local-models-failed', error.message || 'unknown error');
+      }
     },
     downloadModel(model) {
       console.log(`正在透過 WebSocket 請求下載模型: ${model}`);
@@ -268,6 +284,18 @@ export const useTasksStore = defineStore('tasks', {
       } catch (error) {
         console.error('獲取 Gemini 模型時發生錯誤:', error.detail || error.message);
         throw new Error(error.detail || '無法獲取 Gemini 模型列表');
+      }
+    },
+
+    async runHealthCheck() {
+      try {
+        console.log('[Health Check] Sending HEALTH_CHECK_REQUEST...');
+        const response = await this.sendRequest('HEALTH_CHECK_REQUEST', {}, 5000); // 5-second timeout
+        console.log('[Health Check] Received response:', response);
+        return { success: true, response };
+      } catch (error) {
+        console.error('[Health Check] Health check failed:', error);
+        return { success: false, error };
       }
     },
   }
