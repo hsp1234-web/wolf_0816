@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     # 根據 AGENTS.md 的安全準則，我們使用一個已存在的目錄來避免建立新目錄。
     UPLOADS_DIR: str = "youtube_downloads"
 
+    # 應用程式版本號，將會顯示在 /api/v1/status 端點中
+    APP_VERSION: str = "1.3.0"
+
     @property
     def is_mock_mode(self) -> bool:
         """

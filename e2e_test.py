@@ -6,6 +6,7 @@ import logging
 import os
 import socket
 import threading
+import requests
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 # --- 繁體中文註解：基本設定 ---
@@ -55,6 +56,35 @@ def wait_for_server_and_get_port(server_proc, timeout=30):
             return None
     return None
 
+def test_status_endpoint(api_url):
+    """直接呼叫 /api/v1/status 端點並驗證其回應。"""
+    log.info(f"--- 正在測試 API 狀態端點: {api_url}/api/v1/status ---")
+    try:
+        response = requests.get(f"{api_url}/api/v1/status", timeout=10)
+        response.raise_for_status()  # 如果狀態碼不是 2xx，則引發例外
+
+        data = response.json()
+        log.info(f"成功獲取狀態回應: {data}")
+
+        # 驗證結構和內容
+        assert 'app_version' in data and data['app_version'] == "1.3.0", "app_version 不正確"
+        assert 'timestamp' in data, "缺少 timestamp"
+        assert 'features' in data, "缺少 features"
+
+        features = data['features']
+        assert 'transcription' in features and features['transcription']['enabled'] is True, "transcription 狀態不正確"
+        assert 'youtube_processing' in features and features['youtube_processing']['enabled'] is False, "youtube_processing 狀態不正確"
+        assert 'model_management' in features and features['model_management']['enabled'] is True, "model_management 狀態不正確"
+
+        log.info("✅ API 狀態端點驗證成功！")
+        return True
+    except requests.exceptions.RequestException as e:
+        log.error(f"❌ 呼叫 API 狀態端點時發生錯誤: {e}")
+        return False
+    except (AssertionError, KeyError) as e:
+        log.error(f"❌ API 狀態端點回應內容驗證失敗: {e}")
+        return False
+
 def run_simulation():
     # 使用 threading.Timer 實現總超時
     kill_flag = threading.Event()
@@ -102,6 +132,31 @@ def run_simulation():
         port = wait_for_server_and_get_port(server_proc)
         if not port: raise RuntimeError("無法從伺服器獲取埠號。")
         api_url = f"http://127.0.0.1:{port}"
+
+        # --- 新增：可靠的健康檢查迴圈 ---
+        log.info(f"伺服器回報埠號 {port}，現在開始健康檢查...")
+        health_check_url = f"{api_url}/api/health"
+        server_ready = False
+        start_wait = time.monotonic()
+        while time.monotonic() - start_wait < 20: # 20秒超時
+            try:
+                response = requests.get(health_check_url, timeout=2)
+                if response.status_code == 200:
+                    log.info("✅ 健康檢查成功！伺服器已準備就緒。")
+                    server_ready = True
+                    break
+            except requests.ConnectionError:
+                time.sleep(0.5) # 伺服器尚未就緒，稍後重試
+            except requests.RequestException as e:
+                log.warning(f"健康檢查期間發生非預期錯誤: {e}")
+                time.sleep(0.5)
+
+        if not server_ready:
+            raise RuntimeError("伺服器健康檢查超時。")
+
+        # 在伺服器確認就緒後，才執行 API 測試
+        if not test_status_endpoint(api_url):
+            raise RuntimeError("API 狀態端點驗證失敗，中止測試。")
 
         # 步驟 5: Playwright 驗證
         log.info(f"--- 使用 Playwright 驗證 {api_url} ---")

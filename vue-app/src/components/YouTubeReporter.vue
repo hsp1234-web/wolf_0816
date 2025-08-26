@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <fieldset :disabled="!youtubeFeature.enabled" :title="youtubeFeature.message">
     <div class="card">
       <!-- API 金鑰管理 -->
       <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -67,25 +67,30 @@
 
     <!-- 操作按鈕 -->
     <div style="text-align: center; margin-top: 24px;">
-      <button @click="addYouTubeLinksToPool" :disabled="!isApiKeyValid || !youtubeLinks[0].url" :title="addButtonTooltip">
+      <button @click="addYouTubeLinksToPool" :disabled="!isApiKeyValid || !youtubeLinks[0].url || !youtubeFeature.enabled" :title="addButtonTooltip">
         ➕ 新增 {{ youtubeLinks.filter(l => l.url).length }} 個影片至佇列
       </button>
     </div>
 
     <!-- 報告瀏覽區 -->
     <YouTubeReportBrowser />
-  </div>
+  </fieldset>
 </template>
 
 <script setup>
 import { ref, reactive, onMounted, computed } from 'vue';
 import { useTasksStore } from '@/stores/tasks';
+import { useSystemStore } from '@/stores/system';
 import { useNotificationStore } from '@/stores/notifications';
 import { logAction } from '@/utils/logging';
 import YouTubeReportBrowser from './YouTubeReportBrowser.vue';
 
 const tasksStore = useTasksStore();
+const systemStore = useSystemStore();
 const notificationStore = useNotificationStore();
+
+// 計算屬性，方便在模板中使用
+const youtubeFeature = computed(() => systemStore.features.youtube_processing);
 
 // 組件狀態
 const apiKey = ref('');
@@ -172,6 +177,9 @@ const removeYoutubeRow = (index) => {
 
 // --- 處理請求 ---
 const addButtonTooltip = computed(() => {
+  if (!youtubeFeature.value.enabled) {
+    return youtubeFeature.value.message;
+  }
   if (!isApiKeyValid.value) {
     return '請先提供有效的 Google API 金鑰。';
   }

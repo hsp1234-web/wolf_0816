@@ -19,8 +19,11 @@ import threading
 from contextlib import asynccontextmanager
 
 from .config import settings
-import datetime
-from .schemas import StagedFileResponse, YouTubeProcessRequest, BatchTasksRequest, Task, WebSocketRequest, TaskStatusUpdateRequest
+from datetime import datetime, timezone
+from .schemas import (
+    StagedFileResponse, YouTubeProcessRequest, BatchTasksRequest, Task,
+    WebSocketRequest, TaskStatusUpdateRequest, AppStatusResponse, Features, FeatureStatus
+)
 
 from src.core.state_manager import state_manager, Task as StateTask
 from workers.transcription_worker import process_transcription, download_model_task, youtube_download_task, gemini_process_task
@@ -103,6 +106,25 @@ async def get_settings():
         "is_mock_mode": settings.is_mock_mode
     }
 
+
+@app.get("/api/v1/status", response_model=AppStatusResponse, tags=["System"])
+async def get_application_status():
+    """
+    提供前端關於後端功能可用性的單一事實來源。
+    """
+    # 根據使用者文件硬式編碼功能狀態
+    feature_statuses = Features(
+        transcription=FeatureStatus(enabled=True, message="服務正常運作中"),
+        youtube_processing=FeatureStatus(enabled=False, message="功能正在重構中，暫時無法使用。"),
+        model_management=FeatureStatus(enabled=True, message="支援本地模型管理")
+    )
+
+    return AppStatusResponse(
+        features=feature_statuses,
+        app_version=settings.APP_VERSION,
+        timestamp=datetime.now(timezone.utc)
+    )
+
 @app.post("/api/internal/task_update", include_in_schema=False)
 async def task_update(update: TaskStatusUpdateRequest):
     """
@@ -177,7 +199,7 @@ async def batch_tasks(fastapi_req: Request, request: BatchTasksRequest):
                 type='transcription',
                 status='pending',
                 payload=payload,
-                created_at=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                created_at=datetime.now(timezone.utc).isoformat()
             )
             state_manager.update_state(lambda state: state.pending_tasks.append(new_task))
 
