@@ -1,67 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-善狼專案 - 背景依賴安裝器 (Background Installer) v2
+善狼專案 - 背景依賴安裝器 (Background Installer) v3
 
-核心職責 (v2 - Refactored by Jules):
-1.  **不再讀取 requirements 檔案**，以避免依賴定義分散和過濾邏輯脆弱的問題。
-2.  **直接在腳本中定義依賴列表**，使其成為單一事實來源 (Single Source of Truth)。
-3.  **使用在 POC 中驗證過的指令**，優先安裝 CPU 版本的 PyTorch，然後再安裝其餘依賴。
-4.  **日誌輸出**：向標準輸出 (stdout) 打印詳細、易於理解的進度訊息。
-5.  **啟動主服務**：在所有依賴安裝完成後，啟動真正的後端主服務。
+核心職責 (v3 - Refactored by Jules, guided by user):
+1.  **採用兩階段安裝策略**，從根本上解決 PyTorch 版本衝突與系統資源問題。
+2.  **階段一：強制安裝 PyTorch CPU 版本**：使用官方的 CPU-only 索引，確保安裝的是輕量級的 PyTorch，避免因下載 CUDA 版本而導致系統掛起。
+3.  **階段二：安裝應用依賴**：在 PyTorch 已被正確安裝的前提下，安裝 `faster-whisper>=1.0.0`。這利用了 pip 的依賴解析機制——即然 `torch` 已存在，便不會再次下載。同時，新版 `faster-whisper` 移除了對 `av` 的依賴，解決了其編譯問題。
+4.  **啟動主服務**：在所有依賴安裝完成後，啟動真正的後端主服務。
 """
 import subprocess
 import sys
 import os
-
-# --- 依賴定義 (單一事實來源) ---
-
-# PyTorch CPU-only 的安裝指令
-PYTORCH_CPU_COMMAND = [
-    sys.executable, "-m", "pip", "install",
-    "torch", "torchvision", "torchaudio",
-    "--index-url", "https://download.pytorch.org/whl/cpu"
-]
-
-# AI 相關的重量級依賴 (不含 torch)
-AI_DEPS = [
-    "numpy<2.0",  # 確保版本相容性
-    "opencc-python-reimplemented==0.1.7",
-    "faster-whisper==0.10.1",
-    "ctranslate2>=4.0,<5",
-    "huggingface_hub>=0.13",
-    "tokenizers>=0.13,<1",
-    "onnxruntime>=1.14,<2",
-    "av==10.0.0",
-    "tqdm"
-]
-
-# 系統級依賴 (for av)
-SYSTEM_DEPS_COMMAND = [
-    "sudo", "apt-get", "install", "-y",
-    "python-dev-is-python3",
-    "pkg-config",
-    "libavformat-dev",
-    "libavcodec-dev",
-    "libavdevice-dev",
-    "libavutil-dev",
-    "libswscale-dev",
-    "libswresample-dev",
-    "libavfilter-dev"
-]
-
-# 核心服務依賴
-CORE_DEPS = [
-    "fastapi==0.110.0",
-    "uvicorn==0.29.0",
-    "httpx==0.27.0",
-    "python-multipart==0.0.9",
-    "pytz==2024.1",
-    "jsonpatch==1.33",
-    "requests==2.31.0",
-    "websockets==12.0",
-    "pydantic-settings==2.2.1",
-    "psutil==5.9.8",
-]
 
 def get_project_root():
     """獲取專案根目錄的絕對路徑"""
@@ -90,32 +39,47 @@ def run_command(command: list, step_name: str):
     process.wait()
     if process.returncode != 0:
         log(f"❌ 命令執行失敗，返回碼：{process.returncode}")
-        sys.exit(process.returncode) # 執行失敗則中止腳本
+        sys.exit(process.returncode)
     log(f"✅ {step_name} 成功")
-
 
 def main():
     """腳本主入口"""
     project_root = get_project_root()
     is_light_mode = "--light-mode" in sys.argv
 
-    log("背景安裝程序已啟動 (v2 - Refactored by Jules)。")
+    log("背景安裝程序已啟動 (v3 - 兩階段安裝策略)。")
     if is_light_mode:
-        log("偵測到 --light-mode。注意：安裝的套件相同，但主程式應載入輕量模型。")
+        log("偵測到 --light-mode。")
 
-    # --- 關鍵步驟：安裝依賴 ---
-    # 步驟 1: 安裝系統級依賴 (FFmpeg for av)
-    run_command(["sudo", "apt-get", "update", "-y"], "步驟 1/5：更新 apt 套件列表")
-    run_command(SYSTEM_DEPS_COMMAND, "步驟 2/5：安裝 FFmpeg 開發函式庫")
+    # --- 階段一: 強制安裝 PyTorch CPU 版本 ---
+    pytorch_cpu_command = [
+        sys.executable, "-m", "pip", "install",
+        "torch", "torchvision", "torchaudio",
+        "--index-url", "https://download.pytorch.org/whl/cpu"
+    ]
+    run_command(pytorch_cpu_command, "階段 1/2：安裝 PyTorch (CPU 版本)")
 
-    # 步驟 2: 強制安裝 CPU 版本的 PyTorch (來自 POC 的驗證結果)
-    run_command(PYTORCH_CPU_COMMAND, "步驟 3/5：安裝 PyTorch (CPU 版本)")
-
-    # 步驟 3: 安裝其餘的 AI 依賴
-    run_command([sys.executable, "-m", "pip", "install"] + AI_DEPS, "步驟 4/5：安裝 AI 相關依賴")
-
-    # 步驟 4: 安裝核心服務依賴
-    run_command([sys.executable, "-m", "pip", "install"] + CORE_DEPS, "步驟 5/5：安裝核心服務依賴")
+    # --- 階段二: 安裝應用程式核心依賴 ---
+    # `faster-whisper` 會自動處理 `ctranslate2` 等依賴。
+    # 核心服務依賴也一併安裝。
+    app_deps = [
+        "faster-whisper>=1.0.0",
+        "numpy<2.0",
+        "opencc-python-reimplemented==0.1.7",
+        "tqdm",
+        # Core service dependencies
+        "fastapi==0.110.0",
+        "uvicorn==0.29.0",
+        "httpx==0.27.0",
+        "python-multipart==0.0.9",
+        "pytz==2024.1",
+        "jsonpatch==1.33",
+        "requests==2.31.0",
+        "websockets==12.0",
+        "pydantic-settings==2.2.1",
+        "psutil==5.9.8",
+    ]
+    run_command([sys.executable, "-m", "pip", "install"] + app_deps, "階段 2/2：安裝應用程式依賴")
 
     log("✅ 所有依賴均已成功安裝。")
 
@@ -126,8 +90,6 @@ def main():
         log(f"錯誤：主服務檔案 '{main_server_path}' 不存在。")
         sys.exit(1)
 
-    # 使用 uvicorn 啟動主服務
-    # 注意：這裡的執行會替換當前的程序
     log(f"正在啟動主服務：{main_server_path}")
     os.execvp(
         sys.executable,
@@ -135,10 +97,9 @@ def main():
             sys.executable, "-m", "uvicorn",
             "services.api_gateway.main:app",
             "--host", "0.0.0.0",
-            "--port", "8008" # 使用一個不同於門面伺服器的埠號
+            "--port", "8008"
         ]
     )
-
 
 if __name__ == "__main__":
     main()
