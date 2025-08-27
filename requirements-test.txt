@@ -24,10 +24,9 @@ psutil==5.9.8
 
 # --- 測試框架 ---
 pytest==8.1.1
-Cython<3.0
 
 # --- AI/ML 轉錄模型相關 ---
 # 注意：torch將透過 --index-url 從cpu源安裝
-# torch==2.2.2
-# faster-whisper==0.10.1
+torch==2.2.2
+faster-whisper==1.0.1
 opencc-python-reimplemented==0.1.7
