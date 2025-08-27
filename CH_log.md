@@ -1,3 +1,16 @@
+## 2025-08-27T10:49:55+08:00
+
+### refactor(startup): 完善 v16 架構以實現真正的非阻塞啟動
+
+- **動機**: 初版的 v16 架構存在設計缺陷，`facade_server` 意外地依賴了重量級 AI 模組，導致其無法秒級啟動，並引發了依賴缺失、磁碟空間不足、WebSocket CORS 等一系列連鎖問題。本次重構旨在徹底修正此問題，完全實現 v16 的設計目標。
+- **核心變更**:
+    1.  **實施延遲載入 (Lazy Import)**：在 `services/api_gateway/main.py` 中，將 `transcriber` 模組的導入從檔案頂部移至實際需要它的函式內部，解除了啟動時的硬性依賴。
+    2.  **強化背景安裝器**：重構了 `src/background_installer.py`，使其不再讀取外部依賴檔案，而是直接使用在 POC (`test_cpu_torch_install.py`) 中驗證成功的指令，來安裝 CPU 版本的 PyTorch 及其他所有 AI 依賴，使其更穩健、更可預期。
+    3.  **修復 WebSocket 連線**：在 `src/facade_server.py` 中加入了缺失的 `CORSMiddleware`，從根本上解決了 WebSocket 403 連線被拒的問題。
+    4.  **清理輕量依賴**：將 `src/requirements_light.txt` 還原為僅包含 `fastapi` 等核心 Web 框架的最小集合。
+- **成果**: 這次重構使程式碼與 v16 架構的原始設計目標完全對齊。`Colabpro.py` 現在可以秒級啟動 `facade_server`，並立即提供前端介面和安裝進度，而所有重量級操作都在背景非同步執行，顯著提升了穩定性和使用者體驗。
+
+---
 ## 2025-08-27T09:23:20+08:00
 
 ### fix(websocket): 解決門面伺服器 WebSocket 403 連線問題
