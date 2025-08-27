@@ -1,3 +1,12 @@
+## 2025-08-27T09:23:20+08:00
+
+### fix(websocket): 解決門面伺服器 WebSocket 403 連線問題
+
+- **動機**: 在修復了核心依賴導致的啟動崩潰後，發現前端無法與後端建立 WebSocket 連線，日誌顯示 `403 Forbidden` 錯誤，導致應用程式雖然運行但無法使用。
+- **根本原因**: 經調查，`src/facade_server.py` 作為一個獨立的 FastAPI 應用，並未配置跨來源資源共用 (CORS) 中介軟體。在沒有此中介軟體的情況下，FastAPI 的預設安全策略會拒絕所有來自瀏覽器的跨來源 WebSocket 連線。
+- **解決方案**: 為 `src/facade_server.py` 中的 FastAPI 實例新增了 `CORSMiddleware`，並設定 `allow_origins=["*"]`，以允許來自所有來源的連線，從而解決了 403 錯誤。
+
+---
 ## 2025-08-26T13:03:00+08:00
 
 ### refactor(core): 實施「分段漸進式」啟動架構 (v16)
