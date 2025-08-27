@@ -77,23 +77,34 @@ export const useTasksStore = defineStore('tasks', {
       };
 
       facadeSocket.onmessage = (event) => {
-        const message = event.data;
-        this.installationStatus.log.push(message);
+        try {
+          const message = JSON.parse(event.data);
+          const { type, data } = message;
 
-        if (message.includes("INSTALLATION_COMPLETE")) {
-          this.installationStatus.message = '核心依賴安裝完成！準備連接主服務...';
-          this.installationStatus.inProgress = false;
-          this.installationStatus.completed = true;
-          facadeSocket.close();
-          // 安裝完成，現在可以初始化主應用程式的連線
-          this.initializeSystem();
-        } else if (message.includes("INSTALLATION_FAILED")) {
-          this.installationStatus.message = '依賴安裝失敗！請檢查日誌。';
-          this.installationStatus.inProgress = false;
-          this.installationStatus.failed = true;
-        } else {
-            // 更新訊息以顯示最新進度
-            this.installationStatus.message = message;
+          // 將所有日誌訊息都推入日誌陣列
+          if (type === 'log' || type === 'error' || (type === 'status' && data.startsWith('伺服器'))) {
+              this.installationStatus.log.push(data);
+              this.installationStatus.message = data; // 更新主要狀態訊息
+          }
+
+          if (type === 'status') {
+            if (data === "INSTALLATION_COMPLETE") {
+              this.installationStatus.message = '核心依賴安裝完成！準備連接主服務...';
+              this.installationStatus.inProgress = false;
+              this.installationStatus.completed = true;
+              facadeSocket.close();
+              // 安裝完成，現在可以初始化主應用程式的連線
+              this.initializeSystem();
+            } else if (data === "INSTALLATION_FAILED") {
+              this.installationStatus.message = '依賴安裝失敗！請檢查日誌。';
+              this.installationStatus.inProgress = false;
+              this.installationStatus.failed = true;
+            }
+          }
+        } catch (error) {
+          // 對於非 JSON 訊息的降級處理 (增加穩健性)
+          console.error("無法解析來自門面伺服器的 WebSocket 訊息:", event.data, error);
+          this.installationStatus.log.push(`[原始訊息] ${event.data}`);
         }
       };
 
@@ -169,8 +180,10 @@ export const useTasksStore = defineStore('tasks', {
       };
       this.socket.onclose = () => {
         this.socketConnected = false;
-        this.$reset();
-        setTimeout(() => { this.initializeSystem(); }, 5000);
+        // 移除自動重置和重連邏輯，因為這會干擾初始安裝流程
+        // this.$reset();
+        // setTimeout(() => { this.initializeSystem(); }, 5000);
+        console.log("主 WebSocket 連線已關閉。");
       };
       this.socket.onerror = (error) => { console.error(`WebSocket 發生錯誤: ${endpoint}`, error); };
     },

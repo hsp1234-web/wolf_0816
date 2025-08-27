@@ -12,10 +12,11 @@ import asyncio
 import subprocess
 import os
 import sys
+import json
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import RedirectResponse
-from typing import List
+from typing import List, Dict, Any
 from fastapi.middleware.cors import CORSMiddleware
 
 # --- 全局變數與設定 ---
@@ -47,22 +48,23 @@ app.add_middleware(
 
 # --- 背景任務 ---
 
-async def broadcast(message: str):
-    """將訊息廣播給所有連接中的客戶端"""
+async def broadcast_json(message: Dict[str, Any]):
+    """將 JSON 訊息廣播給所有連接中的客戶端"""
+    message_str = json.dumps(message, ensure_ascii=False)
     for connection in active_connections:
-        await connection.send_text(message)
+        await connection.send_text(message_str)
 
 async def run_installer_and_broadcast():
     """在背景執行安裝腳本，並將其標準輸出/錯誤即時廣播出去"""
-    await broadcast("伺服器：準備開始安裝依賴...")
+    await broadcast_json({"type": "log", "data": "伺服器：準備開始安裝依賴..."})
 
     # 檢查是否需要以 "輕量模式" 啟動 (透過環境變數)
     installer_args = [sys.executable, installer_script_path]
     if os.environ.get("LIGHT_MODE") == "1":
         installer_args.append("--light-mode")
-        await broadcast("伺服器：已偵測到輕量模式(LIGHT_MODE=1)，將以輕量模式進行安裝。")
+        await broadcast_json({"type": "log", "data": "伺服器：已偵測到輕量模式(LIGHT_MODE=1)，將以輕量模式進行安裝。"})
     else:
-        await broadcast("伺服器：將以標準模式進行安裝。")
+        await broadcast_json({"type": "log", "data": "伺服器：將以標準模式進行安裝。"})
 
 
     process = await asyncio.create_subprocess_exec(
@@ -87,7 +89,7 @@ async def run_installer_and_broadcast():
             if line_bytes:
                 line = line_bytes.decode('utf-8', errors='replace').strip()
                 if line: # 確保不廣播空行
-                    await broadcast(line)
+                    await broadcast_json({"type": "log", "data": line})
 
         # 取消未完成的任務，避免資源洩漏
         for task in pending:
@@ -99,16 +101,22 @@ async def run_installer_and_broadcast():
     # 確保所有剩餘的輸出都被讀取
     stdout, stderr = await process.communicate()
     if stdout:
-        await broadcast(stdout.decode('utf-8', errors='replace').strip())
+        # 將可能的多行輸出拆分後逐行發送
+        for line in stdout.decode('utf-8', errors='replace').strip().split('\n'):
+            if line:
+                await broadcast_json({"type": "log", "data": line})
     if stderr:
-        await broadcast(f"錯誤：{stderr.decode('utf-8', errors='replace').strip()}")
+        for line in stderr.decode('utf-8', errors='replace').strip().split('\n'):
+            if line:
+                await broadcast_json({"type": "error", "data": f"錯誤：{line}"})
+
 
     if process.returncode == 0:
-        await broadcast("伺服器：所有依賴安裝完成，主服務已啟動。")
-        await broadcast("INSTALLATION_COMPLETE")
+        await broadcast_json({"type": "log", "data": "伺服器：所有依賴安裝完成，主服務已啟動。"})
+        await broadcast_json({"type": "status", "data": "INSTALLATION_COMPLETE"})
     else:
-        await broadcast(f"伺服器：安裝過程發生錯誤，返回碼：{process.returncode}")
-        await broadcast("INSTALLATION_FAILED")
+        await broadcast_json({"type": "error", "data": f"伺服器：安裝過程發生錯誤，返回碼：{process.returncode}"})
+        await broadcast_json({"type": "status", "data": "INSTALLATION_FAILED"})
 
 
 @app.on_event("startup")
@@ -129,7 +137,8 @@ async def websocket_endpoint(websocket: WebSocket):
     active_connections.append(websocket)
     try:
         # 歡迎訊息
-        await websocket.send_text("伺服器：連接成功！正在等待依賴安裝進度...")
+        welcome_message = {"type": "status", "data": "伺服器：連接成功！正在等待依賴安裝進度..."}
+        await websocket.send_text(json.dumps(welcome_message, ensure_ascii=False))
         print("[Breakpoint] /ws/status: 已發送歡迎訊息。")
         # 保持連接開啟，以接收來自服務端的廣播
         while True:

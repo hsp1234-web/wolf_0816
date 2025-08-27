@@ -31,8 +31,22 @@ AI_DEPS = [
     "huggingface_hub>=0.13",
     "tokenizers>=0.13,<1",
     "onnxruntime>=1.14,<2",
-    "av>=11",
+    "av==10.0.0",
     "tqdm"
+]
+
+# 系統級依賴 (for av)
+SYSTEM_DEPS_COMMAND = [
+    "sudo", "apt-get", "install", "-y",
+    "python-dev-is-python3",
+    "pkg-config",
+    "libavformat-dev",
+    "libavcodec-dev",
+    "libavdevice-dev",
+    "libavutil-dev",
+    "libswscale-dev",
+    "libswresample-dev",
+    "libavfilter-dev"
 ]
 
 # 核心服務依賴
@@ -90,14 +104,18 @@ def main():
         log("偵測到 --light-mode。注意：安裝的套件相同，但主程式應載入輕量模型。")
 
     # --- 關鍵步驟：安裝依賴 ---
-    # 步驟 1: 強制安裝 CPU 版本的 PyTorch (來自 POC 的驗證結果)
-    run_command(PYTORCH_CPU_COMMAND, "步驟 1/3：安裝 PyTorch (CPU 版本)")
+    # 步驟 1: 安裝系統級依賴 (FFmpeg for av)
+    run_command(["sudo", "apt-get", "update", "-y"], "步驟 1/5：更新 apt 套件列表")
+    run_command(SYSTEM_DEPS_COMMAND, "步驟 2/5：安裝 FFmpeg 開發函式庫")
 
-    # 步驟 2: 安裝其餘的 AI 依賴
-    run_command([sys.executable, "-m", "pip", "install"] + AI_DEPS, "步驟 2/3：安裝 AI 相關依賴")
+    # 步驟 2: 強制安裝 CPU 版本的 PyTorch (來自 POC 的驗證結果)
+    run_command(PYTORCH_CPU_COMMAND, "步驟 3/5：安裝 PyTorch (CPU 版本)")
 
-    # 步驟 3: 安裝核心服務依賴
-    run_command([sys.executable, "-m", "pip", "install"] + CORE_DEPS, "步驟 3/3：安裝核心服務依賴")
+    # 步驟 3: 安裝其餘的 AI 依賴
+    run_command([sys.executable, "-m", "pip", "install"] + AI_DEPS, "步驟 4/5：安裝 AI 相關依賴")
+
+    # 步驟 4: 安裝核心服務依賴
+    run_command([sys.executable, "-m", "pip", "install"] + CORE_DEPS, "步驟 5/5：安裝核心服務依賴")
 
     log("✅ 所有依賴均已成功安裝。")
 
