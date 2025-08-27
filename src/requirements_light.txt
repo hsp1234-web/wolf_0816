@@ -3,3 +3,4 @@
 fastapi==0.110.0
 uvicorn==0.29.0
 websockets==12.0
+httpx==0.27.0 # 新增：用於探測主服務是否上線

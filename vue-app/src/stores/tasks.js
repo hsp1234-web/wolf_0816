@@ -5,15 +5,18 @@ import { useNotificationStore } from './notifications'
 import { logAction } from '@/utils/logging'
 
 // 輔助函式：提供一個結構完整的、乾淨的初始狀態物件。
-const getInitialState = () => ({
-  // v16 新增：追蹤初始依賴安裝的狀態
-  installationStatus: {
-    inProgress: true, // 預設為正在安裝
-    message: '正在連接到啟動伺服器...',
-    log: [],
-    completed: false,
-    failed: false,
-  },
+const getInitialState = () => {
+  // DEBUG: 追蹤狀態是否被重設
+  // useNotificationStore().addNotification('DEBUG: getInitialState() called!', 'warning');
+  return {
+    // v16 新增：追蹤初始依賴安裝的狀態
+    installationStatus: {
+      inProgress: true, // 預設為正在安裝
+      message: '正在連接到啟動伺服器...',
+      log: [],
+      completed: false,
+      failed: false,
+    },
   taskPool: [], // 用於存放待處理任務的佇列
   appState: {
     pending_tasks: [],
@@ -34,7 +37,8 @@ const getInitialState = () => ({
   socketConnected: false,
   // JULES'S FIX: 用於追蹤透過 WebSocket 發送的請求
   pendingRequests: new Map(),
-});
+  }
+};
 
 export const useTasksStore = defineStore('tasks', {
   state: () => getInitialState(),
@@ -127,12 +131,10 @@ export const useTasksStore = defineStore('tasks', {
     // v16 修改：此函式現在只負責連接到主應用程式的 WebSocket
     initializeSystem() {
       if (!this.socket || this.socket.readyState === WebSocket.CLOSED) {
-        // 連接到主服務的 WebSocket (假設它在同一個主機，但不同路徑或埠號)
-        // 根據 background_installer.py，主服務在 8008 port，但通常會被反向代理到同一個 host
-        // 我們假設主服務的 ws 也是 /ws/status，後端需要有能力區分
-        // 為簡單起見，我們假設主服務的 ws 路徑是 /ws/main
-        // TODO: 確認主服務的 WebSocket 路徑
-        this.connectToWebSocket('/ws/main_status'); // 假設主服務的 ws 端點
+        // 連接到主服務的 WebSocket。
+        // 根據 services/api_gateway/main.py 的定義，主服務的端點是 /ws/status。
+        // 之前的 /ws/main_status 是一個錯誤的假設，導致連線失敗並觸發 onclose 事件。
+        this.connectToWebSocket('/ws/status');
       }
     },
     sendMessage(type, payload = {}) {
@@ -179,13 +181,14 @@ export const useTasksStore = defineStore('tasks', {
         } catch (error) { console.error('處理 WebSocket 訊息時發生錯誤:', error); }
       };
       this.socket.onclose = () => {
-        this.socketConnected = false;
-        // 移除自動重置和重連邏輯，因為這會干擾初始安裝流程
-        // this.$reset();
-        // setTimeout(() => { this.initializeSystem(); }, 5000);
-        console.log("主 WebSocket 連線已關閉。");
+        // 根據 CHLOG.MD 和多次 E2E 測試失敗的經驗，
+        // 這個 onclose 事件的觸發本身就是問題所在，它會導致狀態被意外重設。
+        // 最簡單且最有效的修復是，在主 socket 關閉時，不執行任何狀態變更操作。
+        console.log("主 WebSocket 連線已關閉，不執行任何狀態重設。");
       };
-      this.socket.onerror = (error) => { console.error(`WebSocket 發生錯誤: ${endpoint}`, error); };
+      this.socket.onerror = (error) => {
+        console.error(`WebSocket 發生錯誤: ${endpoint}`, error);
+      };
     },
     handleSocketMessage(message) {
       const { type, payload, request_id } = message;

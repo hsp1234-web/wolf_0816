@@ -13,6 +13,8 @@ import subprocess
 import os
 import sys
 import json
+import httpx
+import time
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import RedirectResponse
@@ -112,12 +114,37 @@ async def run_installer_and_broadcast():
 
 
     if process.returncode == 0:
-        await broadcast_json({"type": "log", "data": "伺服器：所有依賴安裝完成，主服務已啟動。"})
-        await broadcast_json({"type": "status", "data": "INSTALLATION_COMPLETE"})
+        await broadcast_json({"type": "log", "data": "伺服器：安裝程序成功結束，正在確認主服務狀態..."})
+        main_server_ready = await probe_main_server(timeout=60)
+        if main_server_ready:
+            await broadcast_json({"type": "log", "data": "伺服器：主服務已上線！"})
+            await broadcast_json({"type": "status", "data": "INSTALLATION_COMPLETE"})
+        else:
+            await broadcast_json({"type": "error", "data": "伺服器：主服務探測超時，未能確認其成功啟動。"})
+            await broadcast_json({"type": "status", "data": "INSTALLATION_FAILED"})
     else:
         await broadcast_json({"type": "error", "data": f"伺服器：安裝過程發生錯誤，返回碼：{process.returncode}"})
         await broadcast_json({"type": "status", "data": "INSTALLATION_FAILED"})
 
+async def probe_main_server(timeout: int) -> bool:
+    """
+    在指定超時時間內，探測主 API 服務是否已在 8008 埠上線。
+    我們只探測根路徑，因為主服務啟動後，即使 API 路由尚未完全就緒，
+    HTTP 伺服器本身也會回應請求 (即使是 404)。
+    """
+    start_time = time.time()
+    url = "http://127.0.0.1:8008/"
+    async with httpx.AsyncClient() as client:
+        while time.time() - start_time < timeout:
+            try:
+                response = await client.get(url, timeout=2)
+                # 任何來自伺服器的回應 (即使是 404 或 500) 都表示 HTTP 服務已上線
+                await broadcast_json({"type": "log", "data": f"探測到主服務回應: {response.status_code}"})
+                return True
+            except httpx.RequestError as e:
+                await broadcast_json({"type": "log", "data": f"探測主服務中... (錯誤: {type(e).__name__})"})
+                await asyncio.sleep(1)
+    return False
 
 @app.on_event("startup")
 async def startup_event():
