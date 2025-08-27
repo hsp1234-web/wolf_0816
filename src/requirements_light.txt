@@ -1,5 +1,5 @@
 # 門面伺服器 (facade_server.py) 所需的最小依賴
-# 版本號已根據用戶要求鎖定
+# 這些是實現秒級啟動的關鍵
 fastapi==0.110.0
 uvicorn==0.29.0
 websockets==12.0

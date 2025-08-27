@@ -26,7 +26,7 @@ from .schemas import (
 )
 
 from src.core.state_manager import state_manager, Task as StateTask, AppState, WorkerStatus
-from src.tools.transcriber import check_model as check_model_tool, download_model as download_model_tool
+# from src.tools.transcriber import check_model as check_model_tool, download_model as download_model_tool
 
 # --- 日誌設定 ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -305,6 +305,9 @@ async def stage_file(file: UploadFile = File(...)):
 # --- 模型下載輔助函式 ---
 def download_model_task(model_size: str, websocket: WebSocket, manager: ConnectionManager):
     """在背景執行緒中下載模型，並在完成後通知所有客戶端。"""
+    # 延遲載入：只在需要時才導入重量級模組
+    from src.tools.transcriber import download_model as download_model_tool, check_model as check_model_tool
+
     log.info(f"背景任務：開始下載模型 '{model_size}'...")
     try:
         # 直接呼叫工具函式，不再使用 subprocess
@@ -381,6 +384,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 }, websocket)
 
             elif req.type == "CHECK_LOCAL_MODELS":
+                # 延遲載入：只在需要時才導入重量級模組
+                from src.tools.transcriber import check_model as check_model_tool
+
                 log.info("收到 CHECK_LOCAL_MODELS 請求，開始檢查本地模型...")
                 available_models = []
                 all_models = ['tiny', 'base', 'small', 'medium', 'large-v2', 'large-v3']

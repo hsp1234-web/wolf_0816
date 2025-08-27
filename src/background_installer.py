@@ -1,17 +1,53 @@
 # -*- coding: utf-8 -*-
 """
-善狼專案 - 背景依賴安裝器 (Background Installer)
+善狼專案 - 背景依賴安裝器 (Background Installer) v2
 
-核心職責：
-1.  **解析模式**：根據傳入的 `--light-mode` 參數，決定安裝策略。
-2.  **原地安裝**：使用 pip 直接將依賴安裝到環境中，取代舊的 tarball 流程。
-3.  **日誌輸出**：向標準輸出 (stdout) 打印詳細、易於理解的進度訊息，供門面伺服器捕獲。
-4.  **CPU優先**：確保 PyTorch 安裝的是 CPU 版本，以加快下載和安裝速度。
+核心職責 (v2 - Refactored by Jules):
+1.  **不再讀取 requirements 檔案**，以避免依賴定義分散和過濾邏輯脆弱的問題。
+2.  **直接在腳本中定義依賴列表**，使其成為單一事實來源 (Single Source of Truth)。
+3.  **使用在 POC 中驗證過的指令**，優先安裝 CPU 版本的 PyTorch，然後再安裝其餘依賴。
+4.  **日誌輸出**：向標準輸出 (stdout) 打印詳細、易於理解的進度訊息。
 5.  **啟動主服務**：在所有依賴安裝完成後，啟動真正的後端主服務。
 """
 import subprocess
 import sys
 import os
+
+# --- 依賴定義 (單一事實來源) ---
+
+# PyTorch CPU-only 的安裝指令
+PYTORCH_CPU_COMMAND = [
+    sys.executable, "-m", "pip", "install",
+    "torch", "torchvision", "torchaudio",
+    "--index-url", "https://download.pytorch.org/whl/cpu"
+]
+
+# AI 相關的重量級依賴 (不含 torch)
+AI_DEPS = [
+    "numpy<2.0",  # 確保版本相容性
+    "opencc-python-reimplemented==0.1.7",
+    "faster-whisper==0.10.1",
+    "ctranslate2>=4.0,<5",
+    "huggingface_hub>=0.13",
+    "tokenizers>=0.13,<1",
+    "onnxruntime>=1.14,<2",
+    "av>=11",
+    "tqdm"
+]
+
+# 核心服務依賴
+CORE_DEPS = [
+    "fastapi==0.110.0",
+    "uvicorn==0.29.0",
+    "httpx==0.27.0",
+    "python-multipart==0.0.9",
+    "pytz==2024.1",
+    "jsonpatch==1.33",
+    "requests==2.31.0",
+    "websockets==12.0",
+    "pydantic-settings==2.2.1",
+    "psutil==5.9.8",
+]
 
 def get_project_root():
     """獲取專案根目錄的絕對路徑"""
@@ -21,8 +57,9 @@ def log(message: str):
     """打印日誌訊息並刷新輸出緩衝區，確保即時性"""
     print(f"安裝器：{message}", flush=True)
 
-def run_command(command: list):
+def run_command(command: list, step_name: str):
     """執行一個子程序命令，並即時打印其輸出"""
+    log(f"--- {step_name} ---")
     log(f"正在執行命令：{' '.join(command)}")
     process = subprocess.Popen(
         command,
@@ -38,70 +75,31 @@ def run_command(command: list):
 
     process.wait()
     if process.returncode != 0:
-        log(f"命令執行失敗，返回碼：{process.returncode}")
+        log(f"❌ 命令執行失敗，返回碼：{process.returncode}")
         sys.exit(process.returncode) # 執行失敗則中止腳本
+    log(f"✅ {step_name} 成功")
+
 
 def main():
     """腳本主入口"""
     project_root = get_project_root()
     is_light_mode = "--light-mode" in sys.argv
 
-    log("背景安裝程序已啟動。")
-
+    log("背景安裝程序已啟動 (v2 - Refactored by Jules)。")
     if is_light_mode:
-        log("偵測到 --light-mode，將使用 'requirements-test.txt' 進行安裝。")
-        requirements_file = os.path.join(project_root, "requirements-test.txt")
-    else:
-        log("標準模式，將使用 'requirements-unified.txt' 進行安裝。")
-        requirements_file = os.path.join(project_root, "requirements-unified.txt")
-
-    if not os.path.exists(requirements_file):
-        log(f"錯誤：依賴檔案 '{requirements_file}' 不存在。")
-        sys.exit(1)
+        log("偵測到 --light-mode。注意：安裝的套件相同，但主程式應載入輕量模型。")
 
     # --- 關鍵步驟：安裝依賴 ---
+    # 步驟 1: 強制安裝 CPU 版本的 PyTorch (來自 POC 的驗證結果)
+    run_command(PYTORCH_CPU_COMMAND, "步驟 1/3：安裝 PyTorch (CPU 版本)")
 
-    # 步驟 1: 強制安裝 CPU 版本的 PyTorch
-    # 我們從依賴檔案中單獨挑出 torch 來特別處理
-    log("步驟 1/2：正在安裝 PyTorch (CPU 版本)...")
-    torch_install_command = [
-        sys.executable, "-m", "pip", "install",
-        "--progress-bar", "off",
-        "torch==2.2.2", # 版本號從依賴檔案中獲取
-        "--index-url", "https://download.pytorch.org/whl/cpu"
-    ]
-    run_command(torch_install_command)
-    log("PyTorch (CPU 版本) 安裝完成。")
+    # 步驟 2: 安裝其餘的 AI 依賴
+    run_command([sys.executable, "-m", "pip", "install"] + AI_DEPS, "步驟 2/3：安裝 AI 相關依賴")
 
-    # 步驟 2: 安裝其餘的所有依賴
-    # 為了確保 torch 不會被從預設的 PyPI 重新安裝，我們從需求檔案中過濾掉它
-    log("步驟 2/2：正在安裝其餘依賴...")
+    # 步驟 3: 安裝核心服務依賴
+    run_command([sys.executable, "-m", "pip", "install"] + CORE_DEPS, "步驟 3/3：安裝核心服務依賴")
 
-    try:
-        with open(requirements_file, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-
-        # 過濾掉包含 'torch' 的那一行
-        filtered_lines = [line for line in lines if 'torch' not in line]
-
-        # 建立一個暫時的依賴檔案
-        temp_req_path = os.path.join(os.path.dirname(requirements_file), "temp_requirements.txt")
-        with open(temp_req_path, 'w', encoding='utf-8') as f:
-            f.writelines(filtered_lines)
-
-        pip_command = [
-            sys.executable, "-m", "pip", "install",
-            "--progress-bar", "off",
-            "-r", temp_req_path
-        ]
-        run_command(pip_command)
-        log("所有依賴均已成功安裝。")
-
-    finally:
-        # 清理暫時檔案
-        if 'temp_req_path' in locals() and os.path.exists(temp_req_path):
-            os.remove(temp_req_path)
-            log(f"已清理暫時檔案：{temp_req_path}")
+    log("✅ 所有依賴均已成功安裝。")
 
     # --- 啟動主服務 ---
     log("所有依賴安裝完成，正在準備啟動主功能伺服器...")

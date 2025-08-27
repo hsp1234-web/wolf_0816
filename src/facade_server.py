@@ -16,6 +16,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import FileResponse
 from typing import List
+from fastapi.middleware.cors import CORSMiddleware
 
 # --- 全局變數與設定 ---
 
@@ -34,6 +35,15 @@ vue_app_dist_path = os.path.join(project_root, "vue-app", "dist")
 # --- FastAPI 應用實例 ---
 app = FastAPI(title="門面伺服器", description="提供前端介面並管理背景依賴安裝")
 
+# --- CORS 中介軟體設定 ---
+# 這是修復 WebSocket 403 Forbidden 錯誤的關鍵
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 允許所有來源，用於測試和 Colab 環境
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # --- 背景任務 ---
 
@@ -112,17 +122,21 @@ async def startup_event():
 @app.websocket("/ws/status")
 async def websocket_endpoint(websocket: WebSocket):
     """處理 WebSocket 連接，用於即時狀態更新"""
+    # [斷點日誌] 增加日誌以追蹤連線過程
+    print("[Breakpoint] /ws/status: 收到一個新的 WebSocket 連線請求。")
     await websocket.accept()
+    print("[Breakpoint] /ws/status: WebSocket 連線已接受。")
     active_connections.append(websocket)
     try:
         # 歡迎訊息
         await websocket.send_text("伺服器：連接成功！正在等待依賴安裝進度...")
+        print("[Breakpoint] /ws/status: 已發送歡迎訊息。")
         # 保持連接開啟，以接收來自服務端的廣播
         while True:
             await websocket.receive_text() # 等待客戶端可能發送的訊息 (雖然目前不會處理)
     except WebSocketDisconnect:
         active_connections.remove(websocket)
-        print("一個客戶端已斷開連接")
+        print("[Breakpoint] /ws/status: 一個客戶端已斷開連接。")
 
 
 # --- 靜態檔案服務 ---
