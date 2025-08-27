@@ -344,8 +344,12 @@ def download_model_task(model_size: str, websocket: WebSocket, manager: Connecti
 
 
 # --- WebSocket 端點 ---
-@app.websocket("/ws/main_status")
+@app.websocket("/ws/status")
 async def websocket_endpoint(websocket: WebSocket):
+    """
+    處理主 WebSocket 連線，用於即時狀態更新。
+    路徑已從 /ws/main_status 更正為 /ws/status 以符合前端和專案慣例。
+    """
     await manager.connect(websocket)
     await manager.send_personal_json({"type": "full_state", "payload": state_manager.get_full_state()}, websocket)
     try:

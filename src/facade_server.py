@@ -14,7 +14,7 @@ import os
 import sys
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
-from starlette.responses import FileResponse
+from starlette.responses import RedirectResponse
 from typing import List
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -139,19 +139,20 @@ async def websocket_endpoint(websocket: WebSocket):
         print("[Breakpoint] /ws/status: 一個客戶端已斷開連接。")
 
 
-# --- 靜態檔案服務 ---
+# --- 靜態檔案服務 (SPA) ---
+# 根據 CH_log.md 中的歷史經驗 (2025-08-25T07:40:38+08:00),
+# 為了完全避免根路徑掛載與 WebSocket 的潛在衝突，並適應前端資源的固定路徑，
+# 我們將靜態檔案掛載到 /ui 子路徑下，並在根目錄 / 提供一個自動重定向。
 
-# 掛載 /assets 目錄
-app.mount("/assets", StaticFiles(directory=os.path.join(vue_app_dist_path, "assets")), name="assets")
+@app.get("/", include_in_schema=False)
+async def root_redirect():
+    """在根目錄提供到 /ui/ 的重定向"""
+    return RedirectResponse("/ui/")
 
-# 捕獲所有其他路由，並回傳 Vue 應用的主頁
-@app.get("/{full_path:path}")
-async def serve_vue_app(full_path: str):
-    """
-    提供 Vue 應用程式的 index.html。
-    這是為了支援 SPA (單頁應用) 的路由模式，無論前端路由是什麼，都回傳主入口檔案。
-    """
-    return FileResponse(os.path.join(vue_app_dist_path, "index.html"))
+# 將包含 SPA 的靜態檔案目錄掛載到 /ui
+# html=True 確保了所有指向 /ui 下不存在路徑的請求都會回傳 index.html
+app.mount("/ui", StaticFiles(directory=vue_app_dist_path, html=True), name="ui")
+
 
 # --- 主程式入口 (用於直接執行測試) ---
 if __name__ == "__main__":

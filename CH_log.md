@@ -1,3 +1,18 @@
+## 2025-08-27T11:55:04+08:00
+
+### fix(gateway): 修正 API 閘道器的 WebSocket 端點路徑
+
+- **動機**: 在修復了 `facade_server.py` 的路由問題後，完整應用程式的前端依然無法建立 WebSocket 連線，顯示為「已離線」。
+- **根本原因**: 經過深入調查，發現問題的根源不在於路由衝突，而是主應用程式 `services/api_gateway/main.py` 中的 WebSocket 端點被錯誤地命名為 `/ws/main_status`，而前端應用程式則固定嘗試連接到 `/ws/status`。這個不匹配導致連線在主應用程式接手後立即失敗。
+- **解決方案**:
+    1.  **統一端點路徑**: 修改 `services/api_gateway/main.py`，將 `@app.websocket("/ws/main_status")` 更正為 `@app.websocket("/ws/status")`，使其與前端的呼叫及專案慣例（如 `facade_server.py`）保持一致。
+- **驗證**:
+    1.  **建立新的無介面測試**: 根據使用者要求，建立了一個新的、獨立的測試腳本 `test_api_gateway_ws.py`。此腳本專門用於在無介面的情況下，直接測試 `api_gateway` 的 WebSocket 連線和初始狀態回報功能。
+    2.  **TDD 流程**:
+        - 首先，在未修改的程式碼上執行新測試，測試如預期般因 `403 Forbidden` 錯誤而「成功地失敗」，證明了測試的有效性。
+        - 套用端點路徑的修復後，再次執行測試，測試成功通過，驗證了 WebSocket 連線已恢復，且初始狀態能被正確接收。
+
+---
 ## 2025-08-27T10:49:55+08:00
 
 ### refactor(startup): 完善 v16 架構以實現真正的非阻塞啟動
@@ -27,7 +42,7 @@
 - **動機**: 徹底解決專案在 Google Colab 等受限環境中，因啟動流程冗長、超時、不透明所導致的啟動失敗與使用者體驗不佳的核心問題。舊的「預先烘烤依賴」模型已被證明過於笨重且不夠靈活。
 - **核心變更**:
     1.  **廢除舊架構**: 完全移除了 `prebake_dependencies.py` 和 `run.py`，廢除了 `dependencies.tar.gz` 的打包/解包流程。
-    2.  **引入門面伺服器 (`src/facade_server.py`)**: 建立了一個輕量級的 FastAPI 伺服器，其唯一職責是秒級啟動並提供前端介面，同時在背景啟動依賴安裝程序。
+    2.  **引入門面伺服器 (`src/facade_server.py`)**: 建立了一個輕量級的 FastAPI 伺ervidor，其唯一職責是秒級啟動並提供前端介面，同時在背景啟動依賴安裝程序。
     3.  **引入背景安裝器 (`src/background_installer.py`)**:
         - 此腳本負責在背景「原地」安裝所有依賴，並透過 `stdout` 輸出進度。
         - **CPU 優先**: 強制使用 `--index-url` 從特定來源安裝 PyTorch 的 CPU 版本，大幅縮減下載體積。
@@ -163,7 +178,7 @@
     - **進展**: 新的架構非常成功，`e2e_test.py` 現在可以穩定地啟動伺服器、上傳檔案、並在背景執行轉錄任務。
     - **最後的 1% 問題**: 測試在最後一步「驗證任務出現在完成列表中」時超時失敗。
     - **原因分析**: 背景的 `transcription_worker.py` 在完成工作後，會呼叫一個內部 API (`/api/internal/task_update`) 來回報狀態。我已經為此新增了對應的端點和 Pydantic 模型，並編寫了更新中央狀態 (`state_manager`) 的邏輯。然而，這個狀態更新似乎沒有被正確地透過 WebSocket 廣播給前端。
-    - **瓶頸**: 問題極有可能位於 `main.py` 中 `/api/internal/task_update` 端點的實作，或是 `state_manager` 在處理這類更新時的內部邏輯。這是目前系統中唯一剩下的、未經驗證的「斷點」。
+    - **瓶頸**: 問題極有可能位於 `main.py` 中 `/api/internal/task_update` 端點的實作，或是 `state_manager` 在處理這類更新時的內部 logique。這是目前系統中唯一剩下的、未經驗證的「斷點」。
 
 - **給下一位助理的建議**
     - **專注焦點**: 請將所有注意力集中在 `services/api_gateway/main.py` 中的 `task_update` 函式。
