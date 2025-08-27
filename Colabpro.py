@@ -377,66 +377,108 @@ def _log_subprocess_output(server_proc, log_manager, shared_state):
 
 def launch_application(project_path_str: str, log_manager: DisplayManager):
     """
-    v16 架構下的新版啟動器。
-    它只負責啟動門面伺服器，並為其建立網路通道。
-    所有複雜的依賴安裝和主服務啟動都由門面伺服器自己處理。
+    v17 架構下的新版啟動器。
+    它負責協調啟動三個核心服務：
+    1. 資料庫管理器 (src/db/manager.py)
+    2. 統一 API 伺服器 (src/api_server.py)
+    3. 轉錄工作者 (workers/transcription_worker.py)
     """
     project_path = Path(project_path_str)
     shared_state = log_manager._state
-    server_proc, tunnel_manager = None, None
+    db_manager_proc, api_server_proc, worker_proc, tunnel_manager = None, None, None, None
 
-    # 門面伺服器固定使用 8000 埠
-    FACADE_SERVER_PORT = 8000
+    # API 伺服器固定使用 8000 埠
+    API_SERVER_PORT = 8000
 
     try:
-        shared_state["status"] = "正在啟動門面伺服器..."
+        # --- 步驟 1: 啟動資料庫管理器 ---
+        shared_state["status"] = "正在啟動資料庫管理器..."
+        log_manager.print_ui()
+        db_manager_command = [sys.executable, "src/db/manager.py"]
+        db_manager_proc = subprocess.Popen(
+            db_manager_command, cwd=project_path, text=True,
+            encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+        )
+        # 建立一個執行緒來非阻塞地記錄 DB Manager 的日誌
+        db_log_thread = threading.Thread(target=_log_subprocess_output, args=(db_manager_proc, log_manager, shared_state))
+        db_log_thread.daemon = True
+        db_log_thread.start()
+
+        # 等待 DB Manager 就緒 (透過 client 的重試機制隱含處理)
+        log_manager.log("INFO", "等待資料庫管理器就緒...")
+        time.sleep(5) # 給予基礎啟動時間
+        if db_manager_proc.poll() is not None:
+            raise RuntimeError(f"資料庫管理器啟動失敗，返回碼: {db_manager_proc.poll()}")
+        log_manager.log("SUCCESS", "✅ 資料庫管理器已在背景啟動。")
+
+
+        # --- 步驟 2: 啟動統一 API 伺服器 ---
+        shared_state["status"] = "正在啟動統一 API 伺服器..."
         log_manager.print_ui()
 
-        # 準備啟動門面伺服器的命令
         server_command = [
             sys.executable, "-m", "uvicorn",
-            "src.facade_server:app",
+            "src.api_server:app", # <-- 已更新為新的 API 伺服器
             "--host", "0.0.0.0",
-            "--port", str(FACADE_SERVER_PORT)
+            "--port", str(API_SERVER_PORT)
         ]
 
-        # 準備子程序的環境變數
+        # 準備子程序的環境變數 (如果需要)
         server_env = os.environ.copy()
         if LIGHT_MODE:
             server_env["LIGHT_MODE"] = "1"
             log_manager.log("INFO", "輕量測試模式已啟用 (設定環境變數 LIGHT_MODE=1)。")
 
-        # 直接啟動伺服器，日誌會直接輸出到 Colab Cell
-        server_proc = subprocess.Popen(server_command, cwd=project_path, text=True, encoding='utf-8', env=server_env)
+        api_server_proc = subprocess.Popen(server_command, cwd=project_path, text=True, encoding='utf-8', env=server_env)
 
         # 給伺服器一點時間啟動
         time.sleep(5)
-        if server_proc.poll() is not None:
-             raise RuntimeError(f"門面伺服器啟動失敗，返回碼: {server_proc.poll()}")
+        if api_server_proc.poll() is not None:
+             raise RuntimeError(f"API 伺服器啟動失敗，返回碼: {api_server_proc.poll()}")
 
-        shared_state["status"] = f"門面伺服器運行中 (埠號: {FACADE_SERVER_PORT})"
-        log_manager.log("SUCCESS", f"✅ 門面伺服器已在 http://127.0.0.1:{FACADE_SERVER_PORT} 啟動")
+        shared_state["status"] = f"API 伺服器運行中 (埠號: {API_SERVER_PORT})"
+        log_manager.log("SUCCESS", f"✅ 統一 API 伺服器已在 http://127.0.0.1:{API_SERVER_PORT} 啟動")
 
-        # 為門面伺服器啟動網路通道
-        tunnel_manager = TunnelManager(FACADE_SERVER_PORT, shared_state, project_path, log_manager)
+
+        # --- 步驟 3: 啟動背景工作者 ---
+        shared_state["status"] = "正在啟動背景工作者..."
+        log_manager.print_ui()
+        worker_command = [sys.executable, "workers/transcription_worker.py"]
+        worker_proc = subprocess.Popen(
+            worker_command, cwd=project_path, text=True,
+            encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+        )
+        # 為 worker 建立日誌執行緒
+        worker_log_thread = threading.Thread(target=_log_subprocess_output, args=(worker_proc, log_manager, shared_state))
+        worker_log_thread.daemon = True
+        worker_log_thread.start()
+        log_manager.log("SUCCESS", "✅ 轉錄工作者已在背景啟動。")
+
+
+        # --- 步驟 4: 為 API 伺服器啟動網路通道 ---
+        tunnel_manager = TunnelManager(API_SERVER_PORT, shared_state, project_path, log_manager)
         tunnel_manager.start_tunnels()
         shared_state["status"] = "正在建立網路通道..."
 
         # 等待通道建立
         while len(shared_state["urls"]) < len(TUNNEL_ORDER):
-            if server_proc.poll() is not None:
-                shared_state["status"] = f"❌ 門面伺服器已停止 (返回碼: {server_proc.poll()})"
+            if api_server_proc.poll() is not None:
+                shared_state["status"] = f"❌ API 伺服器已停止 (返回碼: {api_server_proc.poll()})"
                 break
+            if worker_proc.poll() is not None:
+                shared_state["status"] = f"❌ 背景工作者已停止 (返回碼: {worker_proc.poll()})"
+                # 這是一個非致命錯誤，我們仍然可以讓 API 伺服器運行
+                log_manager.log("ERROR", "背景工作者意外終止！")
             log_manager.print_ui()
             time.sleep(UI_REFRESH_SECONDS)
 
         shared_state["all_tunnels_done"] = True
         shared_state["status"] = "✅ 通道已就緒，請透過上方網址訪問介面"
-        log_manager.log("INFO", "前端介面已可訪問，後端依賴正在背景安裝中...")
+        log_manager.log("INFO", "後端服務已就緒。")
         log_manager.print_ui()
 
         # 持續監控，直到使用者中斷
-        server_proc.wait()
+        api_server_proc.wait()
 
     except KeyboardInterrupt:
         log_manager.log("WARN", "收到使用者中斷指令，正在優雅地關閉所有服務...")
@@ -447,13 +489,27 @@ def launch_application(project_path_str: str, log_manager: DisplayManager):
         shared_state["status"] = "關閉中..."
         log_manager.print_ui()
         if tunnel_manager: tunnel_manager.stop_tunnels()
-        if server_proc and server_proc.poll() is None:
-            log_manager.log("INFO", "正在終止門面伺服器...")
-            server_proc.terminate()
+        if api_server_proc and api_server_proc.poll() is None:
+            log_manager.log("INFO", "正在終止 API 伺服器...")
+            api_server_proc.terminate()
             try:
-                server_proc.wait(timeout=5)
+                api_server_proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                server_proc.kill()
+                api_server_proc.kill()
+        if worker_proc and worker_proc.poll() is None:
+            log_manager.log("INFO", "正在終止轉錄工作者...")
+            worker_proc.terminate()
+            try:
+                worker_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                worker_proc.kill()
+        if db_manager_proc and db_manager_proc.poll() is None:
+            log_manager.log("INFO", "正在終止資料庫管理器...")
+            db_manager_proc.terminate()
+            try:
+                db_manager_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                db_manager_proc.kill()
 
         display(HTML(create_log_viewer_html(log_manager)))
         log_manager.log("INFO", "所有服務已關閉。")
