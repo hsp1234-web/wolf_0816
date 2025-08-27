@@ -1,5 +1,27 @@
-# 門面伺服器 (facade_server.py) 所需的最小依賴
-# 版本號已根據用戶要求鎖定
+# ==============================================================================
+#  輕量級伺服器 (facade_server) 核心依賴
+# ==============================================================================
+#
+# 此列表由 `test_lightweight_ai_poc.py` 腳本在 2025-08-27 成功驗證。
+# 它包含了門面伺服器啟動時，為了能成功載入 `transcriber` 模組所需的所有依賴。
+#
+# --- 基礎伺服器需求 ---
 fastapi==0.110.0
 uvicorn==0.29.0
 websockets==12.0
+
+# --- 核心 AI 與數據處理依賴 ---
+# 為了解決 NumPy 2.0 與 torch 的相容性問題
+numpy<2.0
+# `transcriber` 模組的直接依賴
+torch
+opencc-python-reimplemented
+faster-whisper
+
+# --- `faster-whisper` 的間接依賴 (來自其官方 requirements.txt) ---
+ctranslate2>=4.0,<5
+huggingface_hub>=0.13
+tokenizers>=0.13,<1
+onnxruntime>=1.14,<2
+av>=11
+tqdm
