@@ -1,3 +1,17 @@
+## 2025-08-27T11:28:44+08:00
+
+### fix(server): 修正門面伺服器的靜態檔案路由以解決 WebSocket 衝突
+
+- **動機**: 使用者回報前端應用程式無法與後端建立 WebSocket 連線，導致應用程式無法正常初始化。日誌顯示重複的 `WebSocket /ws/status" 403 Forbidden` 錯誤。
+- **根本原因**: 經查核 `src/facade_server.py`，發現一個「捕獲所有」的路由 `app.get("/{full_path:path}")` 錯誤地攔截了 WebSocket 的初始升級請求，並回傳了 `index.html`，從而導致連線失敗。此問題與 `CH_log.md` 中 `2025-08-25` 的歷史紀錄完全相同，證實為一次問題迴歸 (regression)。
+- **解決方案**:
+    1.  **修正路由邏輯**: 參考 `CH_log.md` 中記載的、先前已驗證成功的做法，修改了 `src/facade_server.py`。移除了錯誤的 `app.get("/{full_path:path}")` 路由。
+    2.  **採用標準 SPA 路由**: 實作了將靜態檔案掛載至 `/ui` 子路徑，並在根目錄 `/` 提供到 `/ui/` 的自動重新導向。這徹底隔離了前端靜態檔案與 WebSocket 的路由，從根本上解決了衝突。
+- **驗證**:
+    - **修正測試腳本**: 在測試過程中，發現 `test_websocket_connection.py` 依賴一個不穩定的 `print` 輸出。將其修改為監聽 Uvicorn 更為可靠的 `"[accepted]"` 日誌訊息。
+    - **執行 E2E 測試**: 執行了修正後的 `test_websocket_connection.py`，測試成功通過，日誌明確顯示 `✅✅✅ 測試通過`，驗證了 WebSocket 連線已恢復正常。
+
+---
 ## 2025-08-27T10:49:55+08:00
 
 ### refactor(startup): 完善 v16 架構以實現真正的非阻塞啟動
@@ -163,7 +177,7 @@
     - **進展**: 新的架構非常成功，`e2e_test.py` 現在可以穩定地啟動伺服器、上傳檔案、並在背景執行轉錄任務。
     - **最後的 1% 問題**: 測試在最後一步「驗證任務出現在完成列表中」時超時失敗。
     - **原因分析**: 背景的 `transcription_worker.py` 在完成工作後，會呼叫一個內部 API (`/api/internal/task_update`) 來回報狀態。我已經為此新增了對應的端點和 Pydantic 模型，並編寫了更新中央狀態 (`state_manager`) 的邏輯。然而，這個狀態更新似乎沒有被正確地透過 WebSocket 廣播給前端。
-    - **瓶頸**: 問題極有可能位於 `main.py` 中 `/api/internal/task_update` 端點的實作，或是 `state_manager` 在處理這類更新時的內部邏輯。這是目前系統中唯一剩下的、未經驗證的「斷點」。
+    - **瓶頸**: 問題極有可能位於 `main.py` 中 `/api/internal/task_update` 端點的實作，或是 `state_manager` 在處理這類更新時的內部 logique。這是目前系統中唯一剩下的、未經驗證的「斷點」。
 
 - **給下一位助理的建議**
     - **專注焦點**: 請將所有注意力集中在 `services/api_gateway/main.py` 中的 `task_update` 函式。

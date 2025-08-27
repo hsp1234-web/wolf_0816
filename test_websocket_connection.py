@@ -91,7 +91,8 @@ def run_websocket_test():
                 stripped_line = line.strip()
                 log.info(f"[伺服器] {stripped_line}")
                 # 將關鍵日誌放入佇列
-                if "WebSocket 連線已接受" in stripped_line:
+                # 修正：直接監聽 uvicorn 的標準成功日誌，而不是依賴應用程式的 print 語句
+                if '"WebSocket /ws/status" [accepted]' in stripped_line:
                     q.put("SUCCESS")
                 elif "connection rejected (403 Forbidden)" in stripped_line:
                     q.put("FAILURE_403")
