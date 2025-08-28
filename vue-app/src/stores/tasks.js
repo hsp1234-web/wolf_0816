@@ -9,12 +9,13 @@ const getInitialState = () => {
   // DEBUG: 追蹤狀態是否被重設
   // useNotificationStore().addNotification('DEBUG: getInitialState() called!', 'warning');
   return {
-    // v16 新增：追蹤初始依賴安裝的狀態
+    // v18 架構修復：由於不再有獨立的門面伺服器和安裝階段，
+    // 我們直接將應用程式狀態預設為「已完成」。
     installationStatus: {
-      inProgress: true, // 預設為正在安裝
-      message: '正在連接到啟動伺服器...',
+      inProgress: false,
+      message: '',
       log: [],
-      completed: false,
+      completed: true,
       failed: false,
     },
   taskPool: [], // 用於存放待處理任務的佇列
@@ -218,6 +219,16 @@ export const useTasksStore = defineStore('tasks', {
 
       // 處理廣播或無特定目標的訊息
       switch (type) {
+        // NOTE: v17 版後端在初次連線時會發送 `all_tasks` 而非 `full_state`
+        case 'all_tasks':
+          console.log('[WebSocket] 正在處理 all_tasks (初始狀態)...');
+          // 後端回傳的 payload 是一個 task 列表，我們需要將其更新到 state 中
+          this.$patch(state => {
+            state.appState.pending_tasks = payload.filter(t => t.status === 'pending' || t.status === 'running');
+            state.appState.completed_tasks = payload.filter(t => t.status === 'completed' || t.status === 'failed');
+          });
+          console.log('[WebSocket] all_tasks 已應用。');
+          break;
         case 'full_state':
           console.log('[WebSocket] 正在處理 full_state...');
           // 新增日誌：將收到的完整狀態物件轉為字串印出，以便在 E2E 測試中驗證

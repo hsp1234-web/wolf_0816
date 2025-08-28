@@ -120,8 +120,26 @@ def parse_db_task(task_data: dict) -> dict:
 
 @app.get("/api/health", tags=["System"])
 async def health_check():
-    """一個簡單的健康檢查端點。"""
-    return {"status": "ok", "message": "統一 API 伺服器運行中。"}
+    """增強的健康檢查端點，回報各個子系統的狀態。"""
+    db_client: DBClient = app.state.db_client
+    subsystems = {}
+
+    # 1. 檢查資料庫連線
+    try:
+        # 執行一個輕量級的操作來確認連線
+        db_client.get_all_tasks()
+        subsystems["database_connection"] = {"status": "ok", "message": "成功連接到資料庫管理器。"}
+    except Exception as e:
+        subsystems["database_connection"] = {"status": "error", "message": f"無法連接到資料庫管理器: {e}"}
+
+    # 總體狀態
+    overall_status = "ok" if all(s["status"] == "ok" for s in subsystems.values()) else "error"
+
+    return {
+        "status": overall_status,
+        "message": "API 伺服器運行中，各子系統狀態如下。",
+        "subsystems": subsystems
+    }
 
 @app.get("/api/tasks", response_model=List[TaskResponse], tags=["Tasks"])
 async def get_all_tasks():
@@ -170,6 +188,17 @@ async def notify_update(payload: Dict[str, Any]):
     await websocket_manager.broadcast_json(payload)
     return {"status": "ok", "message": "notification broadcasted"}
 
+# NOTE: This is the endpoint the hardware monitor uses. It was lost in a refactor.
+@app.post("/api/internal/system_update", include_in_schema=False)
+async def system_update(payload: Dict[str, Any]):
+    """
+    一個供硬體監控等內部服務呼叫的端點，專門用於廣播系統狀態。
+    """
+    # 直接將收到的整個 payload 作為 WebSocket 訊息廣播出去
+    # hardware_monitor_worker 已將其打包成 { "type": "SYSTEM_STATS", "payload": ... } 格式
+    await websocket_manager.broadcast_json(payload)
+    return {"status": "ok"}
+
 
 # --- WebSocket 端點 ---
 
@@ -202,13 +231,21 @@ async def websocket_endpoint(websocket: WebSocket):
 import os
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
+from starlette.responses import RedirectResponse
+
+# 解決根目錄衝突的關鍵修復
+@app.get("/", include_in_schema=False)
+async def root_redirect():
+    """將根目錄請求重新導向到前端應用的入口。"""
+    return RedirectResponse(url="/ui/")
 
 # 從環境變數讀取由 run_services.py 傳入的靜態檔案目錄絕對路徑
 STATIC_DIR = os.environ.get("STATIC_DIR")
 
 if STATIC_DIR and Path(STATIC_DIR).exists():
     log.info(f"正在從環境變數指定的目錄提供前端檔案: {STATIC_DIR}")
-    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+    # 將前端掛載到 /ui 子路徑
+    app.mount("/ui", StaticFiles(directory=STATIC_DIR, html=True), name="static")
 else:
     log.warning("環境變數 STATIC_DIR 未設定或指向的路徑不存在。")
     log.warning("前端介面將無法使用。")

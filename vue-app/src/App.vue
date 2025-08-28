@@ -246,7 +246,7 @@ onMounted(() => {
   tasksStore.initializeSystem();
 
   // 這個可以保留，因为它獲取的是相對靜態的功能開關狀態
-  systemStore.fetchFeatureStatus();
+  // systemStore.fetchFeatureStatus(); // NOTE: 經確認，此為舊版 API，已移除。
 })
 </script>
 

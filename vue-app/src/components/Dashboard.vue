@@ -28,16 +28,26 @@
   </div>
 
   <div class="card worker-status-card">
-    <h2>🛠️ 工作者狀態</h2>
-    <div v-if="Object.keys(workerStatuses).length > 0" class="worker-status-container">
-      <div v-for="(status, name) in workerStatuses" :key="name" class="worker-stat-item">
-        <span class="status-light" :class="getWorkerStatusClass(status.status)"></span>
-        <strong class="worker-name">{{ name }}:</strong>
-        <span class="worker-status-text">{{ translateWorkerStatus(status.status) }}</span>
+    <h2>🚦 系統狀態總覽 (紅綠燈)</h2>
+    <div class="worker-status-container">
+      <!-- WebSocket / Database -->
+      <div class="worker-stat-item">
+        <span class="status-light" :class="statusClass"></span>
+        <strong class="worker-name">核心通訊:</strong>
+        <span class="worker-status-text">{{ socketConnected ? '連線正常' : '已斷線' }}</span>
       </div>
-    </div>
-    <div v-else>
-      <p>正在等待工作者狀態...</p>
+      <!-- Transcription Worker -->
+      <div class="worker-stat-item">
+        <span class="status-light" :class="getWorkerStatusClass(workerStatuses.transcription?.status || 'NOT_STARTED')"></span>
+        <strong class="worker-name">轉錄服務:</strong>
+        <span class="worker-status-text">{{ translateWorkerStatus(workerStatuses.transcription?.status || 'NOT_STARTED') }}</span>
+      </div>
+      <!-- Hardware Monitor -->
+      <div class="worker-stat-item">
+         <span class="status-light" :class="systemStats.cpu_usage != null ? 'status-green' : 'status-gray'"></span>
+        <strong class="worker-name">硬體監控:</strong>
+        <span class="worker-status-text">{{ systemStats.cpu_usage != null ? '運作中' : '未啟動' }}</span>
+      </div>
     </div>
   </div>
 </template>
@@ -68,20 +78,42 @@ const statusText = computed(() => {
 
 const performHealthCheck = async () => {
   logAction('click-run-health-check');
-  notificationStore.addNotification('正在執行健康檢查...', 'info');
+  notificationStore.addNotification('正在執行全方位健康檢查...', 'info', 2000);
   const result = await tasksStore.runHealthCheck();
 
+  let report_lines = ["<strong>全方位健康檢查報告:</strong>"];
+  let final_status = 'success';
+
+  // 1. 檢查後端子系統
   if (result.success) {
-    const { backend_status, backend_message } = result.response;
-    const message = `健康檢查成功！後端狀態: ${backend_status} (${backend_message})`;
-    notificationStore.addNotification(message, 'success', 5000);
-    logAction('health-check-success', { ...result.response });
+    const backend_response = result.response;
+    report_lines.push(`- ✅ 後端 API (總體): ${backend_response.status}`);
+    for (const [key, sub_status] of Object.entries(backend_response.subsystems || {})) {
+      const icon = sub_status.status === 'ok' ? '✅' : '❌';
+      report_lines.push(`  - ${icon} ${key}: ${sub_status.status}`);
+    }
   } else {
+    final_status = 'error';
     const error_message = result.error?.message || '未知錯誤';
-    const message = `健康檢查失敗: ${error_message}`;
-    notificationStore.addNotification(message, 'error', 7000);
-    logAction('health-check-failed', { error: error_message });
+    report_lines.push(`- ❌ 後端 API: 檢查失敗 (${error_message})`);
   }
+
+  // 2. 檢查前端 WebSocket 連線狀態
+  const ws_icon = socketConnected.value ? '✅' : '❌';
+  if (!socketConnected.value) final_status = 'error';
+  report_lines.push(`- ${ws_icon} 前端 WebSocket: ${socketConnected.value ? '已連線' : '已斷線'}`);
+
+  // 3. 檢查關鍵按鈕狀態 (以「下載模型」按鈕為例)
+  // 由於此檢查在儀表板元件中，我們無法直接存取其他元件的 DOM。
+  // 更穩健的方式是檢查其背後的響應式狀態。
+  const isModelReady = tasksStore.localModels.available.includes('tiny'); // 假設我們關心 'tiny' 模型
+  const isModelChecking = tasksStore.localModels.checking;
+  const isDownloadButtonDisabled = isModelReady || isModelChecking;
+  report_lines.push(`- ℹ️ 前端按鈕狀態 (下載模型): ${isDownloadButtonDisabled ? '已禁用 (正常)' : '可啟用'}`);
+
+  const report_html = report_lines.join('<br>');
+  notificationStore.addNotification(report_html, final_status, 10000); // 顯示 10 秒
+  logAction('health-check-completed', { report: report_lines.join('; '), status: final_status });
 };
 
 const statusClass = computed(() => {
