@@ -19,7 +19,17 @@ FORCE_DEPS_REFRESH = False #@param {type:"boolean"}
 #@markdown > **勾選後，將以輕量模式啟動，使用 `tiny.en` 模型並安裝較少的依賴，適合快速測試。**
 LIGHT_MODE = True #@param {type:"boolean"}
 #@markdown ---
-#@markdown ### **(2) 通用設定**
+#@markdown ### **(2) 通道啟用設定**
+#@markdown > **選擇要啟動的公開存取通道。預設全部啟用。**
+#@markdown ---
+#@markdown **啟用 Colab 官方代理**
+ENABLE_COLAB_PROXY = True #@param {type:"boolean"}
+#@markdown **啟用 Localtunnel**
+ENABLE_LOCALTUNNEL = True #@param {type:"boolean"}
+#@markdown **啟用 Cloudflare**
+ENABLE_CLOUDFLARE = True #@param {type:"boolean"}
+#@markdown ---
+#@markdown ### **(3) 通用設定**
 #@markdown > **此處為儀表板顯示相關的常用設定。**
 #@markdown ---
 #@markdown **儀表板更新頻率 (秒)**
@@ -70,6 +80,7 @@ import traceback
 from datetime import datetime
 from collections import deque
 import html
+import requests
 
 # --- 模擬 Colab 環境 ---
 try:
@@ -276,9 +287,7 @@ class TunnelManager:
         name = "Colab"
         self._log("INFO", f"-> {name} 競速開始...")
 
-        # 修正：新增對回傳 URL 的域名驗證，過濾掉非公開的內部網址。
-        VALID_COLAB_DOMAINS = re.compile(r"\.(google\.com|googleusercontent\.com)$")
-
+        # 放寬驗證：改回 v10 的寬鬆驗證邏輯
         max_retries = 10
         retry_delay_seconds = 8
         for attempt in range(max_retries):
@@ -287,27 +296,17 @@ class TunnelManager:
 
                 result_url = ""
                 if IN_COLAB:
-                    # 執行 JS 以獲取 URL
                     raw_result = colab_output.eval_js(f"google.colab.kernel.proxyPort({self.port}, {{'cache': false}})", timeout_sec=self._timeout)
                     if isinstance(raw_result, str) and raw_result.startswith('http'):
                         result_url = raw_result
                 else: # Mock behavior
                     time.sleep(1)
-                    # 在本地測試時，可以切換這個值來測試驗證邏輯
-                    # result_url = "http://mock-colab-url.dev" # 測試失敗案例
-                    result_url = "https://1234-abcd-123.colab.googleusercontent.com" # 測試成功案例
+                    result_url = "https://mock-colab-url.googleusercontent.com"
 
                 if result_url:
-                    # 驗證 URL
-                    from urllib.parse import urlparse
-                    parsed_url = urlparse(result_url)
-                    hostname = parsed_url.hostname
-                    if hostname and VALID_COLAB_DOMAINS.search(hostname):
-                        self._state["urls"][name] = {"url": result_url}
-                        self._log("SUCCESS", f"✅ {name} 在第 {attempt + 1} 次嘗試後成功 (網址已驗證): {result_url}")
-                        return
-                    else:
-                        self._log("WARN", f"⚠️ {name} 第 {attempt + 1}/{max_retries} 次嘗試回傳了無效或非公開的網址，已丟棄: {result_url}")
+                    self._state["urls"][name] = {"url": result_url}
+                    self._log("SUCCESS", f"✅ {name} 在第 {attempt + 1} 次嘗試後成功: {result_url}")
+                    return
                 else:
                     self._log("WARN", f"⚠️ {name} 第 {attempt + 1}/{max_retries} 次嘗試未回傳有效網址 (收到: {raw_result})")
 
@@ -323,11 +322,21 @@ class TunnelManager:
 
     def start_tunnels(self):
         self._state["urls"] = {}
-        racers = [
-            threading.Thread(target=self._get_cloudflare_url),
-            threading.Thread(target=self._get_localtunnel_url),
-            threading.Thread(target=self._get_colab_url),
-        ]
+
+        racers = []
+        if ENABLE_CLOUDFLARE:
+            racers.append(threading.Thread(target=self._get_cloudflare_url))
+        if ENABLE_LOCALTUNNEL:
+            racers.append(threading.Thread(target=self._get_localtunnel_url))
+        if ENABLE_COLAB_PROXY:
+            racers.append(threading.Thread(target=self._get_colab_url))
+
+        if not racers:
+            self._log("WARN", "所有代理通道均未啟用，將無法生成公開存取網址。")
+            self._state["all_tunnels_done"] = True
+            return
+
+        self._log("INFO", f"🚀 開始併發獲取 {len(racers)} 個已啟用的代理網址...")
         for r in racers: r.start(); self.threads.append(r)
 
     def stop_tunnels(self):
@@ -376,108 +385,121 @@ def _log_subprocess_output(server_proc, log_manager, shared_state):
 
 def launch_application(project_path_str: str, log_manager: DisplayManager):
     """
-    v17 架構下的新版啟動器。
-    它負責協調啟動三個核心服務：
-    1. 資料庫管理器 (src/db/manager.py)
-    2. 統一 API 伺服器 (src/api_server.py)
-    3. 轉錄工作者 (workers/transcription_worker.py)
+    v18 架構：採用 v10 的單點委派模式，啟動一個統一的總管腳本。
     """
     project_path = Path(project_path_str)
     shared_state = log_manager._state
-    db_manager_proc, api_server_proc, worker_proc, tunnel_manager = None, None, None, None
-
-    # API 伺服器固定使用 8000 埠
-    API_SERVER_PORT = 8000
+    manager_proc, tunnel_manager = None, None
 
     try:
-        # --- 步驟 1: 啟動資料庫管理器 ---
-        shared_state["status"] = "正在啟動資料庫管理器..."
-        log_manager.print_ui()
-        db_manager_command = [sys.executable, "src/db/manager.py"]
-        db_manager_proc = subprocess.Popen(
-            db_manager_command, cwd=project_path, text=True,
-            encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.STDOUT
-        )
-        # 建立一個執行緒來非阻塞地記錄 DB Manager 的日誌
-        db_log_thread = threading.Thread(target=_log_subprocess_output, args=(db_manager_proc, log_manager, shared_state))
-        db_log_thread.daemon = True
-        db_log_thread.start()
-
-        # 等待 DB Manager 就緒 (透過 client 的重試機制隱含處理)
-        log_manager.log("INFO", "等待資料庫管理器就緒...")
-        time.sleep(5) # 給予基礎啟動時間
-        if db_manager_proc.poll() is not None:
-            raise RuntimeError(f"資料庫管理器啟動失敗，返回碼: {db_manager_proc.poll()}")
-        log_manager.log("SUCCESS", "✅ 資料庫管理器已在背景啟動。")
-
-
-        # --- 步驟 2: 啟動統一 API 伺服器 ---
-        shared_state["status"] = "正在啟動統一 API 伺服器..."
+        # --- 步驟 1: 啟動統一的服務總管腳本 ---
+        shared_state["status"] = "正在啟動後端服務總管..."
         log_manager.print_ui()
 
-        server_command = [
-            sys.executable, "-m", "uvicorn",
-            "src.api_server:app", # <-- 已更新為新的 API 伺服器
-            "--host", "0.0.0.0",
-            "--port", str(API_SERVER_PORT)
-        ]
+        manager_command = [sys.executable, str(project_path / "scripts" / "run_services.py")]
 
-        # 準備子程序的環境變數 (如果需要)
-        server_env = os.environ.copy()
+        # 準備環境變數，將 LIGHT_MODE 傳遞給總管腳本
+        manager_env = os.environ.copy()
         if LIGHT_MODE:
-            server_env["LIGHT_MODE"] = "1"
-            log_manager.log("INFO", "輕量測試模式已啟用 (設定環境變數 LIGHT_MODE=1)。")
+            manager_env["LIGHT_MODE"] = "1"
+            log_manager.log("INFO", "輕量測試模式已啟用。")
 
-        api_server_proc = subprocess.Popen(server_command, cwd=project_path, text=True, encoding='utf-8', env=server_env)
-
-        # 給伺服器一點時間啟動
-        time.sleep(5)
-        if api_server_proc.poll() is not None:
-             raise RuntimeError(f"API 伺服器啟動失敗，返回碼: {api_server_proc.poll()}")
-
-        shared_state["status"] = f"API 伺服器運行中 (埠號: {API_SERVER_PORT})"
-        log_manager.log("SUCCESS", f"✅ 統一 API 伺服器已在 http://127.0.0.1:{API_SERVER_PORT} 啟動")
-
-
-        # --- 步驟 3: 啟動背景工作者 ---
-        shared_state["status"] = "正在啟動背景工作者..."
-        log_manager.print_ui()
-        worker_command = [sys.executable, "workers/transcription_worker.py"]
-        worker_proc = subprocess.Popen(
-            worker_command, cwd=project_path, text=True,
-            encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+        manager_proc = subprocess.Popen(
+            manager_command, cwd=project_path, text=True,
+            encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            env=manager_env
         )
-        # 為 worker 建立日誌執行緒
-        worker_log_thread = threading.Thread(target=_log_subprocess_output, args=(worker_proc, log_manager, shared_state))
-        worker_log_thread.daemon = True
-        worker_log_thread.start()
-        log_manager.log("SUCCESS", "✅ 轉錄工作者已在背景啟動。")
 
+        # 在背景執行緒中監聽總管腳本的輸出，以獲取埠號
+        log_thread = threading.Thread(target=_log_subprocess_output, args=(manager_proc, log_manager, shared_state), daemon=True)
+        log_thread.start()
 
-        # --- 步驟 4: 為 API 伺服器啟動網路通道 ---
-        tunnel_manager = TunnelManager(API_SERVER_PORT, shared_state, project_path, log_manager)
-        tunnel_manager.start_tunnels()
-        shared_state["status"] = "正在建立網路通道..."
-
-        # 等待通道建立
-        while len(shared_state["urls"]) < len(TUNNEL_ORDER):
-            if api_server_proc.poll() is not None:
-                shared_state["status"] = f"❌ API 伺服器已停止 (返回碼: {api_server_proc.poll()})"
+        # --- 步驟 2: 等待後端回報埠號 ---
+        shared_state["status"] = "等待後端服務回報埠號..."
+        port_detection_timeout = 30  # 等待30秒
+        start_time = time.monotonic()
+        app_port = None
+        while time.monotonic() - start_time < port_detection_timeout:
+            if manager_proc.poll() is not None:
+                raise RuntimeError(f"後端服務總管在回報埠號前已意外終止，返回碼: {manager_proc.poll()}")
+            app_port = shared_state.get('app_port')
+            if app_port:
+                log_manager.log("SUCCESS", f"✅ 成功從後端獲取到應用程式埠號: {app_port}")
                 break
-            if worker_proc.poll() is not None:
-                shared_state["status"] = f"❌ 背景工作者已停止 (返回碼: {worker_proc.poll()})"
-                # 這是一個非致命錯誤，我們仍然可以讓 API 伺服器運行
-                log_manager.log("ERROR", "背景工作者意外終止！")
-            log_manager.print_ui()
-            time.sleep(UI_REFRESH_SECONDS)
+            time.sleep(0.5)
+
+        if not app_port:
+            raise RuntimeError(f"在 {port_detection_timeout} 秒內未偵測到後端回報的埠號。")
+
+        # --- 步驟 3: 為 API 伺服器啟動網路通道 ---
+        shared_state["status"] = "正在建立網路通道..."
+        tunnel_manager = TunnelManager(app_port, shared_state, project_path, log_manager)
+        tunnel_manager.start_tunnels()
+
+        # 等待所有啟用的通道完成 (或失敗)
+        enabled_tunnels_count = ENABLE_COLAB_PROXY + ENABLE_LOCALTUNNEL + ENABLE_CLOUDFLARE
+        if enabled_tunnels_count > 0:
+            while len(shared_state.get("urls", {})) < enabled_tunnels_count:
+                if manager_proc.poll() is not None:
+                    shared_state["status"] = f"❌ 後端服務已停止 (返回碼: {manager_proc.poll()})"
+                    log_manager.log("CRITICAL", "後端服務總管意外終止！")
+                    raise RuntimeError("後端服務在通道建立期間意外終止。")
+                log_manager.print_ui()
+                time.sleep(UI_REFRESH_SECONDS)
 
         shared_state["all_tunnels_done"] = True
-        shared_state["status"] = "✅ 通道已就緒，請透過上方網址訪問介面"
-        log_manager.log("INFO", "後端服務已就緒。")
+        log_manager.log("INFO", "通道已建立，準備驗證服務健康度...")
         log_manager.print_ui()
 
-        # 持續監控，直到使用者中斷
-        api_server_proc.wait()
+        # --- 步驟 4: 執行健康檢查 ---
+        shared_state["status"] = "正在驗證服務健康度..."
+        health_check_passed = False
+        health_check_timeout = 90  # 總超時秒數
+        health_check_start_time = time.monotonic()
+
+        # 從已有的 URL 中找到一個可用的來進行健康檢查
+        urls_to_check = [info["url"] for info in shared_state.get("urls", {}).values() if "錯誤" not in info.get("url", "")]
+
+        if not urls_to_check:
+            log_manager.log("CRITICAL", "❌ 沒有可用的代理網址來進行健康檢查。")
+        else:
+            while time.monotonic() - health_check_start_time < health_check_timeout:
+                if manager_proc.poll() is not None:
+                    log_manager.log("CRITICAL", "❌ 後端服務在健康檢查期間意外終止。")
+                    break
+
+                for base_url in urls_to_check:
+                    try:
+                        health_url = f"{base_url.rstrip('/')}/api/health"
+                        log_manager.log("INFO", f"正在嘗試健康檢查: {health_url}")
+                        response = requests.get(health_url, timeout=10)
+                        if response.status_code == 200 and response.json().get("status") == "ok":
+                            log_manager.log("SUCCESS", f"✅ 健康檢查通過！服務在 {base_url} 上已就緒。")
+                            health_check_passed = True
+                            break
+                        else:
+                            log_manager.log("WARN", f"健康檢查失敗 (狀態碼: {response.status_code})，將重試...")
+                    except requests.exceptions.RequestException as e:
+                        log_manager.log("WARN", f"健康檢查請求失敗: {e}，將重試...")
+
+                if health_check_passed:
+                    break
+
+                log_manager.print_ui()
+                time.sleep(5) # 每次重試間隔
+
+        if health_check_passed:
+            shared_state["status"] = "✅ 應用程式已就緒"
+            log_manager.log("SUCCESS", "✅ 應用程式已通過健康檢查並準備就緒！")
+        else:
+            shared_state["status"] = "❌ 健康檢查失敗"
+            log_manager.log("CRITICAL", "❌ 後端服務未能在指定時間內通過健康檢查。")
+
+        log_manager.print_ui()
+
+        # --- 步驟 5: 持續監控，直到使用者中斷 ---
+        log_manager.log("INFO", "啟動器將保持運行以維持後端服務。可隨時手動中斷。")
+        manager_proc.wait()
 
     except KeyboardInterrupt:
         log_manager.log("WARN", "收到使用者中斷指令，正在優雅地關閉所有服務...")
@@ -487,28 +509,15 @@ def launch_application(project_path_str: str, log_manager: DisplayManager):
     finally:
         shared_state["status"] = "關閉中..."
         log_manager.print_ui()
-        if tunnel_manager: tunnel_manager.stop_tunnels()
-        if api_server_proc and api_server_proc.poll() is None:
-            log_manager.log("INFO", "正在終止 API 伺服器...")
-            api_server_proc.terminate()
+        if tunnel_manager:
+            tunnel_manager.stop_tunnels()
+        if manager_proc and manager_proc.poll() is None:
+            log_manager.log("INFO", "正在終止後端服務總管...")
+            manager_proc.terminate()
             try:
-                api_server_proc.wait(timeout=5)
+                manager_proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
-                api_server_proc.kill()
-        if worker_proc and worker_proc.poll() is None:
-            log_manager.log("INFO", "正在終止轉錄工作者...")
-            worker_proc.terminate()
-            try:
-                worker_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                worker_proc.kill()
-        if db_manager_proc and db_manager_proc.poll() is None:
-            log_manager.log("INFO", "正在終止資料庫管理器...")
-            db_manager_proc.terminate()
-            try:
-                db_manager_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                db_manager_proc.kill()
+                manager_proc.kill()
 
         display(HTML(create_log_viewer_html(log_manager)))
         log_manager.log("INFO", "所有服務已關閉。")

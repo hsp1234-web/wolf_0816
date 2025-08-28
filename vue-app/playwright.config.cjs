@@ -1,21 +1,23 @@
 import { defineConfig, devices } from '@playwright/test';
 import path from 'path';
 
-const port = process.env.PORT || 5173;
-const baseURL = `http://localhost:${port}`;
+// The backend server will run on port 8000
+const baseURL = `http://localhost:8000`;
 
 export default defineConfig({
   testDir: './tests/e2e',
-  testMatch: '**/frontend_only.spec.js', // <<<<<<<<<<< 已將測試目標換回正式測試檔案
+  // Point to the new full_launch test file
+  testMatch: '**/full_launch.spec.js',
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: 0,
   workers: 1,
   reporter: 'list',
-  timeout: 60 * 1000,
+  // User requested 120 second timeout
+  timeout: 120 * 1000,
   use: {
     baseURL: baseURL,
-    trace: 'on',
+    trace: 'on-first-retry',
   },
   projects: [
     {
@@ -23,13 +25,19 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
     },
   ],
+  // Configure the web server to run the actual backend
   webServer: {
-    command: 'bun run dev',
-    url: baseURL,
+    // Command to start the backend service manager
+    command: 'python scripts/run_services.py',
+    // URL for Playwright to poll to check if the server is ready.
+    // Using the health check endpoint is the most reliable way.
+    url: `${baseURL}/api/health`,
     reuseExistingServer: !process.env.CI,
     stdout: 'pipe',
     stderr: 'pipe',
+    // Timeout for the web server to start
     timeout: 120 * 1000,
-    cwd: path.resolve(__dirname),
+    // The CWD is the project root, not the vue-app directory
+    cwd: path.resolve(__dirname, '..'),
   },
 });

@@ -197,3 +197,18 @@ async def websocket_endpoint(websocket: WebSocket):
         log.error(f"WebSocket 處理過程中發生錯誤: {e}", exc_info=True)
         if websocket in websocket_manager.active_connections:
             websocket_manager.disconnect(websocket)
+
+# --- 前端靜態檔案服務 (必須在所有 API 路由之後掛載) ---
+import os
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
+
+# 從環境變數讀取由 run_services.py 傳入的靜態檔案目錄絕對路徑
+STATIC_DIR = os.environ.get("STATIC_DIR")
+
+if STATIC_DIR and Path(STATIC_DIR).exists():
+    log.info(f"正在從環境變數指定的目錄提供前端檔案: {STATIC_DIR}")
+    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+else:
+    log.warning("環境變數 STATIC_DIR 未設定或指向的路徑不存在。")
+    log.warning("前端介面將無法使用。")

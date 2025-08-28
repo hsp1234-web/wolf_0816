@@ -241,8 +241,9 @@ watch(socketConnected, async (newValue, oldValue) => {
 });
 
 onMounted(() => {
-  // v16 修改：程式啟動的入口點改為連接到門面伺服器
-  tasksStore.connectToFacadeServer();
+  // v18 架構修復：移除對已廢棄的門面伺服器的呼叫。
+  // 現在我們直接初始化與主後端服務的 WebSocket 連線。
+  tasksStore.initializeSystem();
 
   // 這個可以保留，因为它獲取的是相對靜態的功能開關狀態
   systemStore.fetchFeatureStatus();
