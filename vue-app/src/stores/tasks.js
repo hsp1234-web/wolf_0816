@@ -257,6 +257,15 @@ export const useTasksStore = defineStore('tasks', {
           this.appState.system_stats.cpu_usage = payload.cpu_usage;
           this.appState.system_stats.ram_usage = payload.ram_usage;
           break;
+        case 'SERVICE_STATUS_UPDATE':
+          console.log(`[WebSocket] 正在處理 SERVICE_STATUS_UPDATE for ${payload.service}...`);
+          this.$patch(state => {
+            if (!state.appState.worker_statuses[payload.service]) {
+              state.appState.worker_statuses[payload.service] = {};
+            }
+            state.appState.worker_statuses[payload.service].status = payload.status;
+          });
+          break;
         default:
           console.warn(`[WebSocket] 未知的訊息類型: ${type}`);
           break;

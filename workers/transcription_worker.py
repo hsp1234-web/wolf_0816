@@ -22,6 +22,7 @@ log = logging.getLogger(__name__)
 WORKER_TYPE = "transcribe"
 POLL_INTERVAL_SECONDS = 5 # 當沒有任務時，輪詢的間隔時間
 API_PORT = 8000 # API 伺服器在 Colabpro.py 中被固定在 8000
+WORKER_STATUS_URL = f"http://127.0.0.1:{API_PORT}/api/internal/worker_status"
 NOTIFY_URL = f"http://127.0.0.1:{API_PORT}/api/internal/notify_update"
 
 def notify_api_server(payload: dict):
@@ -86,6 +87,19 @@ def main():
     except ImportError:
         log.error("`requests` 套件未安裝。請執行 `pip install requests`。")
         sys.exit(1)
+
+    # 在進入主迴圈之前，先向 API 伺服器回報「準備就緒」狀態
+    try:
+        log.info("正在回報 'ready' 狀態給 API 伺服器...")
+        requests.post(
+            f"http://127.0.0.1:{API_PORT}/api/internal/worker_status",
+            json={"service": "transcription", "status": "ready"},
+            timeout=5
+        )
+        log.info("✅ 'ready' 狀態回報成功。")
+    except requests.RequestException as e:
+        log.error(f"❌ 無法回報 'ready' 狀態給 API 伺服器: {e}")
+        # 即使回報失敗，我們仍然可以繼續嘗試處理任務，因為核心功能依賴資料庫輪詢
 
     db_client = get_client()
 

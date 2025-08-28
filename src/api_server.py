@@ -209,6 +209,27 @@ async def system_update(payload: Dict[str, Any]):
     return {"status": "ok"}
 
 
+# 新增的端點，用於接收來自背景工作者的通用狀態更新
+class WorkerStatus(BaseModel):
+    service: str
+    status: str
+
+@app.post("/api/internal/worker_status", include_in_schema=False)
+async def worker_status_update(status: WorkerStatus):
+    """
+    接收來自背景工作者（如轉錄服務）的狀態更新，並將其廣播給前端。
+    """
+    log.info(f"收到來自 '{status.service}' 服務的狀態更新: {status.status}")
+    await websocket_manager.broadcast_json({
+        "type": "SERVICE_STATUS_UPDATE",
+        "payload": {
+            "service": status.service,
+            "status": status.status
+        }
+    })
+    return {"status": "ok", "message": "worker status broadcasted"}
+
+
 # --- WebSocket 端點 ---
 
 @app.websocket("/ws/status")
