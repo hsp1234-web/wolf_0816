@@ -202,13 +202,21 @@ async def websocket_endpoint(websocket: WebSocket):
 import os
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
+from starlette.responses import RedirectResponse
+
+# 解決根目錄衝突的關鍵修復
+@app.get("/", include_in_schema=False)
+async def root_redirect():
+    """將根目錄請求重新導向到前端應用的入口。"""
+    return RedirectResponse(url="/ui/")
 
 # 從環境變數讀取由 run_services.py 傳入的靜態檔案目錄絕對路徑
 STATIC_DIR = os.environ.get("STATIC_DIR")
 
 if STATIC_DIR and Path(STATIC_DIR).exists():
     log.info(f"正在從環境變數指定的目錄提供前端檔案: {STATIC_DIR}")
-    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+    # 將前端掛載到 /ui 子路徑
+    app.mount("/ui", StaticFiles(directory=STATIC_DIR, html=True), name="static")
 else:
     log.warning("環境變數 STATIC_DIR 未設定或指向的路徑不存在。")
     log.warning("前端介面將無法使用。")
