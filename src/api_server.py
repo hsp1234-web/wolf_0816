@@ -120,8 +120,35 @@ def parse_db_task(task_data: dict) -> dict:
 
 @app.get("/api/health", tags=["System"])
 async def health_check():
-    """一個簡單的健康檢查端點。"""
-    return {"status": "ok", "message": "統一 API 伺服器運行中。"}
+    """增強的健康檢查端點，回報各個子系統的狀態，並包含詳細日誌。"""
+    log.info("[Health Check] 收到健康檢查請求...")
+    db_client: DBClient = app.state.db_client
+    subsystems = {}
+
+    # 1. 檢查資料庫連線
+    log.info("[Health Check] 正在 Ping 資料庫管理器...")
+    try:
+        response = db_client.ping()
+        if response == "pong":
+            subsystems["database_connection"] = {"status": "ok", "message": "成功 Ping 到資料庫管理器。"}
+            log.info("[Health Check] ✅ 資料庫連線檢查成功。")
+        else:
+            subsystems["database_connection"] = {"status": "error", "message": f"資料庫管理器回應異常: {response}"}
+            log.error(f"[Health Check] ❌ 資料庫連線檢查失敗，回應異常: {response}")
+    except Exception as e:
+        subsystems["database_connection"] = {"status": "error", "message": f"無法連接到資料庫管理器: {e}"}
+        log.error(f"[Health Check] ❌ 資料庫連線檢查失敗: {e}")
+
+    # 總體狀態
+    overall_status = "ok" if all(s["status"] == "ok" for s in subsystems.values()) else "error"
+
+    response_payload = {
+        "status": overall_status,
+        "message": "API 伺服器運行中，各子系統狀態如下。",
+        "subsystems": subsystems
+    }
+    log.info(f"[Health Check] 正在回傳健康檢查結果: {response_payload}")
+    return response_payload
 
 @app.get("/api/tasks", response_model=List[TaskResponse], tags=["Tasks"])
 async def get_all_tasks():
@@ -170,6 +197,17 @@ async def notify_update(payload: Dict[str, Any]):
     await websocket_manager.broadcast_json(payload)
     return {"status": "ok", "message": "notification broadcasted"}
 
+# NOTE: This is the endpoint the hardware monitor uses. It was lost in a refactor.
+@app.post("/api/internal/system_update", include_in_schema=False)
+async def system_update(payload: Dict[str, Any]):
+    """
+    一個供硬體監控等內部服務呼叫的端點，專門用於廣播系統狀態。
+    """
+    # 直接將收到的整個 payload 作為 WebSocket 訊息廣播出去
+    # hardware_monitor_worker 已將其打包成 { "type": "SYSTEM_STATS", "payload": ... } 格式
+    await websocket_manager.broadcast_json(payload)
+    return {"status": "ok"}
+
 
 # --- WebSocket 端點 ---
 
@@ -187,9 +225,46 @@ async def websocket_endpoint(websocket: WebSocket):
 
         # 2. 保持連線，以接收未來的指令或廣播
         while True:
-            # 在這個實作中，我們主要依賴伺服器端的廣播，
-            # 但保留 receive_text() 可以保持連線並處理客戶端可能發送的訊息（例如 ping）。
-            await websocket.receive_text()
+            data = await websocket.receive_text()
+            try:
+                message = json.loads(data)
+                msg_type = message.get("type")
+                payload = message.get("payload", {})
+                request_id = payload.get("request_id")
+
+                if msg_type == "HEALTH_CHECK_REQUEST":
+                    log.info(f"[WS Health Check] 收到來自客戶端的健康檢查請求 (request_id: {request_id})")
+
+                    # 執行與 HTTP health check 相同的檢查邏輯
+                    subsystems = {}
+                    try:
+                        db_response = db_client.ping()
+                        if db_response == "pong":
+                            subsystems["database_connection"] = {"status": "ok"}
+                        else:
+                            subsystems["database_connection"] = {"status": "error", "message": f"回應異常: {db_response}"}
+                    except Exception as e:
+                        subsystems["database_connection"] = {"status": "error", "message": str(e)}
+
+                    response_payload = {
+                        "type": "HEALTH_CHECK_RESPONSE",
+                        "request_id": request_id,
+                        "payload": {
+                            "success": all(s["status"] == "ok" for s in subsystems.values()),
+                            "backend_status": "ok",
+                            "backend_message": "所有後端子系統回應正常。",
+                            "subsystems": subsystems
+                        }
+                    }
+                    await websocket.send_json(response_payload)
+                    log.info(f"[WS Health Check] 已回傳健康檢查結果 (request_id: {request_id})")
+
+                # 此處可以加入其他客戶端指令的處理邏輯...
+
+            except json.JSONDecodeError:
+                log.warning(f"從客戶端收到無效的 JSON 訊息: {data}")
+            except Exception as e:
+                log.error(f"處理客戶端 WebSocket 訊息時發生錯誤: {e}", exc_info=True)
 
     except WebSocketDisconnect:
         websocket_manager.disconnect(websocket)
@@ -202,13 +277,21 @@ async def websocket_endpoint(websocket: WebSocket):
 import os
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
+from starlette.responses import RedirectResponse
+
+# 解決根目錄衝突的關鍵修復
+@app.get("/", include_in_schema=False)
+async def root_redirect():
+    """將根目錄請求重新導向到前端應用的入口。"""
+    return RedirectResponse(url="/ui/")
 
 # 從環境變數讀取由 run_services.py 傳入的靜態檔案目錄絕對路徑
 STATIC_DIR = os.environ.get("STATIC_DIR")
 
 if STATIC_DIR and Path(STATIC_DIR).exists():
     log.info(f"正在從環境變數指定的目錄提供前端檔案: {STATIC_DIR}")
-    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+    # 將前端掛載到 /ui 子路徑
+    app.mount("/ui", StaticFiles(directory=STATIC_DIR, html=True), name="static")
 else:
     log.warning("環境變數 STATIC_DIR 未設定或指向的路徑不存在。")
     log.warning("前端介面將無法使用。")

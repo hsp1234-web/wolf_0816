@@ -7,7 +7,7 @@
 #@markdown **後端程式碼倉庫 (REPOSITORY_URL)**
 REPOSITORY_URL = "https://github.com/hsp1234-web/wolf_0816.git" #@param {type:"string"}
 #@markdown **後端版本分支或標籤 (TARGET_BRANCH_OR_TAG)**
-TARGET_BRANCH_OR_TAG = "703" #@param {type:"string"}
+TARGET_BRANCH_OR_TAG = "742" #@param {type:"string"}
 #@markdown **專案資料夾名稱 (PROJECT_FOLDER_NAME)**
 PROJECT_FOLDER_NAME = "wolf_project" #@param {type:"string"}
 #@markdown **強制刷新後端程式碼 (FORCE_REPO_REFRESH)**
@@ -81,6 +81,7 @@ from datetime import datetime
 from collections import deque
 import html
 import requests
+from queue import Queue, Empty
 
 # --- 模擬 Colab 環境 ---
 try:
@@ -202,11 +203,11 @@ class DisplayManager:
         print("\n".join(output), flush=True)
 
 class TunnelManager:
-    def __init__(self, port, shared_state, project_path, log_manager, timeout=20):
+    def __init__(self, port, project_path, log_manager, results_queue, timeout=20):
         self.port = port
-        self._state = shared_state
         self._project_path = Path(project_path)
         self._log = log_manager.log
+        self._results_queue = results_queue
         self._timeout = timeout
         self.threads = []
         self.processes = []
@@ -220,7 +221,7 @@ class TunnelManager:
             start_time = time.monotonic()
             for line in iter(proc.stdout.readline, ''):
                 if time.monotonic() - start_time > self._timeout:
-                    self._state["urls"][name] = {"url": "錯誤：超時"}
+                    self._results_queue.put((name, {"url": "錯誤：超時"}))
                     self._log("ERROR", f"❌ {name} 超時")
                     return
 
@@ -230,33 +231,28 @@ class TunnelManager:
                     url = match.group(1)
                     result_data = {"url": url}
 
-                    # 恢復 v10 的密碼獲取邏輯
                     if name == "Localtunnel":
                         self._log("INFO", "-> 正在為 Localtunnel 獲取隧道密碼...")
                         try:
                             pass_proc = subprocess.run(['curl', '-s', 'https://loca.lt/mytunnelpassword'], capture_output=True, text=True, timeout=10)
                             if pass_proc.returncode == 0 and pass_proc.stdout.strip():
-                                password = pass_proc.stdout.strip()
-                                result_data['password'] = password
-                                self._log("SUCCESS", f"✅ Localtunnel 密碼已獲取: {password}")
+                                result_data['password'] = pass_proc.stdout.strip()
                             else:
                                 self._log("WARN", "⚠️ 無法獲取 Localtunnel 密碼。")
                         except Exception as e:
                             self._log("ERROR", f"❌ 獲取 Localtunnel 密碼時出錯: {e}")
 
-                    self._state["urls"][name] = result_data
+                    self._results_queue.put((name, result_data))
                     self._log("SUCCESS", f"✅ {name} 成功: {url}")
                     return
 
             proc.wait(timeout=1)
-            if self._state["urls"].get(name) is None:
-                self._state["urls"][name] = {"url": f"錯誤：程序已結束 (Code: {proc.returncode})"}
+            self._results_queue.put((name, {"url": f"錯誤：程序已結束 (Code: {proc.returncode})"}))
         except Exception as e:
             self._log("ERROR", f"❌ {name} 執行時發生錯誤: {e}")
-            self._state["urls"][name] = {"url": f"錯誤：執行失敗"}
+            self._results_queue.put((name, {"url": "錯誤：執行失敗"}))
 
     def _get_cloudflare_url(self):
-        # ... (implementation is the same as v12, just uses self._log) ...
         name = "Cloudflare"
         try:
             cf_path = self._project_path / 'cloudflared'
@@ -268,48 +264,41 @@ class TunnelManager:
             self._run_tunnel_service(name, command, r'(https?://\S+\.trycloudflare\.com)', self._project_path)
         except Exception as e:
             self._log("ERROR", f"❌ Cloudflared 前置作業失敗: {e}")
-            self._state["urls"][name] = f"錯誤：前置作業失敗"
-
+            self._results_queue.put((name, {"url": "錯誤：前置作業失敗"}))
 
     def _get_localtunnel_url(self):
         name = "Localtunnel"
         try:
-            # 修正：避免全域安裝，改用 npx 直接執行套件，更穩健。
             self._log("INFO", "正在使用 'npx localtunnel' 啟動通道...")
             command = ['npx', 'localtunnel', '--port', str(self.port), '--bypass-tunnel-reminder']
             self._run_tunnel_service(name, command, r'(https?://\S+\.loca\.lt)', self._project_path)
         except Exception as e:
             self._log("ERROR", f"❌ Localtunnel 前置作業失敗: {e}")
-            self._state["urls"][name] = {"url": "錯誤：前置作業失敗"}
-
+            self._results_queue.put((name, {"url": "錯誤：前置作業失敗"}))
 
     def _get_colab_url(self):
         name = "Colab"
         self._log("INFO", f"-> {name} 競速開始...")
-
-        # 放寬驗證：改回 v10 的寬鬆驗證邏輯
         max_retries = 10
         retry_delay_seconds = 8
         for attempt in range(max_retries):
             try:
                 if attempt > 0: self._log("INFO", f"-> {name} 正在進行第 {attempt + 1}/{max_retries} 次嘗試...")
-
                 result_url = ""
                 if IN_COLAB:
                     raw_result = colab_output.eval_js(f"google.colab.kernel.proxyPort({self.port}, {{'cache': false}})", timeout_sec=self._timeout)
                     if isinstance(raw_result, str) and raw_result.startswith('http'):
                         result_url = raw_result
-                else: # Mock behavior
+                else:
                     time.sleep(1)
                     result_url = "https://mock-colab-url.googleusercontent.com"
 
                 if result_url:
-                    self._state["urls"][name] = {"url": result_url}
+                    self._results_queue.put((name, {"url": result_url}))
                     self._log("SUCCESS", f"✅ {name} 在第 {attempt + 1} 次嘗試後成功: {result_url}")
                     return
                 else:
                     self._log("WARN", f"⚠️ {name} 第 {attempt + 1}/{max_retries} 次嘗試未回傳有效網址 (收到: {raw_result})")
-
             except Exception as e:
                 self._log("WARN", f"⚠️ {name} 第 {attempt + 1}/{max_retries} 次嘗試時發生錯誤: {e}")
 
@@ -318,11 +307,9 @@ class TunnelManager:
                 time.sleep(retry_delay_seconds)
 
         self._log("CRITICAL", f"❌ {name} 在 {max_retries} 次嘗試後徹底失敗。")
-        self._state["urls"][name] = {"url": "錯誤：多次嘗試後失敗"}
+        self._results_queue.put((name, {"url": "錯誤：多次嘗試後失敗"}))
 
     def start_tunnels(self):
-        self._state["urls"] = {}
-
         racers = []
         if ENABLE_CLOUDFLARE:
             racers.append(threading.Thread(target=self._get_cloudflare_url))
@@ -333,7 +320,7 @@ class TunnelManager:
 
         if not racers:
             self._log("WARN", "所有代理通道均未啟用，將無法生成公開存取網址。")
-            self._state["all_tunnels_done"] = True
+            # 注意：狀態管理的責任已移至 launch_application
             return
 
         self._log("INFO", f"🚀 開始併發獲取 {len(racers)} 個已啟用的代理網址...")
@@ -384,120 +371,94 @@ def _log_subprocess_output(server_proc, log_manager, shared_state):
                 log_manager.log("ERROR", f"無法從行 '{line}' 中解析埠號。")
 
 def launch_application(project_path_str: str, log_manager: DisplayManager):
-    """
-    v18 架構：採用 v10 的單點委派模式，啟動一個統一的總管腳本。
-    """
     project_path = Path(project_path_str)
     shared_state = log_manager._state
     manager_proc, tunnel_manager = None, None
 
     try:
-        # --- 步驟 1: 啟動統一的服務總管腳本 ---
+        # --- 步驟 1: 啟動後端服務 ---
         shared_state["status"] = "正在啟動後端服務總管..."
         log_manager.print_ui()
-
-        manager_command = [sys.executable, str(project_path / "scripts" / "run_services.py")]
-
-        # 準備環境變數，將 LIGHT_MODE 傳遞給總管腳本
         manager_env = os.environ.copy()
         if LIGHT_MODE:
             manager_env["LIGHT_MODE"] = "1"
             log_manager.log("INFO", "輕量測試模式已啟用。")
-
+        manager_command = [sys.executable, str(project_path / "scripts" / "run_services.py")]
         manager_proc = subprocess.Popen(
             manager_command, cwd=project_path, text=True,
             encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             env=manager_env
         )
-
-        # 在背景執行緒中監聽總管腳本的輸出，以獲取埠號
         log_thread = threading.Thread(target=_log_subprocess_output, args=(manager_proc, log_manager, shared_state), daemon=True)
         log_thread.start()
 
-        # --- 步驟 2: 等待後端回報埠號 ---
+        # --- 步驟 2: 等待埠號 ---
         shared_state["status"] = "等待後端服務回報埠號..."
-        port_detection_timeout = 30  # 等待30秒
+        port_detection_timeout = 30
         start_time = time.monotonic()
         app_port = None
         while time.monotonic() - start_time < port_detection_timeout:
             if manager_proc.poll() is not None:
                 raise RuntimeError(f"後端服務總管在回報埠號前已意外終止，返回碼: {manager_proc.poll()}")
-            app_port = shared_state.get('app_port')
-            if app_port:
+            if app_port := shared_state.get('app_port'):
                 log_manager.log("SUCCESS", f"✅ 成功從後端獲取到應用程式埠號: {app_port}")
                 break
             time.sleep(0.5)
-
         if not app_port:
             raise RuntimeError(f"在 {port_detection_timeout} 秒內未偵測到後端回報的埠號。")
 
-        # --- 步驟 3: 為 API 伺服器啟動網路通道 ---
+        # --- 步驟 3: 非阻塞式地建立通道與執行健康檢查 ---
         shared_state["status"] = "正在建立網路通道..."
-        tunnel_manager = TunnelManager(app_port, shared_state, project_path, log_manager)
+        shared_state['urls'] = {} # 初始化 urls 字典
+        results_queue = Queue()
+        tunnel_manager = TunnelManager(app_port, project_path, log_manager, results_queue)
         tunnel_manager.start_tunnels()
 
-        # 等待所有啟用的通道完成 (或失敗)
+        health_check_passed = False
+        urls_to_check = []
         enabled_tunnels_count = ENABLE_COLAB_PROXY + ENABLE_LOCALTUNNEL + ENABLE_CLOUDFLARE
-        if enabled_tunnels_count > 0:
-            while len(shared_state.get("urls", {})) < enabled_tunnels_count:
-                if manager_proc.poll() is not None:
-                    shared_state["status"] = f"❌ 後端服務已停止 (返回碼: {manager_proc.poll()})"
-                    log_manager.log("CRITICAL", "後端服務總管意外終止！")
-                    raise RuntimeError("後端服務在通道建立期間意外終止。")
-                log_manager.print_ui()
-                time.sleep(UI_REFRESH_SECONDS)
+        monitoring_deadline = time.monotonic() + 120 # 總監控時間
+
+        while time.monotonic() < monitoring_deadline and len(shared_state.get("urls", {})) < enabled_tunnels_count:
+            if manager_proc.poll() is not None:
+                shared_state["status"] = f"❌ 後端服務已停止 (返回碼: {manager_proc.poll()})"
+                raise RuntimeError("後端服務在通道建立期間意外終止。")
+
+            # 處理佇列中的新 URL
+            try:
+                name, data = results_queue.get_nowait()
+                shared_state["urls"][name] = data
+                if "錯誤" not in data.get("url", ""):
+                    urls_to_check.append(data["url"])
+            except Empty:
+                pass # 佇列為空，繼續執行
+
+            # 如果尚未通過健康檢查，且有新的 URL 可供檢查
+            if not health_check_passed and urls_to_check:
+                shared_state["status"] = "正在驗證服務健康度..."
+                url_to_test = urls_to_check.pop(0)
+                try:
+                    health_url = f"{url_to_test.rstrip('/')}/api/health"
+                    log_manager.log("INFO", f"正在嘗試健康檢查: {health_url}")
+                    response = requests.get(health_url, timeout=10)
+                    if response.status_code == 200 and response.json().get("status") == "ok":
+                        log_manager.log("SUCCESS", f"✅ 健康檢查通過！服務在 {url_to_test} 上已就緒。")
+                        shared_state["status"] = "✅ 應用程式已就緒"
+                        health_check_passed = True
+                except requests.exceptions.RequestException as e:
+                    log_manager.log("WARN", f"健康檢查請求失敗: {e}，將繼續嘗試其他網址...")
+
+            log_manager.print_ui()
+            time.sleep(UI_REFRESH_SECONDS)
 
         shared_state["all_tunnels_done"] = True
-        log_manager.log("INFO", "通道已建立，準備驗證服務健康度...")
-        log_manager.print_ui()
 
-        # --- 步驟 4: 執行健康檢查 ---
-        shared_state["status"] = "正在驗證服務健康度..."
-        health_check_passed = False
-        health_check_timeout = 90  # 總超時秒數
-        health_check_start_time = time.monotonic()
-
-        # 從已有的 URL 中找到一個可用的來進行健康檢查
-        urls_to_check = [info["url"] for info in shared_state.get("urls", {}).values() if "錯誤" not in info.get("url", "")]
-
-        if not urls_to_check:
-            log_manager.log("CRITICAL", "❌ 沒有可用的代理網址來進行健康檢查。")
-        else:
-            while time.monotonic() - health_check_start_time < health_check_timeout:
-                if manager_proc.poll() is not None:
-                    log_manager.log("CRITICAL", "❌ 後端服務在健康檢查期間意外終止。")
-                    break
-
-                for base_url in urls_to_check:
-                    try:
-                        health_url = f"{base_url.rstrip('/')}/api/health"
-                        log_manager.log("INFO", f"正在嘗試健康檢查: {health_url}")
-                        response = requests.get(health_url, timeout=10)
-                        if response.status_code == 200 and response.json().get("status") == "ok":
-                            log_manager.log("SUCCESS", f"✅ 健康檢查通過！服務在 {base_url} 上已就緒。")
-                            health_check_passed = True
-                            break
-                        else:
-                            log_manager.log("WARN", f"健康檢查失敗 (狀態碼: {response.status_code})，將重試...")
-                    except requests.exceptions.RequestException as e:
-                        log_manager.log("WARN", f"健康檢查請求失敗: {e}，將重試...")
-
-                if health_check_passed:
-                    break
-
-                log_manager.print_ui()
-                time.sleep(5) # 每次重試間隔
-
-        if health_check_passed:
-            shared_state["status"] = "✅ 應用程式已就緒"
-            log_manager.log("SUCCESS", "✅ 應用程式已通過健康檢查並準備就緒！")
-        else:
+        # --- 步驟 4: 最終狀態顯示與等待 ---
+        if not health_check_passed:
             shared_state["status"] = "❌ 健康檢查失敗"
-            log_manager.log("CRITICAL", "❌ 後端服務未能在指定時間內通過健康檢查。")
+            log_manager.log("CRITICAL", "❌ 未能在指定時間內通過健康檢查。")
 
         log_manager.print_ui()
-
-        # --- 步驟 5: 持續監控，直到使用者中斷 ---
         log_manager.log("INFO", "啟動器將保持運行以維持後端服務。可隨時手動中斷。")
         manager_proc.wait()
 
