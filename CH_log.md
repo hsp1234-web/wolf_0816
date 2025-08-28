@@ -1,3 +1,19 @@
+## 2025-08-29T04:57:51.618746+08:00
+
+### fix(fullstack): 實作工作者狀態的完整通訊鏈
+
+- **動機**: 解決因後端服務（特別是轉錄工作者）無法將其「準備就緒」的狀態回報給前端，導致 UI 上的狀態指示燈永遠顯示為「未啟動」的「假性成功」問題。
+- **核心變更**:
+    1.  **增強工作者回報機制 (`workers/transcription_worker.py`)**:
+        - 在工作者啟動時，新增一個主動的 HTTP POST 請求，向 API 伺服器發送 `{"service": "transcription", "status": "ready"}` 的狀態更新。
+    2.  **新增 API 狀態端點 (`src/api_server.py`)**:
+        - 建立了一個新的內部 API 端點 `/api/internal/worker_status`，專門用於接收來自背景工作者的狀態更新。
+        - 該端點在收到請求後，會立即將狀態更新封裝成 `SERVICE_STATUS_UPDATE` 類型的訊息，透過 WebSocket 廣播給所有前端客戶端。
+    3.  **增強前端狀態處理 (`vue-app/src/stores/tasks.js`)**:
+        - 在前端的 WebSocket 訊息處理邏輯中，新增了對 `SERVICE_STATUS_UPDATE` 訊息的處理。
+        - 現在前端能夠正確地將收到的服務狀態更新到 `worker_statuses` store 中，從而驅動 UI 的響應式更新。
+- **成果**: 此修復完整地打通了從後端工作者到前端 UI 的狀態通訊鏈，確保了儀表板上的服務狀態指示燈能夠準確、即時地反映後端服務的真實狀態。
+
 ## 2025-08-28T02:30:00+08:00
 
 ### feat(logging): 增強後端日誌並更新版本號
