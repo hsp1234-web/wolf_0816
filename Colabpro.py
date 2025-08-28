@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-#@title 📥🐺 善狼一鍵啟動器 (v17.0) 🐺
+#@title 📥🐺 善狼一鍵啟動器 (v17.1) 🐺
 #@markdown ---
 #@markdown ### **(1) 專案來源設定**
 #@markdown > **請提供 Git 倉庫的網址、要下載的分支或標籤，以及本地資料夾名稱。**
@@ -7,7 +7,7 @@
 #@markdown **後端程式碼倉庫 (REPOSITORY_URL)**
 REPOSITORY_URL = "https://github.com/hsp1234-web/wolf_0816.git" #@param {type:"string"}
 #@markdown **後端版本分支或標籤 (TARGET_BRANCH_OR_TAG)**
-TARGET_BRANCH_OR_TAG = "742" #@param {type:"string"}
+TARGET_BRANCH_OR_TAG = "745" #@param {type:"string"}
 #@markdown **專案資料夾名稱 (PROJECT_FOLDER_NAME)**
 PROJECT_FOLDER_NAME = "wolf_project" #@param {type:"string"}
 #@markdown **強制刷新後端程式碼 (FORCE_REPO_REFRESH)**
@@ -51,15 +51,16 @@ ENABLE_CLEAR_OUTPUT = True #@param {type:"boolean"}
 # ==                                  開發者日誌                                  ==
 # ======================================================================================
 #
-# 版本: 17.0 (架構: 資料庫中心化)
-# 日期: 2025-08-27T19:36:11+08:00
+# 版本: 17.1
+# 日期: 2025-08-28T02:20:00+08:00
 #
 # 本次變更重點:
+# 1. **增強日誌**: 根據使用者回饋，在後端日誌中加入了 WebSocket 健康檢查的詳細報告內容，以提高系統透明度。
+# 2. **版本更新**: 將預設的後端版本標籤更新至 "745"。
+#
+# --- v17.0 歷史紀錄 ---
 # 1. **核心架構遷移**: 從 v16 的「門面伺服器」模型，遷移至以資料庫為中心的 v17 新架構。
-# 2. **服務化啟動**: 啟動器現在會協調啟動三個獨立的常駐服務：
-#    - `src/db/manager.py`: 資料庫管理器，確保對 SQLite 的安全並發訪問。
-#    - `src/api_server.py`: 統一的 API 伺服器，處理所有 HTTP 和 WebSocket 請求。
-#    - `workers/transcription_worker.py`: 背景工作者，主動從資料庫輪詢任務。
+# 2. **服務化啟動**: 啟動器現在會協調啟動三個獨立的常駐服務。
 # 3. **移除舊元件**: 舊的 `facade_server.py` 和 `background_installer.py` 已被新架構取代並封存。
 # 4. **依賴問題修復**: 更新 `faster-whisper` 版本以解決 `av` 套件的編譯問題。
 #
@@ -511,6 +512,16 @@ if __name__ == '__main__':
         pip_install_command = [sys.executable, "-m", "pip", "install", "-r", str(requirements_path)]
         subprocess.run(pip_install_command, check=True, capture_output=True, text=True)
         log_manager_main.log("SUCCESS", "✅ 基本依賴安裝完成。")
+
+        # 新增：安裝背景工作者所需的依賴
+        log_manager_main.log("INFO", "正在安裝背景工作者所需的依賴...")
+        worker_requirements_path = Path(project_path) / "requirements-worker.txt"
+        if not worker_requirements_path.exists():
+            raise FileNotFoundError(f"找不到工作者依賴檔案: {worker_requirements_path}")
+
+        pip_install_command_worker = [sys.executable, "-m", "pip", "install", "-r", str(worker_requirements_path)]
+        subprocess.run(pip_install_command_worker, check=True, capture_output=True, text=True)
+        log_manager_main.log("SUCCESS", "✅ 背景工作者依賴安裝完成。")
 
         # 步驟 3: 啟動新的應用程式架構
         # 注意：新的 launch_application 不再需要 deps_path_str

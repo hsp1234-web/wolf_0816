@@ -256,6 +256,8 @@ async def websocket_endpoint(websocket: WebSocket):
                             "subsystems": subsystems
                         }
                     }
+                    # 新增：根據使用者要求，在回傳前將詳細報告內容記錄到後端日誌
+                    log.info(f"[WS Health Check] 產生的健康檢查報告內容: {json.dumps(response_payload, ensure_ascii=False)}")
                     await websocket.send_json(response_payload)
                     log.info(f"[WS Health Check] 已回傳健康檢查結果 (request_id: {request_id})")
 
