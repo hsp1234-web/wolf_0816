@@ -1,5 +1,5 @@
 <template>
-  <fieldset :disabled="!transcriptionFeature.enabled" :title="transcriptionFeature.message">
+  <div>
     <div id="local-file-tab" class="tab-content active">
       <div class="grid-2-col">
         <div class="card flex-col">
@@ -78,7 +78,7 @@
         </button>
       </div>
     </div>
-  </fieldset>
+  </div>
 </template>
 
 <script setup>

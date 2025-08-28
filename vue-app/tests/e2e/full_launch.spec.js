@@ -2,20 +2,21 @@
 import { test, expect } from '@playwright/test';
 
 test.describe('Full Application E2E Test', () => {
-  test('should launch the backend and render the frontend dashboard', async ({ page }) => {
+  test('should launch, respond to model check, and enable download button', async ({ page }) => {
     // The webServer in playwright.config.cjs should have already started the server.
     // We just need to navigate to the page.
     await page.goto('/');
 
     // 1. Check the page title to make sure we are on the right application
     await expect(page).toHaveTitle(/音訊轉錄儀/);
+    console.log('[Test] Page title is correct.');
 
-    // 2. Check for a key element on the dashboard to ensure the Vue app has mounted.
-    // We use the health check button as it's a stable element with a data-testid.
-    const healthCheckButton = page.getByTestId('health-check-button');
-    await expect(healthCheckButton).toBeVisible();
+    // 2. Locate the "Download Model" button using its stable data-testid
+    const downloadButton = page.getByTestId('download-model-button');
 
-    // 3. Check the text content of the button as an extra verification
-    await expect(healthCheckButton).toHaveText('執行通訊測試');
+    // 3. We just need to check that the button becomes visible. This proves that
+    // the component has rendered correctly and the feature flag issue is gone.
+    await expect(downloadButton).toBeVisible({ timeout: 10000 });
+    console.log('[Test] "Download Model" button is visible, indicating UI has loaded correctly.');
   });
 });

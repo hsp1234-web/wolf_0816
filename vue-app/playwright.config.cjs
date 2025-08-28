@@ -39,5 +39,9 @@ export default defineConfig({
     timeout: 120 * 1000,
     // The CWD is the project root, not the vue-app directory
     cwd: path.resolve(__dirname, '..'),
+    // Set environment variables for the test server
+    env: {
+      E2E_TESTING: '1',
+    },
   },
 });

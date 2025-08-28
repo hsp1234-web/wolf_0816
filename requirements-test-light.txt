@@ -1,0 +1,18 @@
+# A minimal set of requirements to run the web server for E2E testing,
+# solving the opencc issue while excluding heavy dependencies that cause compilation issues.
+
+fastapi==0.110.0
+uvicorn==0.29.0
+websockets==12.0
+pydantic-settings==2.2.1
+jsonpatch==1.33
+pytz==2024.1
+requests==2.31.0
+python-multipart==0.0.9
+psutil==5.9.8
+
+# Add the previously missing opencc package
+opencc-python-reimplemented==0.1.7
+
+# We are EXCLUDING faster-whisper and its dependency 'av' to avoid compilation errors.
+# The E2E test will run in a mocked mode that does not require the full transcription worker.

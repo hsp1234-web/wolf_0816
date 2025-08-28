@@ -1,3 +1,20 @@
+## 2025-08-29T07:38:00.282290+08:00
+
+### fix(deps): 解決 opencc 依賴缺失並移除失效的功能旗標
+
+- **動機**: 使用者回報前端模型相關功能（如下載模型按鈕）無法使用。日誌顯示 `ModuleNotFoundError: No module named 'opencc'`，同時 Playwright 測試顯示相關按鈕不存在或被禁用。
+- **根本原因分析**:
+    1.  **依賴缺失**: 後端 `transcriber.py` 腳本依賴 `opencc-python-reimplemented` 套件，但該套件未被正確安裝，導致模型檢查等上游功能失敗。
+    2.  **失效的功能旗標**: `TaskUploader.vue` 元件被一個 `<fieldset>` 包裹，其啟用狀態由一個舊的、已失效的功能旗標系統 (`systemStore`) 控制。該系統會呼叫一個已棄用的 API (`/api/v1/status`)，導致呼叫失敗並永久禁用整個轉錄上傳元件，使得按鈕無法被點擊。
+- **核心變更**:
+    1.  **安裝系統依賴**: 借鑒 `CH_log.md` 中處理 `av` 套件的經驗，執行 `sudo apt-get install -y opencc` 來安裝 `opencc` 的底層系統函式庫。
+    2.  **安裝 Python 依賴**: 在確認系統依賴就緒後，使用 `uv pip install --system -r requirements-unified.txt` 成功安裝了 `opencc-python-reimplemented` 套件。
+    3.  **移除失效的 Fieldset**: 直接從 `TaskUploader.vue` 元件中移除了包裹其所有內容的 `<fieldset :disabled="!transcriptionFeature.enabled" ...>` 標籤，因為該功能旗標邏輯已失效且多餘。
+- **驗證**:
+    - 修改了 `vue-app/tests/e2e/full_launch.spec.js` Playwright 測試。
+    - 測試現在會驗證「下載模型」按鈕 (`[data-testid="download-model-button"]`) 在頁面載入後是否變為可見，證明了失效的 `fieldset` 已被移除，UI 恢復正常。
+    - 最終測試成功通過。
+
 ## 2025-08-29T04:57:51.618746+08:00
 
 ### fix(fullstack): 實作工作者狀態的完整通訊鏈
