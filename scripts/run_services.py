@@ -91,7 +91,8 @@ def main():
         api_proc = subprocess.Popen(
             server_command, text=True, encoding='utf-8', env=server_env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            preexec_fn=os.setsid
+            preexec_fn=os.setsid,
+            cwd=project_root # 確保 uvicorn 在專案根目錄下執行，才能找到 src 模組
         )
         processes.append(api_proc)
         threading.Thread(target=stream_output, args=(api_proc, "API_Server"), daemon=True).start()
