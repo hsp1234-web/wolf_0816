@@ -1,0 +1,11 @@
+# A minimal set of requirements to run the web server for E2E testing,
+# excluding heavy dependencies that cause compilation issues.
+
+fastapi==0.110.0
+uvicorn==0.29.0
+websockets==12.0
+pydantic-settings==2.2.1
+jsonpatch==1.33
+pytz==2024.1
+requests==2.31.0
+python-multipart==0.0.9

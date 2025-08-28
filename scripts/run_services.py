@@ -10,7 +10,10 @@ import threading
 project_root_path = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root_path))
 
-from workers.hardware_monitor_worker import run_hardware_monitor
+# 只有在非測試模式下才導入和執行工作者
+IS_TESTING_MODE = os.environ.get("E2E_TESTING") == "1"
+if not IS_TESTING_MODE:
+    from workers.hardware_monitor_worker import run_hardware_monitor
 
 # 全域變數
 processes = [] # 追蹤子進程
@@ -108,25 +111,28 @@ def main():
         log(f"API 伺服器已在 http://127.0.0.1:{API_SERVER_PORT} 啟動")
         print(f"APP_PORT:{API_SERVER_PORT}", flush=True)
 
-        # --- 步驟 3: 啟動背景工作者 ---
-        log("步驟 3: 啟動背景工作者...")
-        worker_command = [sys.executable, str(project_root / "workers/transcription_worker.py")]
-        worker_proc = subprocess.Popen(
-            worker_command, text=True, encoding='utf-8',
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            preexec_fn=os.setsid
-        )
-        processes.append(worker_proc)
-        threading.Thread(target=stream_output, args=(worker_proc, "Worker"), daemon=True).start()
-        log("轉錄工作者已在背景啟動。")
+        if not IS_TESTING_MODE:
+            # --- 步驟 3: 啟動背景工作者 ---
+            log("步驟 3: 啟動背景工作者...")
+            worker_command = [sys.executable, str(project_root / "workers/transcription_worker.py")]
+            worker_proc = subprocess.Popen(
+                worker_command, text=True, encoding='utf-8',
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                preexec_fn=os.setsid
+            )
+            processes.append(worker_proc)
+            threading.Thread(target=stream_output, args=(worker_proc, "Worker"), daemon=True).start()
+            log("轉錄工作者已在背景啟動。")
 
-        # --- 步驟 4: 啟動硬體監控執行緒 ---
-        log("步驟 4: 啟動硬體監控...")
-        os.environ['API_PORT'] = str(API_SERVER_PORT) # 將 API 埠號傳遞給監控器
-        monitor_thread = threading.Thread(target=run_hardware_monitor, args=(stop_app,), daemon=True)
-        monitor_thread.start()
-        threads.append(monitor_thread)
-        log("硬體監控已在背景執行緒中啟動。")
+            # --- 步驟 4: 啟動硬體監控執行緒 ---
+            log("步驟 4: 啟動硬體監控...")
+            os.environ['API_PORT'] = str(API_SERVER_PORT) # 將 API 埠號傳遞給監控器
+            monitor_thread = threading.Thread(target=run_hardware_monitor, args=(stop_app,), daemon=True)
+            monitor_thread.start()
+            threads.append(monitor_thread)
+            log("硬體監控已在背景執行緒中啟動。")
+        else:
+            log("處於 E2E 測試模式，已跳過啟動背景工作者和硬體監控。")
 
         # --- 步驟 5: 等待主服務 (API Server) 結束 ---
         log("所有服務已啟動。監控 API 伺服器狀態...")
