@@ -7,7 +7,7 @@
 #@markdown **後端程式碼倉庫 (REPOSITORY_URL)**
 REPOSITORY_URL = "https://github.com/hsp1234-web/wolf_0816.git" #@param {type:"string"}
 #@markdown **後端版本分支或標籤 (TARGET_BRANCH_OR_TAG)**
-TARGET_BRANCH_OR_TAG = "703" #@param {type:"string"}
+TARGET_BRANCH_OR_TAG = "742" #@param {type:"string"}
 #@markdown **專案資料夾名稱 (PROJECT_FOLDER_NAME)**
 PROJECT_FOLDER_NAME = "wolf_project" #@param {type:"string"}
 #@markdown **強制刷新後端程式碼 (FORCE_REPO_REFRESH)**
@@ -310,8 +310,6 @@ class TunnelManager:
         self._results_queue.put((name, {"url": "錯誤：多次嘗試後失敗"}))
 
     def start_tunnels(self):
-        self._state["urls"] = {}
-
         racers = []
         if ENABLE_CLOUDFLARE:
             racers.append(threading.Thread(target=self._get_cloudflare_url))
@@ -322,7 +320,7 @@ class TunnelManager:
 
         if not racers:
             self._log("WARN", "所有代理通道均未啟用，將無法生成公開存取網址。")
-            self._state["all_tunnels_done"] = True
+            # 注意：狀態管理的責任已移至 launch_application
             return
 
         self._log("INFO", f"🚀 開始併發獲取 {len(racers)} 個已啟用的代理網址...")
@@ -411,6 +409,7 @@ def launch_application(project_path_str: str, log_manager: DisplayManager):
 
         # --- 步驟 3: 非阻塞式地建立通道與執行健康檢查 ---
         shared_state["status"] = "正在建立網路通道..."
+        shared_state['urls'] = {} # 初始化 urls 字典
         results_queue = Queue()
         tunnel_manager = TunnelManager(app_port, project_path, log_manager, results_queue)
         tunnel_manager.start_tunnels()
