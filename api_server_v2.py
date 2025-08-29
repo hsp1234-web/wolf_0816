@@ -1,110 +1,135 @@
+# 檔案: api_server_v2.py
+# 說明: 核心後端伺服器，負責協調下載與報告生成的工作流。
 import asyncio
+import sys
+import os
+import json
+import uuid
+from pathlib import Path
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
-import os
-import sys
 
-# 假設此腳本在專案的根目錄下
+# 專案根目錄設定
 project_root = os.path.dirname(os.path.abspath(__file__))
 scripts_dir = os.path.join(project_root, "scripts")
+reports_dir = os.path.join(project_root, "ai_reports")
+youtube_downloads_dir = os.path.join(project_root, "youtube_downloads")
+Path(reports_dir).mkdir(exist_ok=True)
+Path(youtube_downloads_dir).mkdir(exist_ok=True)
 
 app = FastAPI()
 
-class ScriptExecutionRequest(BaseModel):
+class ReportGenerationRequest(BaseModel):
     """定義 /api/execute 的請求體格式"""
-    script: str
-    args: list[str] = []
+    youtube_url: str
+    mode: str
 
 async def stream_subprocess_output(process: asyncio.subprocess.Process):
-    """
-    非同步地、交錯地串流子程序的 stdout 和 stderr，確保即時性。
-    """
-    q = asyncio.Queue()
+    """一個最簡單、最健壯的串流處理器。"""
+    while True:
+        line = await process.stdout.readline()
+        if not line:
+            break
+        yield line
 
-    async def reader(stream):
-        """從一個串流中讀取所有行，並放入佇列。"""
-        while True:
-            line = await stream.readline()
-            if not line:
-                break
-            await q.put(line)
-        # 發送一個信號表示此串流已結束
-        await q.put(None)
-
-    # 平行啟動 stdout 和 stderr 的讀取器
-    stdout_task = asyncio.create_task(reader(process.stdout))
-    stderr_task = asyncio.create_task(reader(process.stderr))
-
-    finished_streams = 0
-    while finished_streams < 2:
-        # 從佇列中獲取下一個輸出行
-        line = await q.get()
-        if line is None:
-            # 如果收到 None，表示一個串流已結束
-            finished_streams += 1
-        else:
-            yield line
-
-    # 等待子程序完全結束
-    await process.wait()
+    while True:
+        line = await process.stderr.readline()
+        if not line:
+            break
+        yield b"[STDERR] " + line
 
 @app.post("/api/execute")
-async def execute_script(request: ScriptExecutionRequest):
-    """
-    安全地執行指定腳本並即時串流其輸出。
-    """
-    # 安全性檢查：確保腳本在預期的 scripts/ 目錄下，防止路徑遍歷攻擊
-    script_path = os.path.normpath(os.path.join(scripts_dir, request.script))
-    if not script_path.startswith(os.path.abspath(scripts_dir)):
-        error_msg = f"錯誤：禁止存取此路徑 '{request.script}'。\n".encode('utf-8')
-        return StreamingResponse(iter([error_msg]), media_type="text/plain; charset=utf-8", status_code=403)
+async def execute_workflow(request: ReportGenerationRequest):
 
-    if not os.path.exists(script_path):
-        error_msg = f"錯誤：找不到腳本 '{request.script}'。\n".encode('utf-8')
-        return StreamingResponse(iter([error_msg]), media_type="text/plain; charset=utf-8", status_code=404)
+    async def workflow_generator():
+        python_executable = sys.executable
+        download_result = None
 
-    # 使用與目前環境相同的 Python 解譯器，確保環境一致性
-    python_executable = sys.executable
-    command = [python_executable, script_path] + request.args
+        # --- 步驟 1: 下載資源 (或使用 Mock) ---
+        if request.youtube_url == "USE_MOCK_FILES":
+            yield "--- [工作流 1/2] 使用 Mock 檔案進行測試... ---\n".encode('utf-8')
+            if request.mode == "subtitle":
+                mock_path = os.path.abspath("dummy_subtitle.txt")
+                download_result = {"type": "subtitle", "file_path": mock_path}
+            else: # audio
+                mock_path = os.path.abspath("dummy_audio.m4a")
+                download_result = {"type": "audio", "file_path": mock_path}
+            yield "--- [工作流 1/2] Mock 檔案準備完成 ---\n".encode('utf-8')
+        else:
+            yield "--- [工作流 1/2] 正在啟動 YouTube 資源下載器... ---\n".encode('utf-8')
+            download_script = os.path.join(scripts_dir, "download_youtube.py")
+            download_command = [
+                python_executable, "-u", download_script,
+                "--url", request.youtube_url, "--mode", request.mode
+            ]
+            process_download = await asyncio.create_subprocess_exec(
+                *download_command,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                cwd=project_root
+            )
+            stdout_dl, stderr_dl = await process_download.communicate()
+            if stderr_dl:
+                yield "[下載器 STDERR]\n".encode('utf-8') + stderr_dl
+            if process_download.returncode != 0:
+                yield "--- [工作流中止] 下載步驟失敗。 ---\n".encode('utf-8')
+                return
+            try:
+                download_result = json.loads(stdout_dl.decode())
+                yield "--- [工作流 1/2] 下載成功 ---\n".encode('utf-8')
+            except (json.JSONDecodeError, KeyError) as e:
+                yield f"--- [工作流中止] 解析下載結果失敗: {e} ---\n".encode('utf-8')
+                yield f"收到的原始輸出: {stdout_dl.decode()}\n".encode('utf-8')
+                return
 
-    try:
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=project_root  # 將工作目錄設定為專案根目錄，以利腳本中的相對路徑
+        # --- 步驟 2: 生成報告 ---
+        if not download_result:
+            yield "--- [工作流中止] 未能獲取下載結果。 ---\n".encode('utf-8')
+            return
+
+        input_file_path = download_result["file_path"]
+        yield f"--- [工作流 2/2] 已取得輸入檔案: {os.path.basename(input_file_path)} ---\n".encode('utf-8')
+
+        report_script = os.path.join(scripts_dir, "generate_gemini_report.py")
+        output_file_path = os.path.join(reports_dir, f"{uuid.uuid4()}.md")
+        report_command = [
+            python_executable, "-u", report_script,
+            "--generate", "--input-file", input_file_path, "--output-file", output_file_path
+        ]
+
+        process_report = await asyncio.create_subprocess_exec(
+            *report_command,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            cwd=project_root, env=os.environ.copy()
         )
-        return StreamingResponse(stream_subprocess_output(process), media_type="text/plain; charset=utf-8")
-    except Exception as e:
-        error_msg = f"執行腳本時發生內部錯誤: {e}\n".encode('utf-8')
-        return StreamingResponse(iter([error_msg]), media_type="text/plain; charset=utf-8", status_code=500)
 
-# 靜態文件服務：這個 catch-all 路由必須放在 API 路由之後
+        yield "--- [工作流 2/2] 正在串流 Gemini 報告生成過程... ---\n".encode('utf-8')
+        async for chunk in stream_subprocess_output(process_report):
+            yield chunk
+
+        await process_report.wait()
+        if process_report.returncode == 0:
+            yield "\n報告已生成並儲存於伺服器。".encode('utf-8')
+        else:
+            yield f"\n報告生成失敗 (返回碼: {process_report.returncode})。".encode('utf-8')
+
+    return StreamingResponse(workflow_generator(), media_type="text/plain; charset=utf-8")
+
+# 靜態文件服務
 @app.get("/{full_path:path}")
 async def serve_static_files(full_path: str):
-    """
-    提供根目錄下的靜態文件。如果請求路徑為空（即根目錄），則提供 index.html。
-    """
     path = full_path if full_path else "index.html"
     file_path = os.path.join(project_root, path)
-
-    # 再次進行安全性檢查
     if not os.path.normpath(file_path).startswith(os.path.abspath(project_root)):
         raise HTTPException(status_code=403, detail="禁止存取")
-
     if os.path.isfile(file_path):
         return FileResponse(file_path)
-
-    # 對於單頁應用 (SPA)，如果找不到請求的檔案，通常會回退到 index.html
     index_path = os.path.join(project_root, "index.html")
     if os.path.isfile(index_path):
         return FileResponse(index_path)
-
     raise HTTPException(status_code=404, detail="找不到檔案")
 
-# 如果直接執行此檔案，則啟動 uvicorn 伺服器
+# 伺服器啟動
 if __name__ == "__main__":
     import uvicorn
-    print("正在啟動 API 伺服器，監聽 http://127.0.0.1:8000")
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run("api_server_v2:app", host="0.0.0.0", port=0)
