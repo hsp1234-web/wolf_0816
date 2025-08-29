@@ -1,3 +1,30 @@
+## 2025-08-29T20:03:33+08:00
+
+### feat(downloader): 新增媒體下載器功能並通過 E2E 測試
+
+- **動機**: 根據使用者要求，為 `index.html` 增加一個獨立的 YouTube 音訊/影片下載器功能，並確保其可用性。
+- **核心變更**:
+    - **後端 API**: 在 `api_server_v2.py` 中新增了 `/api/download_media` 端點，使其可以直接呼叫 `scripts/download_youtube.py` 腳本，與現有架構保持一致。
+    - **前端整合**: 將「媒體下載器」的 UI 介面從 `archive/mp3.html` 遷移至 `index.html`，並為其編寫了呼叫新 API 的 JavaScript 邏輯。同時，也加回了「本機檔案轉錄」的 UI 佔位符。
+    - **E2E 測試**: 建立了一個新的端對端測試腳本 (`e2e_downloader_test.js`)，專門用於驗證下載器功能的完整流程。
+- **除錯紀要**:
+    - **依賴問題**: 解決了 `ffmpeg` 和 `yt-dlp` 兩個核心依賴在執行環境中缺失的問題。
+    - **腳本錯誤**: 修復了 `api_server_v2.py` 中的 `AttributeError` (poll vs. returncode)。
+    - **測試穩定性**: 為後端 API 加入了模擬模式 (`USE_MOCK_DOWNLOAD`)，使 E2E 測試能夠在不依賴外部網路（如 YouTube）的情況下穩定、可靠地運行。
+- **成果**: 成功交付了一個功能完整且經過自動化測試驗證的媒體下載器。
+
+## 2025-08-29T19:15:11+08:00
+
+### fix(testing): 成功執行 Playwright 視覺驗證測試
+
+- **動機**: 完成先前因沙箱環境不穩定而未能成功的 `index.html` 前端重構視覺驗證。
+- **核心變更**:
+    - **環境修復**: 解決了 Python (`fastapi`) 與 Node.js (`playwright`) 的依賴缺失問題。
+    - **腳本定位**: 找到了正確的 Playwright 腳本 (`snapshot_final.js`)，此腳本能針對 `index.html` 進行截圖。
+    - **執行與驗證**: 透過正確的啟動順序（啟動後端伺服器 -> 執行 Playwright），成功產生了 `final_frontend.jpg` 截圖。
+    - **路徑問題繞過**: 解決了因沙箱路徑不穩定導致的 `read_image_file` 工具讀取失敗問題，透過使用相對路徑成功讀取並展示了圖片。
+- **成果**: 提供了 `index.html` 重構後的視覺驗證，確認了新的亮色主題、卡片式佈局與分頁功能均已正確實作。
+
 ## 2025-08-29T18:49:57+08:00
 
 ### feat(frontend): 重構原生 JS 前端以符合新設計
