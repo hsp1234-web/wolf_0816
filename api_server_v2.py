@@ -106,5 +106,6 @@ async def serve_static_files(full_path: str):
 # 如果直接執行此檔案，則啟動 uvicorn 伺服器
 if __name__ == "__main__":
     import uvicorn
-    print("正在啟動 API 伺服器，監聽 http://127.0.0.1:8000")
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    # Colabpro.py 將會從 uvicorn 的啟動日誌中解析出實際使用的埠號。
+    # 設定 port=0 會讓 uvicorn 自動選擇一個可用的埠號。
+    uvicorn.run("api_server_v2:app", host="0.0.0.0", port=0)

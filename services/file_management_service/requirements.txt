@@ -1,9 +1,0 @@
-fastapi
-uvicorn
-pydantic-settings
-python-multipart
-
-# --- 測試專用依賴 ---
-pytest
-pytest-mock
-httpx

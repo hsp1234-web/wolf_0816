@@ -1,3 +1,23 @@
+## 2025-08-29T12:07:40.380763+08:00
+
+### feat(core): 整合輕量化 API 伺服器並重構啟動器
+
+- **動機**: 根據作戰藍圖 754-A，承接因環境問題而中斷的任務，將已完成的輕量化後端 (`api_server_v2.py`) 與前端 (`index.html`) 整合進 `Colabpro.py` 啟動器，並廢除舊有的複雜多服務架構。
+- **核心變更**:
+    1.  **修改 `api_server_v2.py`**:
+        - 移除了原有的程式化 `uvicorn` 啟動邏輯，該邏輯在當前環境下會引發 `AttributeError`。
+        - 恢復為使用標準的 `uvicorn.run("api_server_v2:app", port=0)`。此方法更為穩健，它利用 uvicorn 的標準行為，將啟動日誌（包含動態分配的埠號）輸出到 `stderr`。
+    2.  **修改 `Colabpro.py` (版本升至 v18)**:
+        - **啟動指令更新**: 將原先啟動 `scripts/run_services.py` 的指令，替換為直接啟動 `uvicorn` 的指令：`[sys.executable, "-m", "uvicorn", "api_server_v2:app", "--host", "0.0.0.0", "--port", "0"]`。
+        - **埠號解析更新**: 重構了 `_log_subprocess_output` 函式，使其不再尋找自訂的 `APP_PORT:` 標籤，而是使用正規表示式從 uvicorn 的啟動日誌中解析出實際使用的埠號。
+        - **依賴管理更新**: 修正了依賴安裝流程，使其安裝新架構所需的 `requirements-server.txt` 和 `requirements-worker.txt`。
+        - **參數清理**: 根據計畫，將 `FORCE_DEPS_REFRESH` 和 `LIGHT_MODE` 參數在註解中標記為 `[待廢棄]`。
+    3.  **建立 `ARCHIVE_PLAN.md`**:
+        - 新增了此檔案，其中詳細列出了所有在新架構下應被封存或刪除的舊元件（如 `src/`, `workers/`, `vue-app/` 等），為後續的專案清理提供了明確的指引。
+- **驗證**:
+    - 建立了 `temp_launcher.py` 作為臨時驗證工具。
+    - 經過多次除錯（解決了 `asyncio` 超時邏輯的錯誤），最終成功驗證了 `api_server_v2.py` 能夠被新方法啟動，且其埠號能被正確解析。
+
 ## 2025-08-28T19:19:00.000000+08:00
 
 ### refactor(backend): 模組化工具鏈重構 (階段一)
