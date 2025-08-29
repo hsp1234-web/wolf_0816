@@ -6,67 +6,201 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <script src="https://cdn.jsdelivr.net/npm/marked/lib/marked.umd.js"></script>
     <style>
+        /* --- 變數與基本設定 --- */
         :root {
-            --card-bg-color: rgba(30, 30, 30, 0.6);
-            --border-color: rgba(255, 255, 255, 0.2);
-            --text-color: #e0e0e0;
-            --button-primary-bg: rgba(2, 117, 216, 0.7);
-            --button-primary-hover-bg: rgba(2, 100, 185, 0.9);
-            --button-secondary-bg: rgba(80, 80, 80, 0.7);
-            --button-secondary-hover-bg: rgba(100, 100, 100, 0.9);
-            --button-danger-bg: rgba(217, 83, 79, 0.7);
-            --button-danger-hover-bg: rgba(195, 65, 61, 0.9);
-            --input-bg: rgba(0, 0, 0, 0.3);
+            --bg-color: #F8F9FA;
+            --text-color: #202124;
+            --card-bg-color: rgba(255, 255, 255, 0.85);
+            --card-border-color: #e0e0e0;
+            --button-bg-color: #007bff;
+            --button-hover-bg-color: #0056b3;
+            --disabled-bg-color: #ccc;
+            --progress-bar-bg: #e9ecef;
+            --success-color: #28a745;
+            --status-green: #28a745;
+            --status-yellow: #ffc107;
         }
-        body { background: linear-gradient(to right, #232526, #414345); color: var(--text-color); font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; padding: 1rem; box-sizing: border-box; }
-        main { width: 100%; max-width: 800px; display: flex; flex-direction: column; gap: 1rem; }
-        .card { background: var(--card-bg-color); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border: 1px solid var(--border-color); border-radius: 15px; padding: 2rem; box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1); }
-        h1, h2 { margin-top: 0; font-weight: 600; border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem; margin-bottom: 1.5rem; }
-        h1 { font-size: 1.8rem; }
-        h2 { font-size: 1.4rem; }
-        #controls-container { display: flex; flex-direction: column; gap: 1rem; }
-        .input-field { width: 100%; padding: 12px; background-color: var(--input-bg); border: 1px solid var(--border-color); border-radius: 8px; color: var(--text-color); font-size: 1rem; box-sizing: border-box; transition: border-color 0.3s, box-shadow 0.3s; }
-        .input-field:focus { outline: none; border-color: var(--button-primary-bg); box-shadow: 0 0 0 3px rgba(2, 117, 216, 0.3); }
-        .btn { padding: 12px 20px; color: white; border: none; border-radius: 8px; font-size: 1rem; font-weight: bold; cursor: pointer; transition: background-color 0.3s, transform 0.1s; text-align: center; }
-        .btn:active:not(:disabled) { transform: scale(0.98); }
-        .btn:disabled { background-color: rgba(80, 80, 80, 0.5) !important; cursor: not-allowed; }
-        .btn-primary { background-color: var(--button-primary-bg); }
-        .btn-primary:hover:not(:disabled) { background-color: var(--button-primary-hover-bg); }
-        .btn-secondary { background-color: var(--button-secondary-bg); }
-        .btn-secondary:hover:not(:disabled) { background-color: var(--button-secondary-hover-bg); }
-        .btn-danger { background-color: var(--button-danger-bg); }
-        .btn-danger:hover:not(:disabled) { background-color: var(--button-danger-hover-bg); }
-        .button-group { display: flex; flex-wrap: wrap; gap: 1rem; }
-        #log-output { background-color: rgba(0, 0, 0, 0.4); border: 1px solid var(--border-color); border-radius: 8px; padding: 1rem; min-height: 150px; max-height: 40vh; overflow-y: auto; white-space: pre-wrap; word-wrap: break-word; font-family: 'Consolas', 'Monaco', monospace; font-size: 0.9rem; color: #f1f1f1; }
-        #report-output { background-color: rgba(0, 0, 0, 0.2); border: 1px solid var(--border-color); border-radius: 8px; padding: 1rem; min-height: 150px; overflow-y: auto; }
-        #report-output h1, #report-output h2, #report-output h3 { border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            padding: 20px;
+            font-size: 100%;
+            line-height: 1.5;
+        }
+        .container { max-width: 1200px; margin: auto; display: flex; flex-direction: column; gap: 24px; }
+
+        /* --- 卡片與佈局 --- */
+        .card {
+            border: 1px solid var(--card-border-color);
+            border-radius: 12px;
+            padding: 24px;
+            background-color: var(--card-bg-color);
+            backdrop-filter: blur(10px);
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        }
+        .grid-2-col {
+            display: grid;
+            grid-template-columns: 1fr; /* Default to 1 column */
+            gap: 24px;
+        }
+        @media (min-width: 768px) { /* 2 columns on medium screens and up */
+            .grid-2-col {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+        .flex-col { display: flex; flex-direction: column; gap: 16px; }
+        h1 { font-size: 1.8em; font-weight: 700; }
+        h2 { font-size: 1.3em; font-weight: 600; margin-bottom: 12px; }
+
+        /* --- 分頁樣式 --- */
+        .tab-container {
+            display: flex;
+            gap: 8px;
+            padding: 0;
+        }
+        .tab-button {
+            padding: 10px 20px;
+            cursor: pointer;
+            border: none;
+            background-color: #e9ecef;
+            color: var(--text-color);
+            opacity: 0.8;
+            font-size: 1em;
+            font-weight: 600;
+            border-radius: 8px;
+            transition: all 0.2s;
+        }
+        .tab-button:hover {
+            opacity: 1;
+        }
+        .tab-button.active {
+            background-color: var(--button-bg-color);
+            color: white;
+            opacity: 1;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .tab-content {
+            display: none; /* 預設隱藏 */
+        }
+        .tab-content.active {
+            display: block; /* 顯示作用中的分頁 */
+        }
+
+        @media (max-width: 767px) {
+            body { padding: 10px; }
+            .card { padding: 16px; }
+            h1 { font-size: 1.5em; }
+            h2 { font-size: 1.2em; }
+        }
+
+        /* --- 表單與按鈕 --- */
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            background-color: var(--button-bg-color);
+            color: white;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        button:hover:not(:disabled) { background-color: var(--button-hover-bg-color); transform: translateY(-1px); }
+        button:disabled { background-color: var(--disabled-bg-color); cursor: not-allowed; transform: none; }
+        select, input[type="text"], input[type="password"], input[type="number"], textarea {
+            width: 100%;
+            padding: 10px;
+            border-radius: 6px;
+            border: 1px solid #ccc;
+            background-color: #fff;
+            color: var(--text-color);
+            font-size: 1rem;
+            box-sizing: border-box;
+        }
+        .hidden { display: none !important; }
+
+        /* --- 任務列表 --- */
+        .task-list { min-height: 60px; max-height: 400px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+        .task-item {
+            padding: 12px;
+            border-radius: 8px;
+            background-color: #f9f9f9;
+            border: 1px solid #eee;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .task-filename {
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 350px;
+        }
+
+        /* --- 即時輸出 --- */
+        #log-output, #report-output {
+            min-height: 150px;
+            max-height: 40vh;
+            background-color: #e9ecef;
+            padding: 16px;
+            border-radius: 8px;
+            white-space: pre-wrap;
+            font-family: monospace;
+            color: #495057;
+            overflow-y: auto;
+        }
+        #report-output h1, #report-output h2, #report-output h3 {
+             border-bottom: 1px solid #ddd;
+             padding-bottom: 0.3em;
+             margin-top: 1.5em;
+        }
     </style>
 </head>
 <body>
-    <main>
-        <div class="card">
+    <div id="app" class="container">
+        <!-- 標題 -->
+        <header class="card">
             <h1>專案控制台</h1>
-            <div id="controls-container">
-                <input type="text" id="youtube-url" class="input-field" placeholder="請在此貼上 YouTube URL">
-                <input type="password" id="api-key" class="input-field" placeholder="請在此貼上 Gemini API 金鑰">
-                <div class="button-group">
-                    <button id="btn-subtitle" class="btn btn-primary">從字幕產生報告 (推薦)</button>
-                    <button id="btn-audio" class="btn btn-secondary">從音訊產生報告 (較慢)</button>
-                    <button id="btn-clear" class="btn btn-danger">清除結果</button>
-                </div>
+        </header>
+
+        <!-- 功能分頁導覽 -->
+        <div class="card">
+            <div class="tab-container">
+                <button class="tab-button active" data-tab="youtube-report-tab">▶️ YouTube 轉報告</button>
+                <a href="/static/prompts.html" target="_blank" class="tab-button">📝 管理提示詞</a>
             </div>
         </div>
-        <div class="card">
-            <h2>即時日誌</h2>
-            <pre id="log-output">請輸入 URL、API 金鑰並選擇一種報告生成模式...</pre>
+
+        <!-- 分頁內容 -->
+        <div id="youtube-report-tab" class="tab-content active">
+            <div class="card">
+                <div id="controls-container">
+                    <input type="text" id="youtube-url" placeholder="請在此貼上 YouTube URL">
+                    <input type="password" id="api-key" placeholder="請在此貼上 Gemini API 金鑰">
+                    <div class="button-group" style="margin-top: 1rem;">
+                        <button id="btn-subtitle" class="btn btn-primary">從字幕產生報告 (推薦)</button>
+                        <button id="btn-audio" class="btn btn-secondary">從音訊產生報告 (較慢)</button>
+                        <button id="btn-clear" class="btn btn-danger">清除結果</button>
+                    </div>
+                </div>
+            </div>
+             <div class="card">
+                <h2>即時日誌</h2>
+                <pre id="log-output">請輸入 URL、API 金鑰並選擇一種報告生成模式...</pre>
+            </div>
+            <div class="card">
+                <h2>生成報告</h2>
+                <div id="report-output">尚未生成報告。</div>
+            </div>
         </div>
-        <div class="card">
-            <h2>生成報告</h2>
-            <div id="report-output">尚未生成報告。</div>
-        </div>
-    </main>
+    </div>
+
     <script>
         document.addEventListener('DOMContentLoaded', () => {
+            // --- 元素節點 ---
             const btnSubtitle = document.getElementById('btn-subtitle');
             const btnAudio = document.getElementById('btn-audio');
             const btnClear = document.getElementById('btn-clear');
@@ -75,15 +209,17 @@
             const logOutput = document.getElementById('log-output');
             const reportOutput = document.getElementById('report-output');
 
+            // --- 邏輯函式 ---
             const setButtonsDisabled = (disabled) => {
                 btnSubtitle.disabled = disabled;
                 btnAudio.disabled = disabled;
-                btnClear.disabled = disabled;
             };
 
             const clearResults = () => {
                 logOutput.textContent = '請輸入 URL、API 金鑰並選擇一種報告生成模式...';
                 reportOutput.innerHTML = '尚未生成報告。';
+                urlInput.value = '';
+                // We don't clear the API key by default
             };
 
             const fetchAndRenderReport = async (reportId) => {
@@ -97,7 +233,7 @@
                     reportOutput.innerHTML = marked.parse(reportMarkdown);
                     logOutput.textContent += `\n--- 報告抓取並渲染成功 ---`;
                 } catch (error) {
-                    reportOutput.innerHTML = `<p style="color: #ff6b6b;">抓取報告失敗: ${error.message}</p>`;
+                    reportOutput.innerHTML = `<p style="color: #c0392b;">抓取報告失敗: ${error.message}</p>`;
                 }
             };
 
@@ -109,8 +245,8 @@
                     return;
                 }
 
-                clearResults();
                 logOutput.textContent = `正在初始化 '${mode}' 模式任務...\n`;
+                reportOutput.innerHTML = '報告生成中...';
                 setButtonsDisabled(true);
 
                 try {
@@ -127,42 +263,68 @@
 
                     const reader = response.body.getReader();
                     const decoder = new TextDecoder('utf-8');
-                    let buffer = '';
+                    let logBuffer = '';
+                    let jsonBuffer = '';
 
                     while (true) {
                         const { done, value } = await reader.read();
                         if (done) {
-                            logOutput.textContent += '\n\n--- 工作流串流結束 ---';
+                            logOutput.textContent = logBuffer + '\n\n--- 工作流串流結束 ---';
                             break;
                         }
 
-                        buffer += decoder.decode(value, { stream: true });
-                        logOutput.textContent += decoder.decode(value, { stream: true });
+                        const chunk = decoder.decode(value, { stream: true });
+                        logBuffer += chunk;
+                        logOutput.textContent = logBuffer;
                         logOutput.scrollTop = logOutput.scrollHeight;
 
-                        // 嘗試解析 JSON
-                        try {
-                            const jsonResponse = JSON.parse(buffer);
-                            if (jsonResponse.status === 'complete' && jsonResponse.report_id) {
-                                await fetchAndRenderReport(jsonResponse.report_id);
-                                // 成功解析並處理後，可以選擇性清空緩衝區
-                                buffer = '';
+                        jsonBuffer += chunk;
+
+                        // 嘗試從緩衝區末尾解析 JSON
+                        // 這是一個簡化的處理方式，假設 JSON 物件在串流的末尾
+                        const jsonMatch = jsonBuffer.match(/({[^}]+})$/);
+                        if (jsonMatch) {
+                            try {
+                                const jsonResponse = JSON.parse(jsonMatch[1]);
+                                if (jsonResponse.status === 'complete' && jsonResponse.report_id) {
+                                    await fetchAndRenderReport(jsonResponse.report_id);
+                                    // 成功後可以清空，避免重複解析
+                                    jsonBuffer = '';
+                                }
+                            } catch (e) {
+                                // 不是一個完整的 JSON，繼續等待
                             }
-                        } catch (e) {
-                            // 不是完整的 JSON，繼續讀取
                         }
                     }
 
                 } catch (error) {
                     logOutput.textContent += `\n\n發生錯誤: ${error.message}`;
+                    reportOutput.innerHTML = `<p style="color: #c0392b;">任務執行失敗。</p>`;
                 } finally {
                     setButtonsDisabled(false);
                 }
             };
 
+            // --- 事件監聽 ---
             btnSubtitle.addEventListener('click', () => execute('subtitle'));
             btnAudio.addEventListener('click', () => execute('audio'));
             btnClear.addEventListener('click', clearResults);
+
+            // 分頁邏輯 (目前只有一個分頁，所以是簡化版)
+            document.querySelectorAll('.tab-button').forEach(button => {
+                button.addEventListener('click', (e) => {
+                    // 如果是連結，則不執行分頁切換邏輯
+                    if (e.currentTarget.tagName === 'A') {
+                        return;
+                    }
+                    const tabId = button.dataset.tab;
+                    document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
+                    button.classList.add('active');
+                    document.querySelectorAll('.tab-content').forEach(content => {
+                        content.style.display = content.id === tabId ? 'block' : 'none';
+                    });
+                });
+            });
         });
     </script>
 </body>

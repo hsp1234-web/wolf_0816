@@ -4,7 +4,7 @@
   "description": "A minimal package to run Playwright for E2E tests.",
   "private": true,
   "devDependencies": {
-    "playwright": "^1.40.0",
-    "@playwright/test": "^1.40.0"
+    "@playwright/test": "^1.40.0",
+    "playwright": "^1.55.0"
   }
 }

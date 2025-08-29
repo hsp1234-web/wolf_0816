@@ -1,3 +1,16 @@
+## 2025-08-29T17:04:11+08:00
+
+### feat(testing): 產生前端截圖
+
+- **動機**: 根據使用者要求，閱讀 `CH_log.md` 和 `AGENTS.md`，並使用 Playwright 產生前端網頁的 JPG 格式截圖。
+- **核心變更**:
+    - **環境設定**: 解決了執行環境中缺少 Python 和 Node.js 依賴的問題 (`fastapi`, `playwright`)。
+    - **Playwright 設定**: 執行了 `npx playwright install` 來下載必要的瀏覽器。
+    - **伺服器啟動**: 啟動了 `api_server_v2.py` 來提供前端服務。
+    - **截圖**: 編寫並執行了一個 Playwright 腳本 (`snapshot.js`)，成功截取了 `index.html` 的畫面並儲存為 `frontend.jpg`。
+- **使用者互動**:
+    - 根據使用者指示，為所有長時間執行的命令增加了 100 秒的超時限制，以防止系統掛起。
+
 ## 2025-08-29T01:36:16.546892+08:00
 
 ### feat(fullstack): 實作前端驅動的金鑰管理與獨立 E2E 測試

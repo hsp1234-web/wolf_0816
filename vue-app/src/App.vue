@@ -50,17 +50,6 @@
         <div class="tab-container">
           <button
             class="tab-button"
-            :class="{ active: activeTab === 'transcribe' }"
-            @click="setActiveTab('transcribe')"
-            :disabled="operationStatus.inProgress"
-          >
-            📁 本機檔案轉錄
-            <span :class="getWorkerStatusInfo('transcription').class" class="status-indicator">
-              {{ getWorkerStatusInfo('transcription').text }}
-            </span>
-          </button>
-          <button
-            class="tab-button"
             :class="{ active: activeTab === 'downloader' }"
             @click="setActiveTab('downloader')"
             :disabled="operationStatus.inProgress"
@@ -81,6 +70,10 @@
               {{ getWorkerStatusInfo('youtube').text }}
             </span>
           </button>
+          <!-- 新增：提示詞管理頁面連結 -->
+          <a href="/static/prompts.html" target="_blank" class="tab-button" @click="logAction('click-tab', 'prompts')">
+            📝 管理提示詞
+          </a>
           <button
             class="tab-button"
             :class="{ active: activeTab === 'logs' }"
@@ -94,11 +87,6 @@
 
       <!-- 分頁內容 -->
       <main :class="{ 'disabled-content': operationStatus.inProgress }">
-        <!-- 本機檔案轉錄分頁 -->
-        <div v-show="activeTab === 'transcribe'">
-          <TaskUploader />
-        </div>
-
         <!-- 媒體下載器分頁 -->
         <div v-show="activeTab === 'downloader'">
           <Downloader />
@@ -123,8 +111,6 @@
           <CompletedTasks />
         </div>
 
-        <!-- 即時轉錄輸出 -->
-        <TranscriptOutput v-if="activeTab === 'transcribe'" />
       </main>
     </template>
   </div>
@@ -137,13 +123,11 @@ import { useSystemStore } from './stores/system'
 import { useNotificationStore } from './stores/notifications'
 import { logAction } from './utils/logging'
 import Dashboard from './components/Dashboard.vue'
-import TaskUploader from './components/TaskUploader.vue'
 import Downloader from './components/Downloader.vue'
 import YouTubeReporter from './components/YouTubeReporter.vue'
 import LogViewer from './components/LogViewer.vue'
 import PendingTasks from './components/PendingTasks.vue'
 import CompletedTasks from './components/CompletedTasks.vue'
-import TranscriptOutput from './components/TranscriptOutput.vue'
 import NotificationHost from './components/NotificationHost.vue'
 import TaskPool from './components/TaskPool.vue'
 
@@ -153,7 +137,7 @@ const systemStore = useSystemStore()
 const notificationStore = useNotificationStore()
 
 // --- 狀態管理 ---
-const activeTab = ref('transcribe')
+const activeTab = ref('downloader')
 
 // v16 新增：從 store 獲取安裝狀態
 const installationStatus = computed(() => tasksStore.installationStatus)
