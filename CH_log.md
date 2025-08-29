@@ -1194,3 +1194,4 @@ D. 進行事前檢查 (可選)：如果測試需要啟動一個已知的記憶�
 
 - **遭遇工具鏈問題**: 在開發過程中，多次遇到 `replace_with_git_merge_diff` 工具的功能異常，導致檔案被錯誤修改或損毀。最終採用 `overwrite_file_with_block` 作為備用方案才成功修復檔案 (`stores/tasks.js`)。
 - **測試驅動除錯**: 在整合測試階段遭遇了持續的執行逾時。透過為測試腳本 (`run_e2e_test.py`) 增加詳細的時間戳記日誌，成功排除了建置和依賴安裝階段的問題，並最終將問題鎖定在前端應用的啟動穩定性上，進而找到並修復了根本的 Bug。
+[2025-08-30T03:30:53.327498+08:00] 封存舊檔案與目錄。已將以下項目移至 archive/legacy_2025-08-30-03-28-52: vue-app/, run_vue_dev.sh, snapshot_vue.js, bun.lock, package.json, package-lock.json, services/, scripts/run_services.py, src/, Colab.py.legacy, e2e_test.py
