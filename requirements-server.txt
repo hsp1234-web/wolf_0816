@@ -11,3 +11,4 @@ ipython
 psutil
 httpx
 pydantic-settings
+yt-dlp

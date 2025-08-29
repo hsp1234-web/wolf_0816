@@ -7,6 +7,13 @@ import os
 import json
 from pathlib import Path
 import yt_dlp
+import logging
+
+# Setup logging
+log_file = Path(__file__).resolve().parent / "downloader.log"
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(message)s',
+                    handlers=[logging.FileHandler(log_file), logging.StreamHandler(sys.stderr)])
 
 def get_youtube_resource(url: str, mode: str, output_dir: str = "youtube_downloads") -> dict:
     """
@@ -115,14 +122,20 @@ if __name__ == "__main__":
 """
     )
     parser.add_argument("--url", required=True, help="YouTube 影片的 URL。")
-    parser.add_argument("--mode", required=True, choices=['subtitle', 'audio'], help="要下載的資源類型。")
+    parser.add_argument("--mode", required=True, choices=['subtitle', 'audio', 'video'], help="要下載的資源類型。")
+    parser.add_argument("--output-dir", default="youtube_downloads", help="資源儲存的目錄路徑。")
 
     args = parser.parse_args()
 
+    logging.info(f"開始執行下載腳本，參數: URL={args.url}, Mode={args.mode}, Output={args.output_dir}")
+
     try:
-        result = get_youtube_resource(args.url, args.mode)
+        result = get_youtube_resource(args.url, args.mode, args.output_dir)
+        logging.info(f"下載成功，結果: {result}")
         print(json.dumps(result))
         sys.exit(0)
     except Exception as e:
+        logging.error(f"下載過程中發生未預期的錯誤: {e}", exc_info=True)
+        # We still print to stderr for the parent process, but the detailed log is in the file.
         print(f"錯誤: {e}", file=sys.stderr)
         sys.exit(1)

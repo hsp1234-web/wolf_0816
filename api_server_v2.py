@@ -27,6 +27,11 @@ class ReportGenerationRequest(BaseModel):
     mode: str
     apiKey: str
 
+class MediaDownloadRequest(BaseModel):
+    """定義 /api/download_media 的請求體格式"""
+    url: str
+    download_type: str = "audio" # 'audio' or 'video'
+
 async def stream_subprocess_output(process: asyncio.subprocess.Process):
     """一個健壯的串流處理器，同時處理 stdout 和 stderr。"""
     while True:
@@ -51,7 +56,7 @@ async def stream_subprocess_output(process: asyncio.subprocess.Process):
             else: # stderr
                 yield b"[STDERR] " + line
 
-        if process.poll() is not None and all(p.done() for p in tasks):
+        if process.returncode is not None and all(p.done() for p in tasks):
             break
 
 
@@ -82,6 +87,14 @@ async def execute_workflow(request: ReportGenerationRequest):
         else:
             # --- 真實工作流 ---
             download_result = None
+
+        # JULES'S FIX: Check if the input is a local file path
+        # This allows sending downloaded files directly to the report generator
+        potential_path = Path(request.youtube_url)
+        if potential_path.is_file() and str(potential_path.resolve()).startswith(str(youtube_downloads_dir.resolve())):
+            yield "--- [工作流 1/2] 偵測到本地檔案，跳過下載步驟。 ---\n".encode('utf-8')
+            download_result = {"type": "audio", "file_path": str(potential_path.resolve())}
+        else:
             # 步驟 1: 下載資源
             yield "--- [工作流 1/2] 正在啟動 YouTube 資源下載器... ---\n".encode('utf-8')
             download_script = os.path.join(scripts_dir, "download_youtube.py")
@@ -141,6 +154,49 @@ async def execute_workflow(request: ReportGenerationRequest):
 
     return StreamingResponse(workflow_generator(), media_type="text/plain; charset=utf-8")
 
+@app.post("/api/download_media")
+async def download_media(request: MediaDownloadRequest):
+    """接收媒體 URL 並觸發下載，然後串流回傳進度。"""
+    async def download_generator():
+        # 新增：模擬模式
+        if request.url == "USE_MOCK_DOWNLOAD":
+            yield "--- [媒體下載器 Mock] 正在模擬下載... ---\n".encode('utf-8')
+            await asyncio.sleep(2) # 模擬延遲
+            yield "\n--- [媒體下載器] 下載成功完成。 ---\n".encode('utf-8')
+            return
+
+        python_executable = sys.executable
+        download_script = os.path.join(scripts_dir, "download_youtube.py")
+
+        mode = "audio" if request.download_type == "audio" else "video"
+
+        yield f"--- [媒體下載器] 準備下載: {request.url} ({mode} 模式) ---\n".encode('utf-8')
+
+        download_command = [
+            python_executable, "-u", download_script,
+            "--url", request.url, "--mode", mode,
+            "--output-dir", str(youtube_downloads_dir) # 確保路徑是字串
+        ]
+
+        process = await asyncio.create_subprocess_exec(
+            *download_command,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            cwd=project_root
+        )
+
+        async for chunk in stream_subprocess_output(process):
+            yield chunk
+
+        await process.wait()
+
+        if process.returncode == 0:
+            yield "\n--- [媒體下載器] 下載成功完成。 ---\n".encode('utf-8')
+        else:
+            yield f"\n--- [媒體下載器] 下載失敗 (返回碼: {process.returncode})。 ---\n".encode('utf-8')
+
+    return StreamingResponse(download_generator(), media_type="text/plain; charset=utf-8")
+
+
 @app.get("/api/get_report")
 async def get_report(id: str):
     """根據報告 ID 安全地提供報告檔案。"""
@@ -176,4 +232,4 @@ if __name__ == "__main__":
     import uvicorn
     # 使用 --port 0 來讓作業系統自動選擇一個可用的埠號
     # 這對於測試環境特別有用，可以避免埠號衝突
-    uvicorn.run("api_server_v2:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("api_server_v2:app", host="0.0.0.0", port=8000, reload=False)
