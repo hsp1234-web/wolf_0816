@@ -2,8 +2,9 @@
 <html lang="zh-Hant">
 <head>
     <meta charset="UTF-8">
-    <title>專案控制台 v2</title>
+    <title>專案控制台 v3 - 前端驅動</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.jsdelivr.net/npm/marked/lib/marked.umd.js"></script>
     <style>
         :root {
             --card-bg-color: rgba(30, 30, 30, 0.6);
@@ -13,17 +14,19 @@
             --button-primary-hover-bg: rgba(2, 100, 185, 0.9);
             --button-secondary-bg: rgba(80, 80, 80, 0.7);
             --button-secondary-hover-bg: rgba(100, 100, 100, 0.9);
+            --button-danger-bg: rgba(217, 83, 79, 0.7);
+            --button-danger-hover-bg: rgba(195, 65, 61, 0.9);
             --input-bg: rgba(0, 0, 0, 0.3);
         }
         body { background: linear-gradient(to right, #232526, #414345); color: var(--text-color); font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; padding: 1rem; box-sizing: border-box; }
-        main { width: 100%; max-width: 800px; }
-        .card { background: var(--card-bg-color); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border: 1px solid var(--border-color); border-radius: 15px; padding: 2rem; margin-bottom: 1rem; box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1); }
+        main { width: 100%; max-width: 800px; display: flex; flex-direction: column; gap: 1rem; }
+        .card { background: var(--card-bg-color); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border: 1px solid var(--border-color); border-radius: 15px; padding: 2rem; box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1); }
         h1, h2 { margin-top: 0; font-weight: 600; border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem; margin-bottom: 1.5rem; }
         h1 { font-size: 1.8rem; }
         h2 { font-size: 1.4rem; }
         #controls-container { display: flex; flex-direction: column; gap: 1rem; }
-        #youtube-url { width: 100%; padding: 12px; background-color: var(--input-bg); border: 1px solid var(--border-color); border-radius: 8px; color: var(--text-color); font-size: 1rem; box-sizing: border-box; transition: border-color 0.3s, box-shadow 0.3s; }
-        #youtube-url:focus { outline: none; border-color: var(--button-primary-bg); box-shadow: 0 0 0 3px rgba(2, 117, 216, 0.3); }
+        .input-field { width: 100%; padding: 12px; background-color: var(--input-bg); border: 1px solid var(--border-color); border-radius: 8px; color: var(--text-color); font-size: 1rem; box-sizing: border-box; transition: border-color 0.3s, box-shadow 0.3s; }
+        .input-field:focus { outline: none; border-color: var(--button-primary-bg); box-shadow: 0 0 0 3px rgba(2, 117, 216, 0.3); }
         .btn { padding: 12px 20px; color: white; border: none; border-radius: 8px; font-size: 1rem; font-weight: bold; cursor: pointer; transition: background-color 0.3s, transform 0.1s; text-align: center; }
         .btn:active:not(:disabled) { transform: scale(0.98); }
         .btn:disabled { background-color: rgba(80, 80, 80, 0.5) !important; cursor: not-allowed; }
@@ -31,8 +34,12 @@
         .btn-primary:hover:not(:disabled) { background-color: var(--button-primary-hover-bg); }
         .btn-secondary { background-color: var(--button-secondary-bg); }
         .btn-secondary:hover:not(:disabled) { background-color: var(--button-secondary-hover-bg); }
-        .button-group { display: flex; gap: 1rem; }
-        #log-output { background-color: rgba(0, 0, 0, 0.4); border: 1px solid var(--border-color); border-radius: 8px; padding: 1rem; min-height: 200px; max-height: 50vh; overflow-y: auto; white-space: pre-wrap; word-wrap: break-word; font-family: 'Consolas', 'Monaco', monospace; font-size: 0.9rem; color: #f1f1f1; }
+        .btn-danger { background-color: var(--button-danger-bg); }
+        .btn-danger:hover:not(:disabled) { background-color: var(--button-danger-hover-bg); }
+        .button-group { display: flex; flex-wrap: wrap; gap: 1rem; }
+        #log-output { background-color: rgba(0, 0, 0, 0.4); border: 1px solid var(--border-color); border-radius: 8px; padding: 1rem; min-height: 150px; max-height: 40vh; overflow-y: auto; white-space: pre-wrap; word-wrap: break-word; font-family: 'Consolas', 'Monaco', monospace; font-size: 0.9rem; color: #f1f1f1; }
+        #report-output { background-color: rgba(0, 0, 0, 0.2); border: 1px solid var(--border-color); border-radius: 8px; padding: 1rem; min-height: 150px; overflow-y: auto; }
+        #report-output h1, #report-output h2, #report-output h3 { border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
     </style>
 </head>
 <body>
@@ -40,42 +47,77 @@
         <div class="card">
             <h1>專案控制台</h1>
             <div id="controls-container">
-                <input type="text" id="youtube-url" placeholder="請在此貼上 YouTube URL">
+                <input type="text" id="youtube-url" class="input-field" placeholder="請在此貼上 YouTube URL">
+                <input type="password" id="api-key" class="input-field" placeholder="請在此貼上 Gemini API 金鑰">
                 <div class="button-group">
                     <button id="btn-subtitle" class="btn btn-primary">從字幕產生報告 (推薦)</button>
                     <button id="btn-audio" class="btn btn-secondary">從音訊產生報告 (較慢)</button>
+                    <button id="btn-clear" class="btn btn-danger">清除結果</button>
                 </div>
             </div>
         </div>
         <div class="card">
             <h2>即時日誌</h2>
-            <pre id="log-output">請輸入 URL 並選擇一種報告生成模式...</pre>
+            <pre id="log-output">請輸入 URL、API 金鑰並選擇一種報告生成模式...</pre>
+        </div>
+        <div class="card">
+            <h2>生成報告</h2>
+            <div id="report-output">尚未生成報告。</div>
         </div>
     </main>
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             const btnSubtitle = document.getElementById('btn-subtitle');
             const btnAudio = document.getElementById('btn-audio');
+            const btnClear = document.getElementById('btn-clear');
             const urlInput = document.getElementById('youtube-url');
+            const apiKeyInput = document.getElementById('api-key');
             const logOutput = document.getElementById('log-output');
+            const reportOutput = document.getElementById('report-output');
+
+            const setButtonsDisabled = (disabled) => {
+                btnSubtitle.disabled = disabled;
+                btnAudio.disabled = disabled;
+                btnClear.disabled = disabled;
+            };
+
+            const clearResults = () => {
+                logOutput.textContent = '請輸入 URL、API 金鑰並選擇一種報告生成模式...';
+                reportOutput.innerHTML = '尚未生成報告。';
+            };
+
+            const fetchAndRenderReport = async (reportId) => {
+                logOutput.textContent += `\n--- 正在抓取報告 (ID: ${reportId}) ---`;
+                try {
+                    const response = await fetch(`/api/get_report?id=${reportId}`);
+                    if (!response.ok) {
+                        throw new Error(`伺服器錯誤: ${response.status} ${response.statusText}`);
+                    }
+                    const reportMarkdown = await response.text();
+                    reportOutput.innerHTML = marked.parse(reportMarkdown);
+                    logOutput.textContent += `\n--- 報告抓取並渲染成功 ---`;
+                } catch (error) {
+                    reportOutput.innerHTML = `<p style="color: #ff6b6b;">抓取報告失敗: ${error.message}</p>`;
+                }
+            };
 
             const execute = async (mode) => {
                 const url = urlInput.value.trim();
-                if (!url) {
-                    logOutput.textContent = '錯誤：請先輸入 YouTube URL。';
+                const apiKey = apiKeyInput.value.trim();
+                if (!url || !apiKey) {
+                    logOutput.textContent = '錯誤：請先輸入 YouTube URL 和 API 金鑰。';
                     return;
                 }
 
-                // 清空日誌並禁用所有按鈕
+                clearResults();
                 logOutput.textContent = `正在初始化 '${mode}' 模式任務...\n`;
-                btnSubtitle.disabled = true;
-                btnAudio.disabled = true;
+                setButtonsDisabled(true);
 
                 try {
                     const response = await fetch('/api/execute', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ youtube_url: url, mode: mode }),
+                        body: JSON.stringify({ youtube_url: url, mode: mode, apiKey: apiKey }),
                     });
 
                     if (!response.ok || !response.body) {
@@ -83,32 +125,44 @@
                         throw new Error(`伺服器錯誤: ${response.status} ${response.statusText}\n${errorText}`);
                     }
 
-                    // 處理串流回應
                     const reader = response.body.getReader();
                     const decoder = new TextDecoder('utf-8');
-                    logOutput.textContent = ''; // 再次清空以接收串流
+                    let buffer = '';
 
                     while (true) {
                         const { done, value } = await reader.read();
                         if (done) {
-                            logOutput.textContent += '\n\n--- 工作流執行完畢 ---';
+                            logOutput.textContent += '\n\n--- 工作流串流結束 ---';
                             break;
                         }
+
+                        buffer += decoder.decode(value, { stream: true });
                         logOutput.textContent += decoder.decode(value, { stream: true });
-                        logOutput.scrollTop = logOutput.scrollHeight; // 自動滾動
+                        logOutput.scrollTop = logOutput.scrollHeight;
+
+                        // 嘗試解析 JSON
+                        try {
+                            const jsonResponse = JSON.parse(buffer);
+                            if (jsonResponse.status === 'complete' && jsonResponse.report_id) {
+                                await fetchAndRenderReport(jsonResponse.report_id);
+                                // 成功解析並處理後，可以選擇性清空緩衝區
+                                buffer = '';
+                            }
+                        } catch (e) {
+                            // 不是完整的 JSON，繼續讀取
+                        }
                     }
 
                 } catch (error) {
                     logOutput.textContent += `\n\n發生錯誤: ${error.message}`;
                 } finally {
-                    // 重新啟用按鈕
-                    btnSubtitle.disabled = false;
-                    btnAudio.disabled = false;
+                    setButtonsDisabled(false);
                 }
             };
 
             btnSubtitle.addEventListener('click', () => execute('subtitle'));
             btnAudio.addEventListener('click', () => execute('audio'));
+            btnClear.addEventListener('click', clearResults);
         });
     </script>
 </body>
