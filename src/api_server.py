@@ -12,7 +12,15 @@ from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 from datetime import datetime
 
+import threading
+import os
+from pathlib import Path
+from faster_whisper import WhisperModel
+
 from src.db.client import get_client, DBClient
+
+# --- 全域變數 ---
+MODEL_NAMES = ["tiny", "base", "small", "medium", "large-v2", "large-v3"]
 
 # --- 日誌設定 ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -120,8 +128,35 @@ def parse_db_task(task_data: dict) -> dict:
 
 @app.get("/api/health", tags=["System"])
 async def health_check():
-    """一個簡單的健康檢查端點。"""
-    return {"status": "ok", "message": "統一 API 伺服器運行中。"}
+    """增強的健康檢查端點，回報各個子系統的狀態，並包含詳細日誌。"""
+    log.info("[Health Check] 收到健康檢查請求...")
+    db_client: DBClient = app.state.db_client
+    subsystems = {}
+
+    # 1. 檢查資料庫連線
+    log.info("[Health Check] 正在 Ping 資料庫管理器...")
+    try:
+        response = db_client.ping()
+        if response == "pong":
+            subsystems["database_connection"] = {"status": "ok", "message": "成功 Ping 到資料庫管理器。"}
+            log.info("[Health Check] ✅ 資料庫連線檢查成功。")
+        else:
+            subsystems["database_connection"] = {"status": "error", "message": f"資料庫管理器回應異常: {response}"}
+            log.error(f"[Health Check] ❌ 資料庫連線檢查失敗，回應異常: {response}")
+    except Exception as e:
+        subsystems["database_connection"] = {"status": "error", "message": f"無法連接到資料庫管理器: {e}"}
+        log.error(f"[Health Check] ❌ 資料庫連線檢查失敗: {e}")
+
+    # 總體狀態
+    overall_status = "ok" if all(s["status"] == "ok" for s in subsystems.values()) else "error"
+
+    response_payload = {
+        "status": overall_status,
+        "message": "API 伺服器運行中，各子系統狀態如下。",
+        "subsystems": subsystems
+    }
+    log.info(f"[Health Check] 正在回傳健康檢查結果: {response_payload}")
+    return response_payload
 
 @app.get("/api/tasks", response_model=List[TaskResponse], tags=["Tasks"])
 async def get_all_tasks():
@@ -170,6 +205,17 @@ async def notify_update(payload: Dict[str, Any]):
     await websocket_manager.broadcast_json(payload)
     return {"status": "ok", "message": "notification broadcasted"}
 
+# NOTE: This is the endpoint the hardware monitor uses. It was lost in a refactor.
+@app.post("/api/internal/system_update", include_in_schema=False)
+async def system_update(payload: Dict[str, Any]):
+    """
+    一個供硬體監控等內部服務呼叫的端點，專門用於廣播系統狀態。
+    """
+    # 直接將收到的整個 payload 作為 WebSocket 訊息廣播出去
+    # hardware_monitor_worker 已將其打包成 { "type": "SYSTEM_STATS", "payload": ... } 格式
+    await websocket_manager.broadcast_json(payload)
+    return {"status": "ok"}
+
 
 # --- WebSocket 端點 ---
 
@@ -187,9 +233,75 @@ async def websocket_endpoint(websocket: WebSocket):
 
         # 2. 保持連線，以接收未來的指令或廣播
         while True:
-            # 在這個實作中，我們主要依賴伺服器端的廣播，
-            # 但保留 receive_text() 可以保持連線並處理客戶端可能發送的訊息（例如 ping）。
-            await websocket.receive_text()
+            data = await websocket.receive_text()
+            try:
+                message = json.loads(data)
+                msg_type = message.get("type")
+                payload = message.get("payload", {})
+                request_id = payload.get("request_id")
+
+                if msg_type == "HEALTH_CHECK_REQUEST":
+                    # ... (health check logic remains the same)
+                    log.info(f"[WS Health Check] 收到來自客戶端的健康檢查請求 (request_id: {request_id})")
+                    subsystems = {}
+                    try:
+                        db_response = db_client.ping()
+                        if db_response == "pong":
+                            subsystems["database_connection"] = {"status": "ok"}
+                        else:
+                            subsystems["database_connection"] = {"status": "error", "message": f"回應異常: {db_response}"}
+                    except Exception as e:
+                        subsystems["database_connection"] = {"status": "error", "message": str(e)}
+                    response_payload = {
+                        "type": "HEALTH_CHECK_RESPONSE", "request_id": request_id,
+                        "payload": {
+                            "success": all(s["status"] == "ok" for s in subsystems.values()),
+                            "backend_status": "ok", "backend_message": "所有後端子系統回應正常。",
+                            "subsystems": subsystems
+                        }
+                    }
+                    await websocket.send_json(response_payload)
+                    log.info(f"[WS Health Check] 已回傳健康檢查結果 (request_id: {request_id})")
+
+                elif msg_type == "CHECK_LOCAL_MODELS":
+                    log.info(f"[WS] 正在處理 CHECK_LOCAL_MODELS 請求 (request_id: {request_id})")
+                    available_models = []
+                    # 手動檢查快取路徑，更穩健
+                    cache_path = Path(os.environ.get("HF_HOME", Path.home() / ".cache/huggingface/hub"))
+                    for model_name in MODEL_NAMES:
+                        model_folder = f"models--Systran--faster-whisper-{model_name}"
+                        if (cache_path / model_folder).exists():
+                            available_models.append(model_name)
+
+                    response = {"type": "LOCAL_MODELS_STATUS", "payload": {"models": available_models, "success": True}, "request_id": request_id}
+                    await websocket.send_json(response)
+                    log.info(f"[WS] 模型檢查完成，本地找到 {len(available_models)} 個模型。正在回傳...")
+
+                elif msg_type == "DOWNLOAD_MODEL":
+                    model_to_download = payload.get("model")
+                    log.info(f"[WS] 收到下載模型請求: {model_to_download}")
+                    if model_to_download in MODEL_NAMES:
+                        def download_task():
+                            log.info(f"背景下載執行緒：正在下載模型 '{model_to_download}'...")
+                            try:
+                                # 這將會下載模型到快取中
+                                WhisperModel(f"Systran/faster-whisper-{model_to_download}", device="cpu", compute_type="int8")
+                                log.info(f"背景下載執行緒：模型 '{model_to_download}' 下載完成。")
+                                # 下載完成後，通知前端刷新模型列表
+                                asyncio.run(websocket_manager.broadcast_json({"type": "REFRESH_LOCAL_MODELS"}))
+                            except Exception as e:
+                                log.error(f"背景下載執行緒：下載模型 '{model_to_download}' 時發生錯誤: {e}")
+
+                        threading.Thread(target=download_task, daemon=True).start()
+                        await websocket.send_json({"type": "INFO", "payload": {"message": f"已開始在背景下載模型 '{model_to_download}'..."}})
+                    else:
+                        await websocket.send_json({"type": "ERROR", "payload": {"message": f"無效的模型名稱: {model_to_download}"}})
+
+
+            except json.JSONDecodeError:
+                log.warning(f"從客戶端收到無效的 JSON 訊息: {data}")
+            except Exception as e:
+                log.error(f"處理客戶端 WebSocket 訊息時發生錯誤: {e}", exc_info=True)
 
     except WebSocketDisconnect:
         websocket_manager.disconnect(websocket)
@@ -202,13 +314,21 @@ async def websocket_endpoint(websocket: WebSocket):
 import os
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
+from starlette.responses import RedirectResponse
+
+# 解決根目錄衝突的關鍵修復
+@app.get("/", include_in_schema=False)
+async def root_redirect():
+    """將根目錄請求重新導向到前端應用的入口。"""
+    return RedirectResponse(url="/ui/")
 
 # 從環境變數讀取由 run_services.py 傳入的靜態檔案目錄絕對路徑
 STATIC_DIR = os.environ.get("STATIC_DIR")
 
 if STATIC_DIR and Path(STATIC_DIR).exists():
     log.info(f"正在從環境變數指定的目錄提供前端檔案: {STATIC_DIR}")
-    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+    # 將前端掛載到 /ui 子路徑
+    app.mount("/ui", StaticFiles(directory=STATIC_DIR, html=True), name="static")
 else:
     log.warning("環境變數 STATIC_DIR 未設定或指向的路徑不存在。")
     log.warning("前端介面將無法使用。")

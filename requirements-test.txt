@@ -27,6 +27,7 @@ pytest==8.1.1
 
 # --- AI/ML 轉錄模型相關 ---
 # 注意：torch將透過 --index-url 從cpu源安裝
+numpy<2.0  # JULES'S FIX (2025-08-28): 鎖定 NumPy 版本以避免與 torch/ctranslate2 的 ABI 衝突
 torch==2.2.2
 faster-whisper==1.0.1
 opencc-python-reimplemented==0.1.7

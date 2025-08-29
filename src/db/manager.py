@@ -44,8 +44,14 @@ HOST = "127.0.0.1"
 PORT_FILE = Path(__file__).parent / "db_manager.port"
 READY_FILE = Path(__file__).parent / "db_manager.ready" # JULES'S FIX: 新增一個「就緒」信號檔案
 
+# --- 指令函式 ---
+def ping():
+    """一個輕量級的連線測試函式，不進行任何資料庫操作。"""
+    return "pong"
+
 # --- 指令分派 ---
 ACTION_MAP = {
+    "ping": ping,
     "initialize_database": database.initialize_database,
     "add_task": database.add_task,
     "fetch_and_lock_task": database.fetch_and_lock_task,

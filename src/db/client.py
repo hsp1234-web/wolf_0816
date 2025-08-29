@@ -122,6 +122,10 @@ class DBClient:
     def delete_task(self, task_id: str) -> bool:
         return self._send_request("delete_task", {"task_id": task_id})
 
+    def ping(self) -> str:
+        """發送一個輕量級的 ping 請求來測試連線。"""
+        return self._send_request("ping")
+
 _client_instance = None
 def get_client():
     global _client_instance

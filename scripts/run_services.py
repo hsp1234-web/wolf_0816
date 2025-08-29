@@ -6,8 +6,16 @@ import time
 from pathlib import Path
 import threading
 
-# 全域變數來追蹤子進程
-processes = []
+# 修正 Python 的導入路徑，以便能找到 'workers' 模組
+project_root_path = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(project_root_path))
+
+from workers.hardware_monitor_worker import run_hardware_monitor
+
+# 全域變數
+processes = [] # 追蹤子進程
+threads = [] # 追蹤執行緒
+stop_app = threading.Event() # 用於優雅關閉的信號
 API_SERVER_PORT = 8000 # 與 Colabpro.py 中的設定保持一致
 
 def log(message):
@@ -22,17 +30,18 @@ def stream_output(process, name):
         log(f"[{name}] {line.strip()}")
 
 def cleanup(signum=None, frame=None):
-    """清理函式，用於終止所有子進程。"""
-    log("收到關閉信號，正在終止所有子進程...")
+    """清理函式，用於終止所有子進程和執行緒。"""
+    log("收到關閉信號，正在終止所有服務...")
+    stop_app.set() # 通知所有執行緒停止
+
+    # 終止子進程
     for p in reversed(processes):
         if p.poll() is None:
             log(f"正在終止 PID: {p.pid}...")
-            # 使用 os.killpg 來確保終止整個進程組
             try:
                 os.killpg(os.getpgid(p.pid), signal.SIGTERM)
             except ProcessLookupError:
-                pass # 進程可能已經自己結束了
-    # 等待一會兒讓進程終止
+                pass
     time.sleep(2)
     for p in reversed(processes):
         if p.poll() is None:
@@ -41,11 +50,16 @@ def cleanup(signum=None, frame=None):
                 os.killpg(os.getpgid(p.pid), signal.SIGKILL)
             except ProcessLookupError:
                 pass
-    log("所有子進程已清理。")
+
+    # 等待執行緒結束
+    log("正在等待所有執行緒結束...")
+    for t in threads:
+        t.join(timeout=5)
+
+    log("所有服務已清理。")
     sys.exit(0)
 
 def main():
-    # 註冊信號處理器，以便優雅關閉
     signal.signal(signal.SIGINT, cleanup)
     signal.signal(signal.SIGTERM, cleanup)
 
@@ -58,12 +72,10 @@ def main():
         db_proc = subprocess.Popen(
             db_manager_command, text=True, encoding='utf-8',
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            preexec_fn=os.setsid # 建立新的進程組
+            preexec_fn=os.setsid
         )
         processes.append(db_proc)
         threading.Thread(target=stream_output, args=(db_proc, "DB_Manager"), daemon=True).start()
-
-        # 等待資料庫管理器就緒 - 更穩健的方式是檢查某個狀態，但暫時先用 sleep
         log("等待資料庫管理器初始化...")
         time.sleep(5)
         if db_proc.poll() is not None:
@@ -72,18 +84,12 @@ def main():
 
         # --- 步驟 2: 啟動統一 API 伺服器 ---
         log(f"步驟 2: 啟動統一 API 伺服器於埠號 {API_SERVER_PORT}...")
-        # 從環境變數讀取 LIGHT_MODE
-        light_mode = os.environ.get("LIGHT_MODE", "0") == "1"
         server_env = os.environ.copy()
-        if light_mode:
+        if os.environ.get("LIGHT_MODE", "0") == "1":
             server_env["LIGHT_MODE"] = "1"
             log("輕量測試模式已啟用。")
-
-        # 將靜態檔案目錄的絕對路徑傳遞給 API 伺服器
         static_dir_path = project_root / "vue-app" / "dist"
         server_env["STATIC_DIR"] = str(static_dir_path.resolve())
-        log(f"將 STATIC_DIR 設為: {server_env['STATIC_DIR']}")
-
         server_command = [
             sys.executable, "-m", "uvicorn", "src.api_server:app",
             "--host", "0.0.0.0", "--port", str(API_SERVER_PORT)
@@ -92,19 +98,14 @@ def main():
             server_command, text=True, encoding='utf-8', env=server_env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             preexec_fn=os.setsid,
-            cwd=project_root # 確保 uvicorn 在專案根目錄下執行，才能找到 src 模組
+            cwd=project_root
         )
         processes.append(api_proc)
         threading.Thread(target=stream_output, args=(api_proc, "API_Server"), daemon=True).start()
-
-        # 這裡可以加入更複雜的健康檢查，但目前先假設它能啟動
-        time.sleep(5)
+        time.sleep(5) # 等待伺服器綁定埠號
         if api_proc.poll() is not None:
             raise RuntimeError(f"API 伺服器啟動失敗，返回碼: {api_proc.poll()}")
         log(f"API 伺服器已在 http://127.0.0.1:{API_SERVER_PORT} 啟動")
-
-        # *** 向 Colabpro.py 回報埠號 ***
-        # 使用特殊的格式，避免被一般日誌干擾
         print(f"APP_PORT:{API_SERVER_PORT}", flush=True)
 
         # --- 步驟 3: 啟動背景工作者 ---
@@ -119,7 +120,15 @@ def main():
         threading.Thread(target=stream_output, args=(worker_proc, "Worker"), daemon=True).start()
         log("轉錄工作者已在背景啟動。")
 
-        # --- 步驟 4: 等待主服務 (API Server) 結束 ---
+        # --- 步驟 4: 啟動硬體監控執行緒 ---
+        log("步驟 4: 啟動硬體監控...")
+        os.environ['API_PORT'] = str(API_SERVER_PORT) # 將 API 埠號傳遞給監控器
+        monitor_thread = threading.Thread(target=run_hardware_monitor, args=(stop_app,), daemon=True)
+        monitor_thread.start()
+        threads.append(monitor_thread)
+        log("硬體監控已在背景執行緒中啟動。")
+
+        # --- 步驟 5: 等待主服務 (API Server) 結束 ---
         log("所有服務已啟動。監控 API 伺服器狀態...")
         api_proc.wait()
         log("API 伺服器已停止。")
