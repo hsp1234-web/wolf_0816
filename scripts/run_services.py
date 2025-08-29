@@ -12,8 +12,6 @@ sys.path.insert(0, str(project_root_path))
 
 # 只有在非測試模式下才導入和執行工作者
 IS_TESTING_MODE = os.environ.get("E2E_TESTING") == "1"
-if not IS_TESTING_MODE:
-    from workers.hardware_monitor_worker import run_hardware_monitor
 
 # 全域變數
 processes = [] # 追蹤子進程
@@ -69,6 +67,32 @@ def main():
     project_root = Path(__file__).parent.parent
 
     try:
+        # --- 步驟 0: 安裝所有依賴 ---
+        log("步驟 0: 正在安裝/驗證所有 Python 依賴...")
+        deps_file = project_root / "requirements-test-light.txt"
+        # --- 步驟 0a: 安裝系統級依賴 (for PyAV) ---
+        log("步驟 0a: 正在安裝系統級依賴 (FFmpeg)...")
+        try:
+            # 參考 CH_log.md，在安裝 python 依賴前，確保 ffmpeg 的開發函式庫已安裝
+            # 必須使用 sudo 才能執行 apt-get
+            apt_command = "sudo -n apt-get update && sudo -n apt-get install -y --no-install-recommends ffmpeg libavformat-dev libavcodec-dev libavdevice-dev libavutil-dev libswscale-dev libswresample-dev libavfilter-dev"
+            subprocess.run(apt_command, shell=True, check=True, capture_output=True, text=True, encoding='utf-8')
+            log("✅ 系統級依賴已成功安裝。")
+        except subprocess.CalledProcessError as e:
+            log(f"⚠️ 安裝系統級依賴時發生錯誤 (可能是權限不足或套件已存在)。將繼續嘗試安裝 Python 依賴。")
+            log(f"Stderr: {e.stderr}")
+
+        # --- 步驟 0b: 安裝 Python 依賴 ---
+        log("步驟 0b: 使用 pip 安裝 Python 依賴...")
+        install_command = [sys.executable, "-m", "pip", "install", "-r", str(deps_file)]
+        result = subprocess.run(install_command, check=False, capture_output=True, text=True, encoding='utf-8')
+        if result.returncode != 0:
+            log(f"❌ Python 依賴安裝失敗。")
+            log(f"Stderr: {result.stderr}")
+            log(f"Stdout: {result.stdout}")
+            sys.exit(1)
+        log("✅ 所有依賴已成功安裝。")
+
         # --- 步驟 1: 啟動資料庫管理器 ---
         log("步驟 1: 啟動資料庫管理器...")
         db_manager_command = [sys.executable, str(project_root / "src/db/manager.py")]
@@ -126,6 +150,8 @@ def main():
 
             # --- 步驟 4: 啟動硬體監控執行緒 ---
             log("步驟 4: 啟動硬體監控...")
+            # 將導入延遲到依賴安裝之後
+            from workers.hardware_monitor_worker import run_hardware_monitor
             os.environ['API_PORT'] = str(API_SERVER_PORT) # 將 API 埠號傳遞給監控器
             monitor_thread = threading.Thread(target=run_hardware_monitor, args=(stop_app,), daemon=True)
             monitor_thread.start()

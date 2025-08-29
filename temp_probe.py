@@ -46,6 +46,17 @@ async def main():
             await page.wait_for_selector("div:has-text('全方位健康檢查報告')", timeout=10000)
             print("✅ [Probe] 健康檢查報告已成功顯示。")
 
+            print("👀 [Probe] 正在等待模型下載按鈕變為可用狀態...")
+            # 等待按鈕不再是禁用狀態，並且文字不是「正在檢查模型...」
+            # 這證明後端模型檢查已成功完成，並且前端已正確更新 UI
+            await page.wait_for_function("""
+                () => {
+                    const button = document.querySelector('[data-testid="download-model-button"]');
+                    return button && !button.disabled && !button.textContent.includes('正在檢查');
+                }
+            """, timeout=15000)
+            print("✅ [Probe] 模型下載按鈕已變為可用狀態。")
+
             screenshot_path = "final_diagnosis_screenshot.png"
             print(f"📸 [Probe] 正在截圖並儲存至 {screenshot_path} ...")
             await page.screenshot(path=screenshot_path)

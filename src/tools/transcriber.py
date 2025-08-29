@@ -142,29 +142,35 @@ def check_model(model_size: str) -> bool:
     """
     使用 huggingface_hub 的 API 檢查模型是否已在本地快取中。
     返回 True 如果模型存在，否則返回 False。
+    此版本經過優化，僅檢查單一關鍵檔案是否存在，以避免緩慢的 snapshot_download。
     """
-    log.info(f"正在使用 huggingface_hub API 檢查模型 '{model_size}'...")
+    log.info(f"正在快速檢查模型 '{model_size}' 是否存在於本地快取...")
     try:
-        from huggingface_hub import snapshot_download, HfFolder
+        from huggingface_hub import hf_hub_download
         from huggingface_hub.utils import EntryNotFoundError
 
         repo_id = f"guillaumekln/faster-whisper-{model_size}"
-        snapshot_download(
+
+        # 我們只檢查一個關鍵檔案，例如 model.bin，這比檢查整個快照快得多。
+        # local_files_only=True 確保我們只在本地查找，不會觸發任何網路請求。
+        hf_hub_download(
             repo_id=repo_id,
+            filename="model.bin", # 選擇一個核心模型檔案來檢查
             local_files_only=True,
-            token=HfFolder.get_token(),
-            user_agent=f"phoenix-transcriber/1.0; command/check; model/{model_size}"
         )
-        log.info(f"✅ huggingface_hub 確認模型 '{model_size}' 已完整存在於快取中。")
+
+        log.info(f"✅ 快速檢查確認模型 '{model_size}' 的關鍵檔案存在於快取中。")
         if __name__ == "__main__":
              print("exists")
         return True
-    except (FileNotFoundError, EntryNotFoundError):
-        log.warning(f"❓ 模型 '{model_size}' 不在 huggingface_hub 的本地快取中。")
+    except EntryNotFoundError:
+        # 這是預期的錯誤，當檔案在本地快取中找不到時會引發。
+        log.warning(f"❓ 模型 '{model_size}' 的關鍵檔案不在本地快取中。")
         if __name__ == "__main__":
             print("not_exists")
         return False
     except Exception as e:
+        # 捕獲其他可能的錯誤，例如權限問題。
         log.error(f"檢查模型 '{model_size}' 時發生未預期的錯誤: {e}", exc_info=True)
         if __name__ == "__main__":
             print("not_exists")
