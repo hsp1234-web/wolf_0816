@@ -1,3 +1,5 @@
+# 修改者: Jules
+# 修改日期: 2025-08-30T02:05:59.681434+08:00
 # 檔案: api_server_v2.py
 # 說明: 核心後端伺服器，負責協調下載與報告生成的工作流。
 import asyncio
@@ -127,15 +129,6 @@ async def execute_workflow(request: ReportGenerationRequest):
 @app.post("/api/download_media")
 async def download_media(request: MediaDownloadRequest):
     async def download_generator():
-        if request.url == "USE_MOCK_DOWNLOAD":
-            yield f"data: {json.dumps({'type': 'progress', 'status': 'downloading', 'percent': 50, 'description': '模擬下載中...'})}\n\n"
-            await asyncio.sleep(1)
-            yield f"data: {json.dumps({'type': 'progress', 'status': 'processing'})}\n\n"
-            await asyncio.sleep(1)
-            mock_result = {"type": "audio", "file_path": "/app/youtube_downloads/mock.m4a", "video_title": "Mock Download", "original_url": request.url}
-            yield f"data: {json.dumps({'type': 'success', 'result': mock_result})}\n\n"
-            return
-
         python_executable = sys.executable
         download_script = os.path.join(scripts_dir, "download_youtube.py")
         download_command = [
@@ -150,29 +143,61 @@ async def download_media(request: MediaDownloadRequest):
             cwd=project_root
         )
 
-        if process.stderr:
-            while True:
-                line = await process.stderr.readline()
-                if not line: break
-                try:
-                    progress_data = json.loads(line.decode('utf-8'))
-                    yield f"data: {json.dumps(progress_data)}\n\n"
-                except json.JSONDecodeError: pass
+        final_json = None
+        while process.returncode is None:
+            tasks = {
+                asyncio.create_task(process.stdout.readline()): process.stdout,
+                asyncio.create_task(process.stderr.readline()): process.stderr,
+            }
+            done, pending = await asyncio.wait(tasks.keys(), return_when=asyncio.FIRST_COMPLETED)
 
-        stdout_data, _ = await process.communicate()
+            for task in pending:
+                task.cancel()
+
+            for task in done:
+                line_bytes = task.result()
+                if not line_bytes:
+                    continue
+
+                line = line_bytes.decode('utf-8').strip()
+                stream_owner = tasks[task]
+
+                if stream_owner is process.stderr:
+                    # 來自 stderr 的是進度更新
+                    try:
+                        progress_data = json.loads(line)
+                        yield f"data: {json.dumps(progress_data)}\n\n"
+                    except json.JSONDecodeError:
+                        # 忽略無法解析的行 (可能是 yt-dlp 的除錯訊息)
+                        pass
+                elif stream_owner is process.stdout:
+                    # 來自 stdout 的是最終結果
+                    final_json = line
+                    # 收到最終結果後，我們可以假設任務即將結束，但仍需等待進程終止
+                    # 以確保所有 stderr 都被處理完畢
+
+        # 處理進程結束後可能剩餘的輸出
+        remaining_stdout, remaining_stderr = await process.communicate()
+        if remaining_stdout:
+            final_json = remaining_stdout.decode('utf-8').strip()
 
         if process.returncode == 0:
             try:
-                success_result = json.loads(stdout_data.decode('utf-8'))
+                success_result = json.loads(final_json)
                 yield f"data: {json.dumps({'type': 'success', 'result': success_result})}\n\n"
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, TypeError):
                  yield f"data: {json.dumps({'type': 'error', 'message': '後端無法解析下載腳本的成功訊息。'})}\n\n"
         else:
-            try:
-                error_result = json.loads(stdout_data.decode('utf-8'))
-                yield f"data: {json.dumps(error_result)}\n\n"
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                 yield f"data: {json.dumps({'type': 'error', 'message': '下載腳本執行失敗，且無法解析其錯誤輸出。'})}\n\n"
+            # 優先從 stderr 尋找標準化的錯誤訊息
+            error_message = "下載腳本執行失敗，且無法解析其錯誤輸出。"
+            if remaining_stderr:
+                try:
+                    error_data = json.loads(remaining_stderr.decode('utf-8'))
+                    error_message = error_data.get('message', error_message)
+                except json.JSONDecodeError:
+                    pass # 保持預設錯誤訊息
+
+            yield f"data: {json.dumps({'type': 'error', 'message': error_message})}\n\n"
 
     return StreamingResponse(download_generator(), media_type="text/event-stream")
 

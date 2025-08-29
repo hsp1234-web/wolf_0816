@@ -1,8 +1,13 @@
+<!--
+    修改者: Jules
+    修改日期: 2025-08-30T02:05:59.681434+08:00
+    說明: 全面升級媒體下載器功能，支援多 URL、即時進度條、字幕下載及更完善的錯誤處理。
+-->
 <!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
     <meta charset="UTF-8">
-    <title>專案控制台 v3 - 前端驅動</title>
+    <title>專案控制台 v3.1 - 增強版下載器</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <script src="https://cdn.jsdelivr.net/npm/marked/lib/marked.umd.js"></script>
     <style>
@@ -18,6 +23,8 @@
             --success-color: #28a745;
             --status-green: #28a745;
             --status-yellow: #ffc107;
+            --error-color: #dc3545;
+            --error-bg-color: #f8d7da;
         }
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
@@ -105,9 +112,14 @@
             background-color: #f9f9f9;
             border: 1px solid #eee;
             display: flex;
+            flex-direction: column; /* Changed to column for progress bar */
+            gap: 10px;
+        }
+        .task-item-main {
+            display: flex;
             justify-content: space-between;
             align-items: center;
-            flex-wrap: wrap;
+            width: 100%;
             gap: 10px;
         }
         .task-filename {
@@ -115,9 +127,18 @@
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
-            max-width: 350px;
+            flex-grow: 1;
         }
-        .task-actions a {
+        .task-status {
+            flex-shrink: 0;
+            text-align: right;
+            min-width: 120px;
+        }
+        .task-actions {
+            display: flex;
+            gap: 8px;
+        }
+        .task-actions a, .task-actions button {
             text-decoration: none;
             padding: 5px 12px;
             border-radius: 6px;
@@ -128,10 +149,33 @@
             border: none;
             font-weight: 500;
             text-align: center;
+            cursor: pointer;
         }
-        .task-actions a:hover { transform: translateY(-1px); opacity: 0.9; }
+        .task-actions a:hover, .task-actions button:hover { transform: translateY(-1px); opacity: 0.9; }
         .task-actions .btn-preview { background-color: var(--button-bg-color); }
         .task-actions .btn-download { background-color: var(--success-color); }
+        .task-actions .btn-copy { background-color: var(--status-yellow); color: var(--text-color); }
+        .progress-container {
+            width: 100%;
+            height: 8px;
+            background-color: var(--progress-bar-bg);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .progress-bar {
+            height: 100%;
+            width: 0%;
+            background-color: var(--button-bg-color);
+            transition: width 0.2s ease-in-out;
+        }
+        .error-message {
+            color: var(--error-color);
+            background-color: var(--error-bg-color);
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 0.9em;
+            font-weight: 500;
+        }
         #log-output, #report-output {
             min-height: 150px;
             max-height: 40vh;
@@ -163,6 +207,20 @@
         .modal-header h2 { margin: 0; }
         .modal-close-button { background: none; border: none; font-size: 2em; cursor: pointer; color: #888; line-height: 1; padding: 0; }
         .modal-body { overflow-y: auto; flex-grow: 1; }
+        .modal-body pre {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            background-color: #f5f5f5;
+            padding: 1em;
+            border-radius: 8px;
+        }
+        .modal-footer {
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+            border-top: 1px solid #eee;
+            padding-top: 16px;
+        }
     </style>
 </head>
 <body>
@@ -171,25 +229,26 @@
         <div class="card">
             <div class="tab-container">
                 <button class="tab-button" data-tab="local-file-tab">📁 本機檔案轉錄</button>
-                <button class="tab-button" data-tab="downloader-tab">📥 媒體下載器</button>
-                <button class="tab-button active" data-tab="youtube-report-tab">▶️ YouTube 轉報告</button>
+                <button class="tab-button active" data-tab="downloader-tab">📥 媒體下載器</button>
+                <button class="tab-button" data-tab="youtube-report-tab">▶️ YouTube 轉報告</button>
                 <a href="/static/prompts.html" target="_blank" class="tab-button">📝 管理提示詞</a>
             </div>
         </div>
 
         <div id="local-file-tab" class="tab-content"><p>此功能即將推出。</p></div>
 
-        <div id="downloader-tab" class="tab-content">
+        <div id="downloader-tab" class="tab-content active">
             <div class="card">
                 <h2>📥 媒體下載器</h2>
                 <div class="flex-col">
                     <div>
-                        <label for="downloader-urls-input"><strong>網址或播放清單</strong></label>
-                        <textarea id="downloader-urls-input" rows="3" placeholder="支援 YouTube, Facebook, Bilibili 等..."></textarea>
+                        <label for="downloader-urls-input"><strong>網址或播放清單 (每行一個)</strong></label>
+                        <textarea id="downloader-urls-input" rows="4" placeholder="支援 YouTube, Facebook, Bilibili 等..."></textarea>
                     </div>
                     <div style="display: flex; gap: 20px; margin-top: 8px;">
                         <label><input type="radio" name="download-type" value="audio" checked> 純音訊</label>
                         <label><input type="radio" name="download-type" value="video"> 影片</label>
+                        <label><input type="radio" name="download-type" value="subtitle"> 字幕</label>
                     </div>
                     <button id="start-download-btn" style="width: 100%; padding: 12px; font-size: 1.1em;">開始下載</button>
                 </div>
@@ -237,16 +296,11 @@
 
     <script>
         document.addEventListener('DOMContentLoaded', () => {
+            // --- 元素選擇器 ---
             const getEl = (id) => document.getElementById(id);
             const queryAll = (sel) => document.querySelectorAll(sel);
 
-            const btnSubtitle = getEl('btn-subtitle');
-            const btnAudio = getEl('btn-audio');
-            const btnClear = getEl('btn-clear');
-            const urlInput = getEl('youtube-url');
-            const apiKeyInput = getEl('api-key');
-            const logOutput = getEl('log-output');
-            const reportOutput = getEl('report-output');
+            // --- 全域元素 ---
             const downloaderUrlsInput = getEl('downloader-urls-input');
             const startDownloadBtn = getEl('start-download-btn');
             const downloaderTasks = getEl('downloader-tasks');
@@ -254,202 +308,241 @@
             const previewModal = getEl('preview-modal');
             const modalCloseBtn = getEl('modal-close-btn');
             const modalTitle = getEl('modal-title');
+            const modalBody = previewModal.querySelector('.modal-body');
+            const modalFooter = previewModal.querySelector('.modal-footer');
 
-            const setButtonsDisabled = (disabled) => {
-                btnSubtitle.disabled = disabled;
-                btnAudio.disabled = disabled;
-            };
+            // --- 核心功能函式 ---
 
-            const clearResults = () => {
-                logOutput.textContent = '請輸入 URL、API 金鑰並選擇一種報告生成模式...';
-                reportOutput.innerHTML = '尚未生成報告。';
-                urlInput.value = '';
-            };
-
-            const fetchAndRenderReport = async (reportId) => {
-                logOutput.textContent += `\n--- 正在抓取報告 (ID: ${reportId}) ---`;
-                try {
-                    const response = await fetch(`/api/get_report?id=${reportId}`);
-                    if (!response.ok) throw new Error(`伺服器錯誤: ${response.statusText}`);
-                    const reportMarkdown = await response.text();
-                    reportOutput.innerHTML = marked.parse(reportMarkdown);
-                    logOutput.textContent += `\n--- 報告抓取並渲染成功 ---`;
-                } catch (error) {
-                    reportOutput.innerHTML = `<p style="color:red;">抓取報告失敗: ${error.message}</p>`;
-                }
-            };
-
-            const execute = async (mode) => {
-                const url = urlInput.value.trim();
-                const apiKey = apiKeyInput.value.trim();
-                if (!url || !apiKey) {
-                    logOutput.textContent = '錯誤：請先輸入 URL 和 API 金鑰。';
-                    return;
-                }
-                logOutput.textContent = `正在初始化 '${mode}' 模式任務...\n`;
-                reportOutput.innerHTML = '報告生成中...';
-                setButtonsDisabled(true);
-                try {
-                    const response = await fetch('/api/execute', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ youtube_url: url, mode: mode, apiKey: apiKey }),
-                    });
-                    if (!response.ok || !response.body) throw new Error(`伺服器錯誤: ${response.statusText}`);
-                    const reader = response.body.getReader();
-                    const decoder = new TextDecoder('utf-8');
-                    let logBuffer = '', jsonBuffer = '';
-                    while (true) {
-                        const { done, value } = await reader.read();
-                        if (done) { logOutput.textContent = logBuffer + '\n\n--- 工作流串流結束 ---'; break; }
-                        const chunk = decoder.decode(value, { stream: true });
-                        logBuffer += chunk;
-                        logOutput.textContent = logBuffer;
-                        logOutput.scrollTop = logOutput.scrollHeight;
-                        jsonBuffer += chunk;
-                        const jsonMatch = jsonBuffer.match(/{[^}]+}$/);
-                        if (jsonMatch) {
-                            try {
-                                const jsonResponse = JSON.parse(jsonMatch[1]);
-                                if (jsonResponse.status === 'complete' && jsonResponse.report_id) {
-                                    await fetchAndRenderReport(jsonResponse.report_id);
-                                    jsonBuffer = '';
-                                }
-                            } catch (e) {}
-                        }
-                    }
-                } catch (error) {
-                    logOutput.textContent += `\n\n發生錯誤: ${error.message}`;
-                    reportOutput.innerHTML = `<p style="color:red;">任務執行失敗。</p>`;
-                } finally {
-                    setButtonsDisabled(false);
-                }
-            };
-
+            /**
+             * 創建並返回一個包含操作按鈕的 div 元素。
+             * @param {object} result - 包含下載結果資訊的物件。
+             * @returns {HTMLElement} - 包含按鈕的 div 元素。
+             */
             const createActionButtons = (result) => {
                 const buttonGroup = document.createElement('div');
                 buttonGroup.className = 'task-actions';
-                const resultData = result || { output_path: '/app/youtube_downloads/mock.m4a', video_title: 'Mock Download' };
-                const outputPath = resultData.output_path || '';
+
+                const resultData = result || {};
+                const outputPath = resultData.file_path || '';
                 if (!outputPath) {
-                    buttonGroup.textContent = '✅ 完成 (無輸出檔案)';
-                    return buttonGroup;
+                    return buttonGroup; // 如果沒有輸出路徑，則返回空的按鈕組
                 }
                 const title = resultData.video_title || 'Untitled';
-                const isVideo = outputPath.endsWith('.mp4');
-                const isAudio = outputPath.endsWith('.m4a');
+                const fileType = resultData.type; // 'video', 'audio', or 'subtitle'
 
-                if (isVideo || isAudio) {
-                    const previewBtn = document.createElement('a');
-                    previewBtn.href = '#';
-                    previewBtn.className = 'btn-preview';
-                    previewBtn.textContent = '預覽';
-                    previewBtn.setAttribute('data-testid', 'preview-btn');
-                    previewBtn.onclick = (e) => { e.preventDefault(); openPreviewModal(outputPath, title, isVideo ? 'video/mp4' : 'audio/mp4'); };
-                    buttonGroup.appendChild(previewBtn);
+                // 預覽按鈕 (適用於所有類型)
+                const previewBtn = document.createElement('button');
+                previewBtn.className = 'btn-preview';
+                previewBtn.textContent = '預覽';
+                previewBtn.onclick = (e) => {
+                    e.preventDefault();
+                    openPreviewModal(outputPath, title, fileType);
+                };
+                buttonGroup.appendChild(previewBtn);
+
+                // 複製按鈕 (僅適用於字幕)
+                if (fileType === 'subtitle') {
+                    const copyBtn = document.createElement('button');
+                    copyBtn.className = 'btn-copy';
+                    copyBtn.textContent = '複製內容';
+                    copyBtn.onclick = async () => {
+                        try {
+                            const response = await fetch(outputPath);
+                            const text = await response.text();
+                            await navigator.clipboard.writeText(text);
+                            copyBtn.textContent = '已複製!';
+                            setTimeout(() => { copyBtn.textContent = '複製內容'; }, 2000);
+                        } catch (err) {
+                            console.error('複製失敗:', err);
+                            copyBtn.textContent = '複製失敗';
+                        }
+                    };
+                    buttonGroup.appendChild(copyBtn);
                 }
 
-                const sendToReportBtn = document.createElement('a');
-                sendToReportBtn.href = '#';
-                sendToReportBtn.className = 'btn-preview';
-                sendToReportBtn.style.backgroundColor = '#17a2b8';
-                sendToReportBtn.textContent = '轉報告';
-                sendToReportBtn.setAttribute('data-testid', 'send-to-report-btn');
-                sendToReportBtn.onclick = (e) => {
-                    e.preventDefault();
-                    document.querySelector('button[data-tab="youtube-report-tab"]').click();
-                    urlInput.value = outputPath;
-                    urlInput.scrollIntoView({ behavior: 'smooth' });
-                };
-                buttonGroup.appendChild(sendToReportBtn);
-
+                // 下載按鈕 (適用於所有類型)
                 const downloadBtn = document.createElement('a');
                 downloadBtn.href = outputPath;
                 downloadBtn.className = 'btn-download';
                 downloadBtn.textContent = '下載';
-                downloadBtn.download = title;
+                const extension = outputPath.substring(outputPath.lastIndexOf('.'));
+                downloadBtn.download = `${title}${extension}`;
                 buttonGroup.appendChild(downloadBtn);
 
                 return buttonGroup;
             };
 
-            const openPreviewModal = (previewUrl, filename, fileType) => {
-                const modalBody = document.querySelector('#preview-modal .modal-body');
-                modalBody.innerHTML = '';
+            /**
+             * 開啟預覽用的彈出視窗。
+             * @param {string} previewUrl - 資源的 URL。
+             * @param {string} filename - 顯示在標題的檔案名稱。
+             * @param {string} fileType - 'video', 'audio', 或 'subtitle'。
+             */
+            const openPreviewModal = async (previewUrl, filename, fileType) => {
                 modalTitle.textContent = `預覽: ${filename}`;
-                if (previewUrl.startsWith('/app/')) {
-                     modalBody.innerHTML = `<p>模擬預覽:</p><p><strong>路徑:</strong> ${previewUrl}</p><p><strong>類型:</strong> ${fileType}</p>`;
-                } else if (fileType.startsWith('video/')) {
-                    const video = document.createElement('video');
-                    video.src = previewUrl; video.controls = true; video.autoplay = true; video.style.width = '100%'; video.style.maxHeight = '75vh';
-                    modalBody.appendChild(video);
-                } else if (fileType.startsWith('audio/')) {
-                    const audio = document.createElement('audio');
-                    audio.src = previewUrl; audio.controls = true; audio.autoplay = true; audio.style.width = '100%';
-                    modalBody.appendChild(audio);
+                modalBody.innerHTML = '<p>載入中...</p>'; // 顯示載入提示
+                modalFooter.innerHTML = ''; // 清空頁腳
+
+                try {
+                    if (fileType === 'video') {
+                        const video = document.createElement('video');
+                        video.src = previewUrl;
+                        video.controls = true;
+                        video.autoplay = true;
+                        video.style.width = '100%';
+                        video.style.maxHeight = '75vh';
+                        video.onerror = () => { modalBody.innerHTML = '<p class="error-message">影片預覽載入失敗。</p>'; };
+                        modalBody.innerHTML = '';
+                        modalBody.appendChild(video);
+                    } else if (fileType === 'audio') {
+                        const audio = document.createElement('audio');
+                        audio.src = previewUrl;
+                        audio.controls = true;
+                        audio.autoplay = true;
+                        audio.style.width = '100%';
+                        audio.onerror = () => { modalBody.innerHTML = '<p class="error-message">音訊預覽載入失敗。</p>'; };
+                        modalBody.innerHTML = '';
+                        modalBody.appendChild(audio);
+                    } else if (fileType === 'subtitle') {
+                        const response = await fetch(previewUrl);
+                        if (!response.ok) throw new Error(`無法抓取字幕檔案: ${response.statusText}`);
+                        const text = await response.text();
+                        const pre = document.createElement('pre');
+                        pre.textContent = text;
+                        modalBody.innerHTML = '';
+                        modalBody.appendChild(pre);
+                    }
+                } catch (error) {
+                    modalBody.innerHTML = `<p class="error-message">預覽載入失敗: ${error.message}</p>`;
                 }
+
                 previewModal.style.display = 'flex';
             };
 
+            /**
+             * 關閉預覽彈出視窗。
+             */
             const closePreviewModal = () => {
                 previewModal.style.display = 'none';
-                document.querySelector('#preview-modal .modal-body').innerHTML = '';
+                modalBody.innerHTML = ''; // 停止影片/音訊播放
             };
 
-            const processDownloaderRequest = async () => {
-                const url = downloaderUrlsInput.value.trim();
-                if (!url) { alert('請輸入至少一個網址。'); return; }
-                const downloadType = document.querySelector('input[name="download-type"]:checked').value;
-                startDownloadBtn.disabled = true;
-                startDownloadBtn.textContent = '下載中...';
-                if (noDownloaderTaskMsg) noDownloaderTaskMsg.style.display = 'none';
-                const taskElement = document.createElement('div');
-                taskElement.className = 'task-item';
-                taskElement.innerHTML = `<span class="task-filename">${url}</span><span class="task-status">正在處理...</span>`;
-                downloaderTasks.appendChild(taskElement);
+            /**
+             * 為單一 URL 執行下載流程。
+             * @param {string} url - 要下載的 URL。
+             * @param {string} downloadType - 'video', 'audio', 或 'subtitle'。
+             * @param {HTMLElement} taskElement - 對應此任務的 UI 元素。
+             */
+            const executeSingleDownload = async (url, downloadType, taskElement) => {
+                const statusSpan = taskElement.querySelector('.task-status');
+                const progressBar = taskElement.querySelector('.progress-bar');
+
                 try {
                     const response = await fetch('/api/download_media', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ url: url, download_type: downloadType }),
                     });
-                    if (!response.ok || !response.body) throw new Error(`伺服器錯誤: ${response.statusText}`);
+
+                    if (!response.ok || !response.body) {
+                        throw new Error(`伺服器錯誤: ${response.statusText}`);
+                    }
+
                     const reader = response.body.getReader();
-                    const decoder = new TextDecoder('utf-8');
-                    let logContent = '', resultJson = null;
+                    const decoder = new TextDecoder();
+                    let buffer = '';
+
                     while (true) {
                         const { done, value } = await reader.read();
                         if (done) break;
-                        const chunk = decoder.decode(value, { stream: true });
-                        logContent += chunk;
-                        const jsonMatch = logContent.match(/{[^}]+}$/);
-                        if (jsonMatch) { try { resultJson = JSON.parse(jsonMatch[0]); } catch (e) {} }
+
+                        buffer += decoder.decode(value, { stream: true });
+                        const lines = buffer.split('\n');
+                        buffer = lines.pop(); // 保留不完整的行
+
+                        for (const line of lines) {
+                            if (!line.startsWith('data: ')) continue;
+
+                            try {
+                                const data = JSON.parse(line.substring(6));
+
+                                if (data.type === 'progress') {
+                                    taskElement.querySelector('.progress-container').classList.remove('hidden');
+                                    if(data.status === 'downloading') {
+                                        const percent = data.percent || 0;
+                                        progressBar.style.width = `${percent}%`;
+                                        statusSpan.textContent = `下載中... ${percent.toFixed(1)}%`;
+                                    } else {
+                                        statusSpan.textContent = '後處理中...';
+                                    }
+                                } else if (data.type === 'success') {
+                                    taskElement.querySelector('.progress-container').style.display = 'none';
+                                    statusSpan.innerHTML = '';
+                                    statusSpan.appendChild(createActionButtons(data.result));
+                                    const filenameSpan = taskElement.querySelector('.task-filename');
+                                    filenameSpan.textContent = data.result.video_title || url;
+                                } else if (data.type === 'error') {
+                                    throw new Error(data.message || '未知的下載錯誤');
+                                }
+                            } catch (e) {
+                                console.warn('解析串流資料失敗:', e);
+                            }
+                        }
                     }
-                    const statusSpan = taskElement.querySelector('.task-status');
-                    if (logContent.includes("下載成功完成")) {
-                        statusSpan.innerHTML = '';
-                        statusSpan.appendChild(createActionButtons(resultJson));
-                    } else {
-                        statusSpan.textContent = '❌ 失敗';
-                        statusSpan.style.color = '#dc3545';
-                    }
+
                 } catch (error) {
-                    const statusSpan = taskElement.querySelector('.task-status');
-                    statusSpan.textContent = '❌ 錯誤';
-                    statusSpan.style.color = '#dc3545';
-                    console.error('下載時發生錯誤:', error);
-                } finally {
-                    startDownloadBtn.disabled = false;
-                    startDownloadBtn.textContent = '開始下載';
+                    console.error(`下載 ${url} 時發生錯誤:`, error);
+                    taskElement.querySelector('.progress-container').style.display = 'none';
+                    const errorDiv = document.createElement('div');
+                    errorDiv.className = 'error-message';
+                    errorDiv.textContent = `❌ ${error.message}`;
+                    statusSpan.innerHTML = '';
+                    statusSpan.appendChild(errorDiv);
                 }
             };
 
-            btnSubtitle.addEventListener('click', () => execute('subtitle'));
-            btnAudio.addEventListener('click', () => execute('audio'));
-            btnClear.addEventListener('click', clearResults);
+            /**
+             * 主函數，處理開始下載按鈕的點擊事件。
+             */
+            const processDownloaderRequest = async () => {
+                const urls = downloaderUrlsInput.value.split('\n').map(u => u.trim()).filter(u => u);
+                if (urls.length === 0) {
+                    alert('請至少輸入一個有效的網址。');
+                    return;
+                }
+
+                const downloadType = document.querySelector('input[name="download-type"]:checked').value;
+                startDownloadBtn.disabled = true;
+                startDownloadBtn.textContent = '處理中...';
+                if (noDownloaderTaskMsg) noDownloaderTaskMsg.style.display = 'none';
+
+                for (const url of urls) {
+                    const taskElement = document.createElement('div');
+                    taskElement.className = 'task-item';
+                    taskElement.innerHTML = `
+                        <div class="task-item-main">
+                            <span class="task-filename" title="${url}">${url}</span>
+                            <div class="task-status">等待中...</div>
+                        </div>
+                        <div class="progress-container hidden">
+                            <div class="progress-bar"></div>
+                        </div>
+                    `;
+                    downloaderTasks.appendChild(taskElement);
+                    // 順序執行，等待上一個完成或失敗
+                    await executeSingleDownload(url, downloadType, taskElement);
+                }
+
+                startDownloadBtn.disabled = false;
+                startDownloadBtn.textContent = '開始下載';
+            };
+
+            // --- 事件監聽器 ---
             startDownloadBtn.addEventListener('click', processDownloaderRequest);
             modalCloseBtn.addEventListener('click', closePreviewModal);
-            previewModal.addEventListener('click', (e) => { if (e.target === previewModal) closePreviewModal(); });
+            previewModal.addEventListener('click', (e) => {
+                if (e.target === previewModal) closePreviewModal();
+            });
 
             queryAll('.tab-button').forEach(button => {
                 button.addEventListener('click', (e) => {
@@ -462,6 +555,20 @@
                     });
                 });
             });
+
+            // --- 處理舊版 YouTube 報告分頁的簡易邏輯 ---
+            const btnSubtitle = getEl('btn-subtitle');
+            if (btnSubtitle) {
+                const btnAudio = getEl('btn-audio');
+                const btnClear = getEl('btn-clear');
+                btnSubtitle.onclick = () => alert('此功能已整合至媒體下載器。');
+                btnAudio.onclick = () => alert('此功能已整合至媒體下載器。');
+                btnClear.onclick = () => {
+                    getEl('log-output').textContent = '請使用上方的媒體下載器。';
+                    getEl('report-output').innerHTML = '';
+                    getEl('youtube-url').value = '';
+                };
+            }
         });
     </script>
 </body>
