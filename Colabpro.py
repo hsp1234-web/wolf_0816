@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-#@title 📥🐺 善狼一鍵啟動器 (v17.1) 🐺
+#@title 📥🐺 善狼一鍵啟動器 (v18) 🐺
 #@markdown ---
 #@markdown ### **(1) 專案來源設定**
 #@markdown > **請提供 Git 倉庫的網址、要下載的分支或標籤，以及本地資料夾名稱。**
@@ -7,16 +7,16 @@
 #@markdown **後端程式碼倉庫 (REPOSITORY_URL)**
 REPOSITORY_URL = "https://github.com/hsp1234-web/wolf_0816.git" #@param {type:"string"}
 #@markdown **後端版本分支或標籤 (TARGET_BRANCH_OR_TAG)**
-TARGET_BRANCH_OR_TAG = "745" #@param {type:"string"}
+TARGET_BRANCH_OR_TAG = "754-A" #@param {type:"string"}
 #@markdown **專案資料夾名稱 (PROJECT_FOLDER_NAME)**
 PROJECT_FOLDER_NAME = "wolf_project" #@param {type:"string"}
 #@markdown **強制刷新後端程式碼 (FORCE_REPO_REFRESH)**
 #@markdown > **如果勾選，每次執行都會先刪除舊的專案資料夾，再重新下載。**
 FORCE_REPO_REFRESH = True #@param {type:"boolean"}
-#@markdown > **v16 架構更新：舊的依賴包 (`dependencies.tar.gz`) 已被廢棄，此選項不再有效。**
+#@markdown > **v16 架構更新：舊的依賴包 (`dependencies.tar.gz`) 已被廢棄，此選項不再有效。 [待廢棄]**
 FORCE_DEPS_REFRESH = False #@param {type:"boolean"}
-#@markdown **輕量測試模式 (LIGHT_MODE)**
-#@markdown > **勾選後，將以輕量模式啟動，使用 `tiny.en` 模型並安裝較少的依賴，適合快速測試。**
+#@markdown **輕量測試模式 (LIGHT_MODE) [待廢棄]**
+#@markdown > **勾選後，將以輕量模式啟動，使用 `tiny.en` 模型並安裝較少的依賴，適合快速測試。新架構不再使用此選項。**
 LIGHT_MODE = True #@param {type:"boolean"}
 #@markdown ---
 #@markdown ### **(2) 通道啟用設定**
@@ -51,18 +51,19 @@ ENABLE_CLEAR_OUTPUT = True #@param {type:"boolean"}
 # ==                                  開發者日誌                                  ==
 # ======================================================================================
 #
-# 版本: 17.1
-# 日期: 2025-08-28T02:20:00+08:00
+# 版本: 18.0
+# 日期: 2025-08-28T21:06:00+08:00
 #
 # 本次變更重點:
+# 1. **核心架構整合**: 將啟動器 (Colabpro.py) 與新的輕量化後端 (api_server_v2.py) 整合。
+# 2. **啟動邏輯更新**: 移除舊的 run_services.py 服務總管，改為直接透過 uvicorn 啟動 FastAPI 伺服器。
+# 3. **動態埠號分配**: 實現了從 uvicorn 日誌中自動解析動態分配的埠號，取代了舊的硬編碼埠號回報機制。
+# 4. **依賴清理**: 更新了依賴安裝流程，改為安裝 `requirements-server.txt` 和 `requirements-worker.txt`。
+# 5. **參數整理**: 標記了 `FORCE_DEPS_REFRESH` 和 `LIGHT_MODE` 等舊參數為待廢棄。
+#
+# --- v17.1 歷史紀錄 ---
 # 1. **增強日誌**: 根據使用者回饋，在後端日誌中加入了 WebSocket 健康檢查的詳細報告內容，以提高系統透明度。
 # 2. **版本更新**: 將預設的後端版本標籤更新至 "745"。
-#
-# --- v17.0 歷史紀錄 ---
-# 1. **核心架構遷移**: 從 v16 的「門面伺服器」模型，遷移至以資料庫為中心的 v17 新架構。
-# 2. **服務化啟動**: 啟動器現在會協調啟動三個獨立的常駐服務。
-# 3. **移除舊元件**: 舊的 `facade_server.py` 和 `background_installer.py` 已被新架構取代並封存。
-# 4. **依賴問題修復**: 更新 `faster-whisper` 版本以解決 `av` 套件的編譯問題。
 #
 # ======================================================================================
 
@@ -356,20 +357,30 @@ def create_log_viewer_html(log_manager):
 # ==============================================================================
 def _log_subprocess_output(server_proc, log_manager, shared_state):
     """在一個獨立的執行緒中持續讀取和記錄子程序的輸出。"""
-    if not server_proc or not server_proc.stdout:
+    # 子程序的 stdout 和 stderr 都可能包含我們需要的資訊
+    # uvicorn 的日誌通常輸出到 stderr，但這裡我們合併處理以確保不錯過
+    stream = server_proc.stdout if server_proc.stdout else server_proc.stderr
+    if not stream:
         return
-    for line in iter(server_proc.stdout.readline, ''):
+
+    for line in iter(stream.readline, ''):
         line = line.strip()
         if not line:
             continue
         log_manager.log("RUNNER", line)
+
+        # 新架構：從 uvicorn 的日誌中解析埠號
+        # 範例: "INFO:     Uvicorn running on http://0.0.0.0:42355 (Press CTRL+C to quit)"
         # 同時檢查埠號，並更新共享狀態
-        if line.startswith("APP_PORT:"):
-            try:
-                port = int(line.split(":")[1].strip())
-                shared_state['app_port'] = port
-            except (ValueError, IndexError):
-                log_manager.log("ERROR", f"無法從行 '{line}' 中解析埠號。")
+        if not shared_state.get('app_port'): # 只在尚未設定時才進行解析，提高效率
+            match = re.search(r"Uvicorn running on .*:(\d+)", line)
+            if match:
+                try:
+                    port = int(match.group(1))
+                    shared_state['app_port'] = port
+                    log_manager.log("INFO", f"成功從日誌中解析到應用程式埠號: {port}")
+                except (ValueError, IndexError):
+                    log_manager.log("ERROR", f"無法從 uvicorn 日誌 '{line}' 中解析埠號。")
 
 def launch_application(project_path_str: str, log_manager: DisplayManager):
     project_path = Path(project_path_str)
@@ -382,9 +393,19 @@ def launch_application(project_path_str: str, log_manager: DisplayManager):
         log_manager.print_ui()
         manager_env = os.environ.copy()
         if LIGHT_MODE:
-            manager_env["LIGHT_MODE"] = "1"
-            log_manager.log("INFO", "輕量測試模式已啟用。")
-        manager_command = [sys.executable, str(project_path / "scripts" / "run_services.py")]
+            # manager_env["LIGHT_MODE"] = "1" #在新架構中，此參數已無作用
+            log_manager.log("INFO", "輕量測試模式已啟用 (此選項在新架構中已無作用)。")
+
+        # 新架構：直接使用 uvicorn 啟動 api_server_v2.py
+        # 使用 --port 0 讓作業系統自動選擇可用埠號
+        # 我們將從子程序的日誌輸出來解析實際使用的埠號
+        manager_command = [
+            sys.executable, "-u", # -u 確保輸出不被緩衝
+            "-m", "uvicorn",
+            "api_server_v2:app",
+            "--host", "0.0.0.0",
+            "--port", "0"
+        ]
         manager_proc = subprocess.Popen(
             manager_command, cwd=project_path, text=True,
             encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -503,25 +524,25 @@ if __name__ == '__main__':
         if not project_path:
             raise RuntimeError("專案下載失敗，請檢查日誌。")
 
-        # 步驟 2: 安裝門面伺服器所需的最基本依賴
-        log_manager_main.log("INFO", "正在安裝門面伺服器所需的基本依賴...")
-        requirements_path = Path(project_path) / "src" / "requirements_light.txt"
-        if not requirements_path.exists():
-            raise FileNotFoundError(f"找不到輕量級依賴檔案: {requirements_path}")
+        # 步驟 2: 安裝新架構所需的核心依賴
+        log_manager_main.log("INFO", "正在安裝 API 伺服器 (FastAPI) 所需的依賴...")
+        server_requirements_path = Path(project_path) / "requirements-server.txt"
+        if not server_requirements_path.exists():
+            raise FileNotFoundError(f"找不到伺服器依賴檔案: {server_requirements_path}")
 
-        pip_install_command = [sys.executable, "-m", "pip", "install", "-r", str(requirements_path)]
-        subprocess.run(pip_install_command, check=True, capture_output=True, text=True)
-        log_manager_main.log("SUCCESS", "✅ 基本依賴安裝完成。")
+        pip_install_command_server = [sys.executable, "-m", "pip", "install", "-r", str(server_requirements_path)]
+        subprocess.run(pip_install_command_server, check=True, capture_output=True, text=True)
+        log_manager_main.log("SUCCESS", "✅ API 伺服器依賴安裝完成。")
 
-        # 新增：安裝背景工作者所需的依賴
-        log_manager_main.log("INFO", "正在安裝背景工作者所需的依賴...")
+        log_manager_main.log("INFO", "正在安裝腳本 (Scripts) 所需的依賴...")
         worker_requirements_path = Path(project_path) / "requirements-worker.txt"
         if not worker_requirements_path.exists():
-            raise FileNotFoundError(f"找不到工作者依賴檔案: {worker_requirements_path}")
-
-        pip_install_command_worker = [sys.executable, "-m", "pip", "install", "-r", str(worker_requirements_path)]
-        subprocess.run(pip_install_command_worker, check=True, capture_output=True, text=True)
-        log_manager_main.log("SUCCESS", "✅ 背景工作者依賴安裝完成。")
+            # 這個檔案是可選的，如果不存在，只記錄警告
+            log_manager_main.log("WARN", f"未找到腳本依賴檔案: {worker_requirements_path}，跳過安裝。")
+        else:
+            pip_install_command_worker = [sys.executable, "-m", "pip", "install", "-r", str(worker_requirements_path)]
+            subprocess.run(pip_install_command_worker, check=True, capture_output=True, text=True)
+            log_manager_main.log("SUCCESS", "✅ 腳本依賴安裝完成。")
 
         # 步驟 3: 啟動新的應用程式架構
         # 注意：新的 launch_application 不再需要 deps_path_str
